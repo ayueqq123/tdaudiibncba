@@ -65,9 +65,11 @@ _EDGES: dict[JobStatus, frozenset[JobStatus]] = {
                                  JobStatus.CANCELLED, JobStatus.EXPIRED, JobStatus.SUPERSEDED}),
     JobStatus.SENDING: frozenset({JobStatus.SUCCEEDED, JobStatus.RETRY_WAIT,
                                   JobStatus.BLOCKED, JobStatus.FAILED_PERMANENT,
-                                  JobStatus.UNCERTAIN, JobStatus.SUPERSEDED}),
+                                  JobStatus.DEAD_LETTER, JobStatus.UNCERTAIN,
+                                  JobStatus.SUPERSEDED}),
     JobStatus.RETRY_WAIT: frozenset({JobStatus.READY, JobStatus.BLOCKED,
-                                     JobStatus.CANCELLED, JobStatus.EXPIRED, JobStatus.SUPERSEDED}),
+                                     JobStatus.DEAD_LETTER, JobStatus.CANCELLED,
+                                     JobStatus.EXPIRED, JobStatus.SUPERSEDED}),
     JobStatus.BLOCKED: frozenset({JobStatus.READY, JobStatus.CANCELLED,
                                   JobStatus.EXPIRED, JobStatus.SUPERSEDED}),
     # uncertain never auto-retries: it exits via reconciliation (§8.4)
