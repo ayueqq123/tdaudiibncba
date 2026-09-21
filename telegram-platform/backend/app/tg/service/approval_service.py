@@ -7,6 +7,7 @@ from backend.app.tg.crud.crud_membership import membership_dao
 from backend.app.tg.crud.crud_project import project_dao
 from backend.app.tg.crud.crud_telegram_account import telegram_account_dao
 from backend.app.tg.crud.crud_tenant import tenant_dao
+from backend.app.tg.metrics import tg_delivery_job_created_total
 from backend.app.tg.model import TgApproval, TgDeliveryJob, TgReplyCandidate
 from backend.app.tg.schema.approval import (
     ApproveCandidateParam,
@@ -148,6 +149,7 @@ class ApprovalService:
         )
         db.add(job)
         await db.flush()
+        tg_delivery_job_created_total.labels(kind='send_message').inc()
 
     @staticmethod
     async def approve(*, db: AsyncSession, request: Request, pk: int, obj: ApproveCandidateParam) -> TgApproval:

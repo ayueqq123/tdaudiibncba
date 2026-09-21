@@ -14,6 +14,7 @@ from backend.app.tg.crud.crud_ai import (
     ai_run_dao,
 )
 from backend.app.tg.crud.crud_approval import approval_dao, reply_candidate_dao
+from backend.app.tg.metrics import tg_ai_callback_total, tg_ai_run_active, tg_ai_run_total
 from backend.app.tg.model import TgReplyCandidate
 from backend.app.tg.model.ai import TgAiBinding, TgAiCallback, TgAiConversation, TgAiRun
 from backend.app.tg.schema.ai import (
@@ -139,16 +140,19 @@ class AiService:
                 run.id,
                 {'status': 'dispatched', 'accepted_message_id': result.accepted_message_id},
             )
+            tg_ai_run_active.inc()
             await ai_conversation_dao.update_fields(db, conv.id, {'status': 'locked'})
         elif result.status_code == 409:
             # §9.5:409 不等于成功——按幂等键应能找回原 run;找不到则记 failed 待人工
             await ai_run_dao.update_fields(
                 db, run.id, {'status': 'failed', 'last_error': 'idempotent_conflict_unlinked'}
             )
+            tg_ai_run_total.labels(status='failed').inc()
         else:
             await ai_run_dao.update_fields(
                 db, run.id, {'status': 'failed', 'last_error': result.error or 'submit_failed'}
             )
+            tg_ai_run_total.labels(status='failed').inc()
         return await ai_run_dao.get(db, run.id)
 
     @staticmethod
@@ -170,6 +174,7 @@ class AiService:
             signature=headers.get('x-lb-signature'),
         )
         if not ok:
+            tg_ai_callback_total.labels(result='rejected').inc()
             raise errors.RequestError(msg=f'回调签名无效: {reason}')
 
         try:
@@ -203,10 +208,14 @@ class AiService:
             await db.flush()
         except IntegrityError:
             await db.rollback()
+            tg_ai_callback_total.labels(result='dedup').inc()
             return 'dedup'
 
         if run is not None:
             await AiService._advance_run(db, run, cb)
+            tg_ai_callback_total.labels(result='linked').inc()
+        else:
+            tg_ai_callback_total.labels(result='pending_link').inc()
         return 'ok'
 
     @staticmethod
@@ -240,6 +249,8 @@ class AiService:
                         'completed_at': timezone.now(),
                     },
                 )
+                tg_ai_run_total.labels(status='incomplete').inc()
+                tg_ai_run_active.dec()
                 await AiService._unlock_conversation(db, run.conversation_id)
             return
 
@@ -263,6 +274,8 @@ class AiService:
                     'completed_at': timezone.now(),
                 }
             )
+            tg_ai_run_total.labels(status='completed').inc()
+            tg_ai_run_active.dec()
         await ai_run_dao.update_fields(db, run.id, fields)
         if cb.is_final:
             await AiService._unlock_conversation(db, run.conversation_id)
@@ -330,6 +343,8 @@ class AiService:
         await ai_run_dao.update_fields(
             db, run.id, {'status': 'cancelled', 'completed_at': timezone.now()}
         )
+        tg_ai_run_total.labels(status='cancelled').inc()
+        tg_ai_run_active.dec()
         await AiService._unlock_conversation(db, run.conversation_id)
         return await ai_run_dao.get(db, pk)
 
@@ -350,6 +365,8 @@ class AiService:
                         'completed_at': now,
                     },
                 )
+                tg_ai_run_total.labels(status='incomplete').inc()
+                tg_ai_run_active.dec()
                 await AiService._unlock_conversation(db, r.conversation_id)
                 n += 1
         return n
