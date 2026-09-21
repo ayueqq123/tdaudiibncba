@@ -1,0 +1,133 @@
+<script setup lang="ts">
+import type { ConfigResult } from '../api';
+
+import { ref } from 'vue';
+
+import { VbenButton } from '@vben/common-ui';
+import { MaterialSymbolsEdit } from '@vben/icons';
+import { $t } from '@vben/locales';
+
+import { message } from 'antdv-next';
+
+import { useVbenForm } from '#/adapter/form';
+
+import { getAllConfigApi, updateConfigApi } from '../api';
+import { emailSchema } from './data';
+
+const [Form, formApi] = useVbenForm({
+  showDefaultActions: false,
+  schema: emailSchema,
+  commonConfig: {
+    controlClass: 'w-full max-w-80',
+    disabled: true,
+    labelClass: 'justify-start ml-2',
+    labelWidth: 120,
+    hideRequiredMark: true,
+  },
+});
+
+const editButtonShow = ref<boolean>(true);
+const loading = ref<boolean>(false);
+const saveLoading = ref<boolean>(false);
+
+const emailData = ref<ConfigResult[]>([]);
+const fetchConfigList = async () => {
+  loading.value = true;
+  try {
+    emailData.value = await getAllConfigApi({ type: 'EMAIL' });
+    emailData.value.forEach((config: any) => {
+      formApi.setState((prev: any) => {
+        return {
+          schema: prev.schema?.map((item: any) => {
+            if (item.fieldName === config.key) {
+              return {
+                ...item,
+                label: config.name,
+              };
+            }
+            return item;
+          }),
+        };
+      });
+      formApi.setValues({ [config.key]: config.value });
+    });
+  } catch (error) {
+    console.error(error);
+  } finally {
+    loading.value = false;
+  }
+};
+
+const saveEmailConfig = async () => {
+  const { valid } = await formApi.validate();
+  if (valid) {
+    const data: Record<string, any> = await formApi.getValues();
+    emailData.value.forEach((config: any) => {
+      if (Object.prototype.hasOwnProperty.call(data, config.key)) {
+        config.value = data[config.key];
+      }
+    });
+    saveLoading.value = true;
+    try {
+      await updateConfigApi(emailData.value);
+      message.success($t('ui.actionMessage.operationSuccess'));
+      editButtonShow.value = true;
+      formApi.setState({ commonConfig: { disabled: true } });
+      await fetchConfigList();
+    } catch (error) {
+      console.error(error);
+    } finally {
+      saveLoading.value = false;
+    }
+  }
+};
+
+defineExpose({
+  fetchConfigList,
+});
+</script>
+
+<template>
+  <a-spin :spinning="loading">
+    <div>
+      <Form />
+      <VbenButton
+        v-show="editButtonShow"
+        class="ml-1.5 mt-3"
+        @click="
+          () => {
+            editButtonShow = false;
+            formApi.setState({ commonConfig: { disabled: false } });
+          }
+        "
+      >
+        <MaterialSymbolsEdit class="mr-1" />
+        {{ $t('common.edit') }}
+      </VbenButton>
+      <VbenButton
+        v-show="!editButtonShow"
+        class="ml-1.5 mt-3"
+        :loading="saveLoading"
+        @click="saveEmailConfig"
+      >
+        <MaterialSymbolsEdit class="mr-1" />
+        {{ $t('common.save') }}
+      </VbenButton>
+      <VbenButton
+        v-show="!editButtonShow"
+        class="ml-3 mt-3"
+        :disabled="saveLoading"
+        variant="outline"
+        @click="
+          () => {
+            editButtonShow = true;
+            formApi.setState({ commonConfig: { disabled: true } });
+            fetchConfigList();
+          }
+        "
+      >
+        {{ $t('common.cancel') }}
+      </VbenButton>
+    </div>
+  </a-spin>
+</template>

@@ -1,0 +1,249 @@
+<script lang="ts" setup>
+import { computed, onMounted, onUnmounted, ref } from 'vue';
+
+import { Page } from '@vben/common-ui';
+import { $t } from '@vben/locales';
+
+import { useVbenVxeGrid } from '#/adapter/vxe-table';
+import { getServerMonitorApi } from '#/api';
+
+const loading = ref<boolean>(false);
+
+const setServerData = ref<Record<string, any>>({});
+
+const diskData = ref<any[]>([]);
+
+const cpuData = computed(() => {
+  return {
+    usage: setServerData.value.cpu?.usage,
+    current_freq: setServerData.value.cpu?.current_freq,
+    max_freq: setServerData.value.cpu?.max_freq,
+    min_freq: setServerData.value.cpu?.min_freq,
+    logical_num: setServerData.value.cpu?.logical_num,
+    physical_num: setServerData.value.cpu?.physical_num,
+  };
+});
+
+const memData = computed(() => {
+  return {
+    total: setServerData.value.memory?.total,
+    used: setServerData.value.memory?.used,
+    free: setServerData.value.memory?.free,
+    usage: setServerData.value.memory?.usage,
+  };
+});
+
+const serviceData = computed(() => {
+  const data: any[] = [];
+  if (setServerData.value.service) {
+    Object.keys(setServerData.value.service).forEach((key) => {
+      data.push({
+        key,
+        label: $t(`page.monitor.server.service.${key}`),
+        content: setServerData.value.service[key],
+      });
+    });
+  }
+  return data;
+});
+
+const osData = computed(() => {
+  const data: any[] = [];
+  if (setServerData.value.system) {
+    Object.keys(setServerData.value.system).forEach((key) => {
+      data.push({
+        key,
+        label: $t(`page.monitor.server.system.${key}`),
+        content: setServerData.value.system[key],
+      });
+    });
+  }
+  return data;
+});
+
+const usageStyle = (type: string) => {
+  let num = 0;
+  if (type === 'cpu') {
+    num = cpuData.value.usage;
+  } else if (type === 'memory') {
+    num = memData.value.usage;
+  }
+  if (num < 50) {
+    return { color: '#32CD32' };
+  }
+  if (num < 80) {
+    return { color: '#FFD700' };
+  }
+  return { color: '#DC143C' };
+};
+
+const fetching = ref(false);
+
+const fetchServerData = async () => {
+  if (fetching.value) {
+    return;
+  }
+  fetching.value = true;
+  loading.value = true;
+  try {
+    const res = await getServerMonitorApi();
+    setServerData.value.cpu = res.cpu;
+    setServerData.value.memory = res.mem;
+    setServerData.value.system = res.sys;
+    setServerData.value.service = res.service;
+    diskData.value = res.disk;
+  } catch (error) {
+    console.error(error);
+  } finally {
+    fetching.value = false;
+    loading.value = false;
+  }
+};
+
+const [Grid, gridApi] = useVbenVxeGrid({
+  gridOptions: {
+    columns: [
+      { field: 'dir', title: $t('page.monitor.server.disk.dir') },
+      { field: 'type', title: $t('page.monitor.server.disk.type') },
+      { field: 'device', title: $t('page.monitor.server.disk.device') },
+      { field: 'total', title: $t('page.monitor.server.disk.total') },
+      { field: 'free', title: $t('page.monitor.server.disk.free') },
+      { field: 'used', title: $t('page.monitor.server.disk.used') },
+      { field: 'usage', title: $t('page.monitor.server.disk.usage') },
+    ],
+    stripe: true,
+    pagerConfig: {
+      enabled: false,
+    },
+  },
+});
+
+const refreshServerData = async () => {
+  await fetchServerData();
+  gridApi.setGridOptions({ data: diskData.value });
+};
+
+const REFRESH_INTERVAL = 5000;
+let refreshTimer: null | ReturnType<typeof setInterval> = null;
+
+function startAutoRefresh() {
+  stopAutoRefresh();
+  refreshTimer = setInterval(() => {
+    if (document.visibilityState === 'hidden') {
+      return;
+    }
+    refreshServerData();
+  }, REFRESH_INTERVAL);
+}
+
+function stopAutoRefresh() {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+onMounted(() => {
+  refreshServerData();
+  startAutoRefresh();
+});
+
+onUnmounted(() => {
+  stopAutoRefresh();
+});
+</script>
+
+<template>
+  <Page>
+    <div class="grid gap-6 xl:grid-cols-2">
+      <div class="min-w-0">
+        <a-card :loading="loading" :title="$t('page.monitor.server.cpu.title')">
+          <div class="grid gap-6 px-6 sm:grid-cols-2 xl:grid-cols-4">
+            <div class="min-w-0">
+              <a-statistic
+                :title="$t('page.monitor.server.cpu.usage')"
+                :value="cpuData.usage"
+                :styles="{ content: usageStyle('cpu') }"
+                suffix=" %"
+              />
+            </div>
+            <div class="min-w-0">
+              <a-statistic
+                :title="$t('page.monitor.server.cpu.current_freq')"
+                :value="cpuData.current_freq"
+                suffix=" MHz"
+              />
+            </div>
+            <div class="min-w-0">
+              <a-statistic
+                :title="$t('page.monitor.server.cpu.logical_num')"
+                :value="cpuData.logical_num"
+              />
+            </div>
+            <div class="min-w-0">
+              <a-statistic
+                :title="$t('page.monitor.server.cpu.physical_num')"
+                :value="cpuData.physical_num"
+              />
+            </div>
+          </div>
+        </a-card>
+      </div>
+      <div class="min-w-0">
+        <a-card
+          :loading="loading"
+          :title="$t('page.monitor.server.memory.title')"
+        >
+          <div class="grid gap-6 px-6 sm:grid-cols-2 xl:grid-cols-4">
+            <div class="min-w-0">
+              <a-statistic
+                :title="$t('page.monitor.server.memory.total')"
+                :value="memData.total"
+                suffix=" GB"
+              />
+            </div>
+            <div class="min-w-0">
+              <a-statistic
+                :title="$t('page.monitor.server.memory.used')"
+                :value="memData.used"
+                suffix=" GB"
+              />
+            </div>
+            <div class="min-w-0">
+              <a-statistic
+                :title="$t('page.monitor.server.memory.free')"
+                :value="memData.free"
+                suffix=" GB"
+              />
+            </div>
+            <div class="min-w-0">
+              <a-statistic
+                :title="$t('page.monitor.server.memory.usage')"
+                :value="memData.usage"
+                :styles="{ content: usageStyle('memory') }"
+                suffix=" %"
+              />
+            </div>
+          </div>
+        </a-card>
+      </div>
+    </div>
+    <div class="mt-6 grid gap-6">
+      <a-card
+        :loading="loading"
+        :title="$t('page.monitor.server.service.title')"
+      >
+        <a-descriptions :items="serviceData" />
+      </a-card>
+      <a-card
+        :loading="loading"
+        :title="$t('page.monitor.server.system.title')"
+      >
+        <a-descriptions size="middle" :column="4" :items="osData" />
+      </a-card>
+      <a-card :loading="loading" :title="$t('page.monitor.server.disk.title')">
+        <Grid />
+      </a-card>
+    </div>
+  </Page>
+</template>

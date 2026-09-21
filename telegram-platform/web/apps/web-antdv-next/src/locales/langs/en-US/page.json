@@ -1,0 +1,179 @@
+{
+  "auth": {
+    "login": "Login",
+    "register": "Register",
+    "codeLogin": "Code Login",
+    "qrcodeLogin": "Qr Code Login",
+    "forgetPassword": "Forget Password",
+    "captchaPlaceholder": "Please enter the captcha",
+    "captchaRequired": "The captcha is required",
+    "profile": "Profile",
+    "oauthFailed": "Third-party login failed, please try again",
+    "oauthCallback": "Completing authorization..."
+  },
+  "profile": {
+    "basicInfo": "Basic info",
+    "username": "Username",
+    "phone": "Phone",
+    "email": "Email",
+    "dept": "Department",
+    "roles": "Roles",
+    "clickUploadAvatar": "Click to upload avatar",
+    "editNickname": "Edit nickname",
+    "updateNickname": "Update nickname",
+    "nicknameUpdated": "Nickname updated",
+    "avatarUpdated": "Avatar updated",
+    "avatarUploadFailed": "Avatar upload failed",
+    "avatarTypeInvalid": "Please select an image file",
+    "lastLoginTime": "Last login time",
+    "securityTab": "Security",
+    "bindingTab": "Linked accounts",
+    "devicesTab": "Online devices",
+    "securePhone": "Security phone",
+    "securePhoneDesc": "Used for login, verification, password recovery and notifications",
+    "secureEmail": "Security email",
+    "secureEmailDesc": "Used for login, verification, password recovery and notifications",
+    "loginPassword": "Login password",
+    "loginPasswordDesc": "Change your password regularly to keep the account safe",
+    "configured": "Configured",
+    "bound": "Bound",
+    "editPhone": "Change phone",
+    "bindPhone": "Bind phone",
+    "editEmail": "Change email",
+    "bindEmail": "Bind email",
+    "editPassword": "Change password",
+    "phoneUpdated": "Phone updated",
+    "emailUpdated": "Email updated",
+    "passwordUpdated": "Password updated, please sign in again",
+    "smsSent": "SMS code sent",
+    "emailSent": "Email code sent",
+    "invalidEmail": "Please enter a valid email address",
+    "passwordMismatch": "The two passwords do not match",
+    "bindGithub": "Bind GitHub account",
+    "bindGoogle": "Bind Google account",
+    "unbindConfirm": "Unbind this account?",
+    "myDevices": "My signed-in devices",
+    "nickname": "Nickname",
+    "captcha": "Captcha",
+    "currentPassword": "Current password",
+    "newPassword": "New password",
+    "confirmPassword": "Confirm password"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "analytics": "Analytics",
+    "workspace": "Workspace"
+  },
+  "menu": {
+    "system": "System",
+    "scheduler": "Scheduler",
+    "schedulerManage": "Manage",
+    "schedulerRecord": "Record",
+    "log": "System Log",
+    "login": "Login Log",
+    "monitor": "System Monitor",
+    "opera": "Operation Log",
+    "online": "Online Users",
+    "redis": "Redis",
+    "server": "Server",
+    "sysDataPermission": "Data Permission",
+    "sysDataScope": "Data Scope",
+    "sysDataRule": "Data Rule",
+    "sysPlugin": "Plugin",
+    "sysDept": "Dept",
+    "sysMenu": "Menu",
+    "sysRole": "Role",
+    "sysUser": "User",
+    "profile": "Profile"
+  },
+  "monitor": {
+    "online": {
+      "username": "Username",
+      "sessionUuid": "Session UUID",
+      "nickname": "Nickname",
+      "ip": "IP address",
+      "os": "OS",
+      "browser": "Browser",
+      "device": "Device",
+      "status": "Status",
+      "lastLoginTime": "Last login time",
+      "expireTime": "Expire time",
+      "kickOut": "Force offline",
+      "kickOutConfirm": "Force {0} offline?",
+      "onlineCount": "Currently signed in"
+    },
+    "redis": {
+      "cards": {
+        "commands": {
+          "title": "Command Statistics"
+        },
+        "memory": {
+          "title": "Memory Status"
+        }
+      },
+      "info": {
+        "title": "Server Info",
+        "redis_version": "Version",
+        "redis_mode": "Mode",
+        "role": "Role",
+        "tcp_port": "TCP Port",
+        "uptime": "Uptime",
+        "connected_clients": "Connected Clients",
+        "blocked_clients": "Blocked Clients",
+        "used_memory_human": "Used Memory",
+        "used_memory_rss_human": "RSS Memory",
+        "maxmemory_human": "Max Memory",
+        "mem_fragmentation_ratio": "Fragmentation Ratio",
+        "total_commands_processed": "Commands Processed",
+        "instantaneous_ops_per_sec": "Ops/Sec",
+        "rejected_connections": "Rejected Connections",
+        "keys_num": "Keys"
+      }
+    },
+    "server": {
+      "cpu": {
+        "title": "CPU",
+        "current_freq": "Current Freq (MHz)",
+        "logical_num": "Logical Cores",
+        "physical_num": "Physical Cores",
+        "usage": "CPU Usage"
+      },
+      "disk": {
+        "title": "Disk",
+        "device": "Device",
+        "dir": "Mount Point",
+        "free": "Free",
+        "total": "Total",
+        "type": "Type",
+        "usage": "Usage",
+        "used": "Used"
+      },
+      "memory": {
+        "title": "Memory",
+        "free": "Free",
+        "total": "Total",
+        "usage": "Usage",
+        "used": "Used"
+      },
+      "service": {
+        "title": "Service Info",
+        "name": "Service Name",
+        "version": "Version",
+        "home": "Home Path",
+        "cpu_usage": "CPU Usage",
+        "mem_vms": "Virtual Memory",
+        "mem_rss": "Physical Memory",
+        "mem_free": "Free Memory",
+        "startup": "Startup Time",
+        "elapsed": "Elapsed Time"
+      },
+      "system": {
+        "title": "System Info",
+        "name": "Hostname",
+        "ip": "IP Address",
+        "os": "OS",
+        "arch": "Architecture"
+      }
+    }
+  }
+}

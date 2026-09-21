@@ -1,0 +1,179 @@
+{
+  "auth": {
+    "login": "登录",
+    "register": "注册",
+    "codeLogin": "验证码登录",
+    "qrcodeLogin": "二维码登录",
+    "forgetPassword": "忘记密码",
+    "captchaPlaceholder": "请输入验证码",
+    "captchaRequired": "验证码是必须的",
+    "profile": "个人中心",
+    "oauthFailed": "第三方登录失败，请重试",
+    "oauthCallback": "正在完成授权..."
+  },
+  "profile": {
+    "basicInfo": "基本信息",
+    "username": "用户名",
+    "phone": "手机",
+    "email": "邮箱",
+    "dept": "部门",
+    "roles": "角色",
+    "clickUploadAvatar": "点击上传头像",
+    "editNickname": "修改昵称",
+    "updateNickname": "更新昵称",
+    "nicknameUpdated": "昵称更新成功",
+    "avatarUpdated": "头像更新成功",
+    "avatarUploadFailed": "头像上传失败",
+    "avatarTypeInvalid": "请选择图片文件",
+    "lastLoginTime": "最后登录时间",
+    "securityTab": "安全设置",
+    "bindingTab": "第三方账号",
+    "devicesTab": "在线设备",
+    "securePhone": "安全手机",
+    "securePhoneDesc": "手机号可用于登录、身份验证、密码找回、通知接收",
+    "secureEmail": "安全邮箱",
+    "secureEmailDesc": "邮箱可用于登录、身份验证、密码找回、通知接收",
+    "loginPassword": "登录密码",
+    "loginPasswordDesc": "为了您的账号安全，建议定期修改密码",
+    "configured": "已设置",
+    "bound": "已绑定",
+    "editPhone": "修改手机号",
+    "bindPhone": "绑定手机号",
+    "editEmail": "修改邮箱",
+    "bindEmail": "绑定邮箱",
+    "editPassword": "修改密码",
+    "phoneUpdated": "手机号更新成功",
+    "emailUpdated": "邮箱更新成功",
+    "passwordUpdated": "密码更新成功，请重新登录",
+    "smsSent": "短信验证码已发送，请注意查收",
+    "emailSent": "邮箱验证码已发送，请注意查收",
+    "invalidEmail": "请输入有效的邮箱地址",
+    "passwordMismatch": "两次密码输入不一致",
+    "bindGithub": "绑定 Github 账号",
+    "bindGoogle": "绑定 Google 账号",
+    "unbindConfirm": "确认解绑此账号吗？",
+    "myDevices": "我的已登录设备",
+    "nickname": "昵称",
+    "captcha": "验证码",
+    "currentPassword": "当前密码",
+    "newPassword": "新密码",
+    "confirmPassword": "确认密码"
+  },
+  "dashboard": {
+    "title": "概览",
+    "analytics": "分析页",
+    "workspace": "工作台"
+  },
+  "menu": {
+    "system": "系统管理",
+    "scheduler": "任务调度",
+    "schedulerManage": "任务管理",
+    "schedulerRecord": "执行记录",
+    "log": "日志管理",
+    "login": "登录日志",
+    "monitor": "系统监控",
+    "opera": "操作日志",
+    "online": "在线用户",
+    "redis": "Redis",
+    "server": "服务器",
+    "sysDataPermission": "数据权限",
+    "sysDataScope": "数据范围",
+    "sysDataRule": "数据规则",
+    "sysPlugin": "插件管理",
+    "sysDept": "部门管理",
+    "sysMenu": "菜单管理",
+    "sysRole": "角色管理",
+    "sysUser": "用户管理",
+    "profile": "个人中心"
+  },
+  "monitor": {
+    "online": {
+      "username": "用户名",
+      "sessionUuid": "会话 UUID",
+      "nickname": "昵称",
+      "ip": "IP 地址",
+      "os": "操作系统",
+      "browser": "浏览器",
+      "device": "设备",
+      "status": "状态",
+      "lastLoginTime": "最后登录时间",
+      "expireTime": "过期时间",
+      "kickOut": "强制下线",
+      "kickOutConfirm": "确定将 {0} 强制下线吗？",
+      "onlineCount": "当前已登录人数"
+    },
+    "redis": {
+      "cards": {
+        "commands": {
+          "title": "命令统计"
+        },
+        "memory": {
+          "title": "内存使用"
+        }
+      },
+      "info": {
+        "title": "服务器信息",
+        "redis_version": "版本",
+        "redis_mode": "运行模式",
+        "role": "节点角色",
+        "tcp_port": "监听端口",
+        "uptime": "运行时长",
+        "connected_clients": "已连接客户端数",
+        "blocked_clients": "阻塞客户端数",
+        "used_memory_human": "已使用内存",
+        "used_memory_rss_human": "RSS 内存",
+        "maxmemory_human": "最大内存限制",
+        "mem_fragmentation_ratio": "内存碎片率",
+        "total_commands_processed": "命令处理总数",
+        "instantaneous_ops_per_sec": "每秒操作数",
+        "rejected_connections": "拒绝连接数",
+        "keys_num": "键总数"
+      }
+    },
+    "server": {
+      "cpu": {
+        "title": "CPU 信息",
+        "current_freq": "当前频率 (MHz)",
+        "logical_num": "逻辑核心数",
+        "physical_num": "物理核心数",
+        "usage": "CPU 使用率"
+      },
+      "disk": {
+        "title": "磁盘信息",
+        "device": "设备名称",
+        "dir": "挂载点",
+        "free": "可用",
+        "total": "总容量",
+        "type": "文件系统类型",
+        "usage": "使用率",
+        "used": "已使用"
+      },
+      "memory": {
+        "free": "可用",
+        "title": "内存信息",
+        "total": "总量",
+        "usage": "使用率",
+        "used": "已使用"
+      },
+      "service": {
+        "title": "服务信息",
+        "name": "服务名称",
+        "version": "版本",
+        "home": "安装路径",
+        "cpu_usage": "CPU 使用率",
+        "mem_vms": "虚拟内存",
+        "mem_rss": "物理内存",
+        "mem_free": "可用内存",
+        "startup": "启动时间",
+        "elapsed": "运行时长"
+      },
+      "system": {
+        "title": "系统信息",
+        "name": "主机名",
+        "ip": "IP 地址",
+        "os": "操作系统",
+        "arch": "系统架构"
+      }
+    }
+  }
+}
