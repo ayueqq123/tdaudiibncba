@@ -1,0 +1,9 @@
+{
+  "name": "@fba-ui/dict",
+  "version": "5.7.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "mitt": "catalog:"
+  }
+}

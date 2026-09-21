@@ -1,0 +1,398 @@
+<script setup lang="ts">
+import type { VbenFormProps } from '@vben/common-ui';
+
+import type {
+  OnActionClickParams,
+  VxeTableGridOptions,
+} from '#/adapter/vxe-table';
+import type {
+  SysAddUserParams,
+  SysDeptTreeResult,
+  SysResetPasswordParams,
+  SysRoleResult,
+  SysUpdateUserParams,
+  SysUserResult,
+} from '#/api';
+
+import { onMounted, ref } from 'vue';
+
+import { ColPage, useVbenModal, VbenButton } from '@vben/common-ui';
+import { MaterialSymbolsAdd } from '@vben/icons';
+import { $t } from '@vben/locales';
+import { preferences } from '@vben/preferences';
+
+import { message } from 'antdv-next';
+
+import { useVbenForm } from '#/adapter/form';
+import { useVbenVxeGrid } from '#/adapter/vxe-table';
+import {
+  createSysUserApi,
+  deleteSysUserApi,
+  getAllSysRoleApi,
+  getSysDeptTreeApi,
+  getSysUserListApi,
+  resetSysUserPasswordApi,
+  updateSysUserApi,
+} from '#/api';
+import {
+  querySchema,
+  resetPwdSchema,
+  useAddSchema,
+  useColumns,
+  useEditSchema,
+} from '#/views/system/user/data';
+
+/**
+ * 左侧
+ */
+const treeData = ref<SysDeptTreeResult[]>([]);
+const treeLoading = ref(false);
+
+const fetchDeptTree = async (name: string | undefined) => {
+  treeLoading.value = true;
+  try {
+    treeData.value = await getSysDeptTreeApi({ name });
+  } catch (error) {
+    console.error(error);
+  } finally {
+    treeLoading.value = false;
+  }
+};
+
+const searchDeptValue = ref<string>();
+const selectedDeptId = ref<number | string>();
+const searchDept = async (searchValue: string | undefined) => {
+  await fetchDeptTree(searchValue);
+};
+
+/**
+ * 右侧
+ */
+const formOptions: VbenFormProps = {
+  collapsed: true,
+  showCollapseButton: true,
+  submitButtonOptions: {
+    content: $t('common.form.query'),
+  },
+  schema: querySchema,
+};
+
+const gridOptions: VxeTableGridOptions<SysUserResult> = {
+  rowConfig: {
+    keyField: 'id',
+  },
+  checkboxConfig: {
+    highlight: true,
+  },
+  height: 'auto',
+  exportConfig: {},
+  printConfig: {},
+  toolbarConfig: {
+    export: true,
+    print: true,
+    refresh: true,
+    refreshOptions: {
+      code: 'query',
+    },
+    custom: true,
+    zoom: true,
+  },
+  columns: useColumns(onActionClick),
+  proxyConfig: {
+    ajax: {
+      query: async ({ page }, formValues) => {
+        return await getSysUserListApi({
+          page: page.currentPage,
+          size: page.pageSize,
+          ...formValues,
+        });
+      },
+    },
+  },
+};
+
+const [Grid, gridApi] = useVbenVxeGrid({ formOptions, gridOptions });
+
+function onRefresh() {
+  gridApi.query();
+}
+
+async function onActionClick({
+  code,
+  row,
+}: OnActionClickParams<SysUserResult>) {
+  switch (code) {
+    case 'delete': {
+      gridApi.setLoading(true);
+      try {
+        await deleteSysUserApi(row.id);
+        message.success({
+          content: $t('ui.actionMessage.deleteSuccess', [row.username]),
+          key: 'action_process_msg',
+        });
+        onRefresh();
+      } finally {
+        gridApi.setLoading(false);
+      }
+      break;
+    }
+    case 'edit': {
+      editUser.value = row.id;
+      editModalApi.setData(row).open();
+      break;
+    }
+    case 'reset_password': {
+      editUser.value = row.id;
+      resetPwdModalApi.setData(null).open();
+      break;
+    }
+  }
+}
+
+const fetchSysUserListByDept = (selectedKeys: (number | string)[]) => {
+  selectedDeptId.value = selectedKeys[0];
+  gridApi.query({ dept: selectedDeptId.value });
+};
+
+const fetchAllUsers = () => {
+  selectedDeptId.value = undefined;
+  gridApi.query({ dept: undefined });
+};
+
+const roleSelectOptions = ref<SysRoleResult[]>([]);
+const fetchAllSysRole = async () => {
+  try {
+    roleSelectOptions.value = await getAllSysRoleApi();
+  } catch (error) {
+    console.error(error);
+  }
+};
+
+const [EditForm, formApi] = useVbenForm({
+  showDefaultActions: false,
+  schema: useEditSchema(roleSelectOptions),
+});
+
+const editUser = ref<number>(0);
+
+const [editModal, editModalApi] = useVbenModal({
+  destroyOnClose: true,
+  async onConfirm() {
+    const { valid } = await formApi.validate();
+    if (valid) {
+      editModalApi.lock();
+      const data = await formApi.getValues<SysUpdateUserParams>();
+      try {
+        await updateSysUserApi(editUser.value, data);
+        message.success($t('ui.actionMessage.operationSuccess'));
+        await editModalApi.close();
+        onRefresh();
+      } finally {
+        editModalApi.unlock();
+      }
+    }
+  },
+  onOpenChange(isOpen) {
+    if (isOpen) {
+      const data = editModalApi.getData<any>();
+      formApi.resetForm();
+      if (data) {
+        formApi.setValues({
+          ...data,
+          dept_id: data.dept_id ?? data.dept?.id,
+          roles: data.roles?.map((item: SysRoleResult) => item.id) || [],
+        });
+      }
+    }
+  },
+});
+
+const [AddForm, addFormApi] = useVbenForm({
+  showDefaultActions: false,
+  schema: useAddSchema(roleSelectOptions),
+});
+
+const [addModal, addModalApi] = useVbenModal({
+  destroyOnClose: true,
+  async onConfirm() {
+    const { valid } = await addFormApi.validate();
+    if (valid) {
+      addModalApi.lock();
+      const data = await addFormApi.getValues<SysAddUserParams>();
+      try {
+        await createSysUserApi(data);
+        message.success($t('ui.actionMessage.operationSuccess'));
+        await addModalApi.close();
+        onRefresh();
+      } finally {
+        addModalApi.unlock();
+      }
+    }
+  },
+  onOpenChange(isOpen) {
+    if (isOpen) {
+      addFormApi.resetForm();
+      if (selectedDeptId.value) {
+        addFormApi.setValues({ dept_id: selectedDeptId.value });
+      }
+    }
+  },
+});
+
+const [ResetPwdForm, resetPwdFormApi] = useVbenForm({
+  layout: 'vertical',
+  showDefaultActions: false,
+  schema: resetPwdSchema,
+});
+
+const [resetPwdModal, resetPwdModalApi] = useVbenModal({
+  destroyOnClose: true,
+  centered: true,
+  async onConfirm() {
+    const { valid } = await resetPwdFormApi.validate();
+    if (valid) {
+      resetPwdModalApi.lock();
+      const data = await resetPwdFormApi.getValues<SysResetPasswordParams>();
+      try {
+        await resetSysUserPasswordApi(editUser.value, data);
+        message.success($t('ui.actionMessage.operationSuccess'));
+        await resetPwdModalApi.close();
+      } finally {
+        resetPwdModalApi.unlock();
+      }
+    }
+  },
+  onOpenChange(isOpen) {
+    if (isOpen) {
+      const data = resetPwdModalApi.getData();
+      resetPwdFormApi.resetForm();
+      if (data) {
+        resetPwdFormApi.setValues(data);
+      }
+    }
+  },
+});
+
+onMounted(() => {
+  fetchDeptTree(undefined);
+  fetchAllSysRole();
+});
+</script>
+
+<template>
+  <ColPage
+    auto-content-height
+    :resizable="false"
+    :left-width="20"
+    :right-width="80"
+  >
+    <template #left>
+      <div class="h-full overflow-y-auto rounded-[var(--radius)] bg-card">
+        <div class="mt-1 p-2">
+          <a-input-search
+            v-model:value="searchDeptValue"
+            :loading="treeLoading"
+            :placeholder="$t('common.search')"
+            size="small"
+            enter-button
+            @search="searchDept"
+          />
+        </div>
+        <a-spin :spinning="treeLoading">
+          <div class="-mt-3 p-3">
+            <div
+              class="mb-1 cursor-pointer rounded px-1 py-0.5 hover:bg-accent"
+              :class="!selectedDeptId && 'font-medium text-primary'"
+              @click="fetchAllUsers"
+            >
+              {{ $t('common.all') }}
+            </div>
+            <a-tree
+              v-if="treeData.length > 0"
+              :show-line="{ showLeafIcon: false }"
+              :tree-data="treeData"
+              :field-names="{ title: 'name', key: 'id' }"
+              :selected-keys="selectedDeptId ? [selectedDeptId] : []"
+              default-expand-all
+              @select="fetchSysUserListByDept"
+            >
+              <template #titleRender="{ name }">
+                <span v-if="searchDeptValue && name.includes(searchDeptValue)">
+                  {{ name.substring(0, name.indexOf(searchDeptValue)) }}
+                  <span style="color: #f50">{{ searchDeptValue }}</span>
+                  {{
+                    name.substring(
+                      name.indexOf(searchDeptValue) + searchDeptValue.length,
+                    )
+                  }}
+                </span>
+                <span v-else>{{ name }}</span>
+              </template>
+            </a-tree>
+            <a-empty v-else :description="$t('system.user.emptyDept')" />
+          </div>
+        </a-spin>
+      </div>
+    </template>
+    <Grid>
+      <template #toolbar-actions>
+        <VbenButton @click="() => addModalApi.setData(null).open()">
+          <MaterialSymbolsAdd class="size-5" />
+          {{ $t('system.user.add') }}
+        </VbenButton>
+      </template>
+      <template #avatar="{ row }">
+        <a-avatar :src="row.avatar || preferences.app.defaultAvatar" />
+      </template>
+      <template #dept="{ row }">
+        <span v-if="row.dept">
+          <a-tag :key="row.dept.name" color="green">
+            {{ row.dept.name }}
+          </a-tag>
+        </span>
+        <span v-else>{{ $t('common.unbound') }}</span>
+      </template>
+      <template #roles="{ row }">
+        <span v-if="row.roles.length === 1">
+          <a-tag color="purple">
+            {{ row.roles[0]?.name }}
+          </a-tag>
+        </span>
+        <span v-else-if="row.roles.length > 1">
+          <a-tag color="purple">
+            {{ row.roles[0]?.name }}
+          </a-tag>
+          <a-popover
+            placement="topLeft"
+            :styles="{ root: { maxWidth: '20%' } }"
+          >
+            <template #content>
+              <div class="flex flex-wrap gap-1">
+                <a-tag
+                  v-for="role in row.roles"
+                  :key="role.name"
+                  color="purple"
+                >
+                  {{ role.name }}
+                </a-tag>
+              </div>
+            </template>
+            <a-tag class="cursor-pointer" color="purple">
+              +{{ row.roles.length - 1 }}
+            </a-tag>
+          </a-popover>
+        </span>
+        <span v-else>{{ $t('common.unbound') }}</span>
+      </template>
+    </Grid>
+    <editModal :title="$t('system.user.edit')">
+      <EditForm />
+    </editModal>
+    <addModal :title="$t('system.user.add')">
+      <AddForm />
+    </addModal>
+    <resetPwdModal :title="$t('system.user.resetPassword')">
+      <ResetPwdForm />
+    </resetPwdModal>
+  </ColPage>
+</template>
