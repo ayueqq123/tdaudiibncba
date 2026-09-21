@@ -96,6 +96,7 @@ services:
       TG_IMPORT_STORAGE_DIR: /var/lib/tg-imports
       TG_RUNTIME_DIR: /srv/telegram-runtime
       TG_RUNTIME_PYTHON: 'python3'
+      RUNTIME_WORKER_TOKEN: '${RUNTIME_WORKER_TOKEN:?set in .env}'
       PYTHONDONTWRITEBYTECODE: '1'
     volumes:
       - tg_imports:/var/lib/tg-imports:rw
@@ -171,6 +172,7 @@ services:
     env_file: .env
     environment:
       RUNTIME_CONTROL_API: 'http://control-api:8000/api/v1/tg/runtime'
+      RUNTIME_WORKER_TOKEN: '${RUNTIME_WORKER_TOKEN:?set in .env}'
       DATABASE_URL: 'postgresql+asyncpg://${DATABASE_USER}:${DATABASE_PASSWORD}@postgres:5432/${DATABASE_SCHEMA:-fba}'
       SESSION_KEK: '${SESSION_KEK:?set in .env}'
       WORKER_ID: 'worker-1'
@@ -182,8 +184,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    # TODO(D 期):runtime/worker/__main__.py 生产宿主循环落地后启用
-    profiles: ['runtime']
     networks:
       - app
       - data

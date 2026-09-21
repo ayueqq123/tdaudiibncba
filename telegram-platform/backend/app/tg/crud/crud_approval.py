@@ -13,6 +13,9 @@ class CRUDReplyCandidate(CRUDPlus[TgReplyCandidate]):
     async def get(self, db: AsyncSession, pk: int) -> TgReplyCandidate | None:
         return await self.select_model_by_column(db, id=pk, deleted=0)
 
+    async def get_by_uuid(self, db: AsyncSession, uuid: str) -> TgReplyCandidate | None:
+        return await self.select_model_by_column(db, uuid=uuid, deleted=0)
+
     async def get_all(
         self,
         db: AsyncSession,

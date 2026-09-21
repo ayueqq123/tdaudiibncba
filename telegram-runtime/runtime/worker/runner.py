@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -51,10 +51,21 @@ from runtime.storage.repos import (
     MappingRepository,
 )
 
+_JOB_KIND_ALIAS = {
+    "send": PlanKind.SEND,
+    "send_message": PlanKind.SEND,   # platform writes 'send_message' (§10.1 chain)
+    "edit": PlanKind.EDIT,
+    "delete": PlanKind.DELETE,
+    "tombstone": PlanKind.TOMBSTONE,
+}
+
 
 def plan_from_job(job: DeliveryJob) -> DeliveryPlan:
+    kind = _JOB_KIND_ALIAS.get(job.kind)
+    if kind is None:
+        raise ValueError(f"unknown delivery job kind: {job.kind}")
     return DeliveryPlan(
-        kind=PlanKind(job.kind), rule_id=job.rule_id,
+        kind=kind, rule_id=job.rule_id,
         rule_version=job.rule_version, route_id=job.route_id,
         account_id=job.account_id, source_scope=job.source_scope,
         source_chat_id=job.source_chat_id,

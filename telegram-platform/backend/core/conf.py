@@ -341,6 +341,9 @@ class Settings(BaseSettings):
     # 单包大小上限(MB)与单项验证超时(秒)
     TG_IMPORT_MAX_SIZE_MB: int = 64
     TG_IMPORT_ITEM_TIMEOUT: int = 25
+    # Worker 运行面服务凭证:与 tg-runtime-worker 的 RUNTIME_WORKER_TOKEN 对值;
+    # 为空时 worker-token 认证全部拒绝(JWT 仍可用)
+    RUNTIME_WORKER_TOKEN: str = ''
 
     @model_validator(mode='before')
     @classmethod
