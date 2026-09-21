@@ -256,6 +256,20 @@ def _format_result(r: ValidationResult) -> str:
     return " ".join(parts)
 
 
+def _result_dict(r: ValidationResult, item_by_key: dict[str, ImportItem]) -> dict[str, Any]:
+    d: dict[str, Any] = {"key": r.key, "status": r.status.value}
+    for k in ("user_id", "username", "premium", "two_fa", "spamblock", "detail"):
+        v = getattr(r, k, None)
+        if v is not None:
+            d[k] = v
+    item = item_by_key.get(r.key)
+    if item is not None:
+        d["session_path"] = str(item.session_path)
+        if item.meta_path is not None:
+            d["meta_path"] = str(item.meta_path)
+    return d
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -263,19 +277,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("package", type=Path)
     parser.add_argument("--delay", type=float, default=2.0)
     parser.add_argument("--timeout", type=float, default=25.0)
+    parser.add_argument("--json", action="store_true",
+                        help="emit the result manifest as a single JSON object on stdout")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.WARNING)
     items = parse_package(args.package)
     if not items:
-        print("no .session files found")
+        if args.json:
+            print(json.dumps({"total": 0, "verified": 0, "results": []}))
+        else:
+            print("no .session files found")
         return 2
-    print(f"{len(items)} session(s) found")
+    if not args.json:
+        print(f"{len(items)} session(s) found")
 
-    results = asyncio.run(validate_package(items, delay=args.delay, timeout=args.timeout,
-                                           on_item=lambda r: print(_format_result(r), flush=True)))
+    results = asyncio.run(validate_package(
+        items, delay=args.delay, timeout=args.timeout,
+        on_item=None if args.json else lambda r: print(_format_result(r), flush=True)))
     ok = sum(1 for r in results if r.ok)
-    print(f"{ok}/{len(results)} verified")
+    if args.json:
+        item_by_key = {i.key: i for i in items}
+        print(json.dumps({
+            "total": len(results),
+            "verified": ok,
+            "results": [_result_dict(r, item_by_key) for r in results],
+        }))
+    else:
+        print(f"{ok}/{len(results)} verified")
     return 0 if ok == len(results) else 1
 
 
