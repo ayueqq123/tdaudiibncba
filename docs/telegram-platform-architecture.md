@@ -179,7 +179,19 @@ RuntimeController.apply(command) -> CommandResult
 5. Session 以信封加密存储，业务表只保存 `secret_ref`、密钥版本和状态；明文仅在所属 Worker 内存/受限临时挂载中出现。
 6. 登录流程完成后销毁验证码、密码和挑战状态，审计只记录操作者、账号、结果和原因码。
 
-不设计批量导入不明来源 Session。若客户已有合法 Session，可做明确授权的单账号迁移流程，不在 UI 提供默认导出明文功能。
+### 5.1.1 Session 批量导入(协议号)
+
+平台必须支持批量导入外部 Session(俗称协议号)。这是确定的业务能力，设计如下:
+
+1. **导入包格式**：接受 zip 批次包，内含 `号码.session`(Telethon SQLite)+ `号码.json` 元数据配对；json 提供 `app_id/app_hash/device/app_version/twoFA` 等客户端指纹。后期可扩展 tdata、StringSession 格式，导入器按格式探测分发。
+2. **校验 Worker 逐条验证**：解析格式 → 用包内 `app_id/app_hash/device` 指纹建客户端(**不得用平台默认指纹顶替，指纹不符是协议号最常见的封号触发点**)→ connect + `getMe` 最小验证 → 落结果。验证只读身份，不拉消息、不发言。
+3. **验证结果分级**：`verified / auth_failed / 2fa_locked / spamblocked / deactivated`。`twoFA=true` 且密码未知的直接进 `2fa_locked`，可事后补密码重验；spamblock 来自 json 与 `getMe` 可见状态，如实展示不隐藏。
+4. **来源追踪**：`telegram_account` 增加 `import_batch_id`、`import_source`(批次/供应商标注)、`imported_at`；`import_batch` 记录操作者、条目数、各结果计数、原始包 hash。导入即审计事件。
+5. **去重与重绑**：按 `telegram_user_id` 在当前部署唯一；同号码重复导入默认拒绝，选择重绑时旧 Session 作废、需显式确认。
+6. **隔离与节奏**：新导入账号进 `imported_quarantine` 状态，不自动加入 Clone 规则；验证按 IP/DC 限速错峰，避免同批次集中上线触发风控连锁。
+7. **存储与保密**：导入的 `.session` 与号码按正常账号同等信封加密与脱敏规则；原始包在校验完毕、密文落库后销毁。UI 仍不提供明文导出。
+
+合规边界由部署方与客户的授权关系承担：平台如实呈现 spamblock/twoFA 状态与验证结果，不做规避风控的伪装能力(客户端指纹沿用包内信息属"忠实还原"，不在禁止项内)。
 
 ### 5.2 状态模型
 
@@ -191,6 +203,8 @@ RuntimeController.apply(command) -> CommandResult
 | `flood_wait` | 保存服务器要求的恢复时间；所有相关发送按该范围暂停 |
 | `paused / stopping / stopped` | 人工暂停、排空、已停止；默认暂停阻止新发送，任务保留 |
 | `reauth_required / revoked / disabled` | 需要重新登录、Session 撤销或账号禁用；不循环重试敏感错误 |
+| `imported_quarantine / validating` | 导入隔离待验证、校验进行中；隔离态不得加入规则或发送 |
+| `2fa_locked / spamblocked` | 导入验证发现的锁定状态；补密码或解除后回到正常流转 |
 
 账号状态不是一个布尔值：保存 `connection_state`、`auth_state`、`send_state`、`desired_state` 和最近原因；UI 展示合成结果及下一步操作。
 
@@ -218,7 +232,8 @@ RuntimeController.apply(command) -> CommandResult
 | 实体 / 表 | 核心字段或关系 | 主要约束 / 索引 |
 | --- | --- | --- |
 | `tenant, project, membership` | 客户、项目、用户角色与资源范围 | 成员唯一；资源查询必须匹配 membership |
-| `telegram_account` | tenant/project、telegram_user_id、secret_ref、desired/observed 状态 | 当前部署同 Telegram 身份默认唯一；移动项目走显式迁移 |
+| `telegram_account` | tenant/project、telegram_user_id、secret_ref、desired/observed 状态、import_batch_id/import_source/imported_at | 当前部署同 Telegram 身份默认唯一；移动项目走显式迁移 |
+| `import_batch` | 操作者、包 hash、条目数、验证结果计数、来源标注 | 追加写；条目级验证结果挂到账号 |
 | `account_lease, runtime_command` | worker/generation/租约；命令类型、payload、状态、去重键 | account 唯一；命令重放幂等，敏感验证码不入表 |
 | `chat, account_chat, chat_authorization` | chat 平台身份；账号可见性/能力；客户授权依据、范围和失效时间 | 技术可访问性与业务授权分开验证 |
 | `clone_rule, clone_rule_version, clone_target` | 账号、源 chat/topic、目标、模式、filters、版本、生效范围 | 规则版本不可变；目标路由 ID 稳定，删除目标只退役不复用 |
@@ -525,6 +540,8 @@ LangBot 可能在 pipeline 中把生成回复写入历史，但候选可能被�
 | 方法 / 路径 | 用途 | 关键约束 |
 | --- | --- | --- |
 | `POST /accounts` | 创建账号元数据 | 验证项目角色；返回账号 ID |
+| `POST /accounts/import` | 批量导入 Session 包(zip) | multipart;返回 batch_id；逐条异步验证 |
+| `GET /imports/{batch_id}` | 导入批次状态 | 条目级验证结果与原因码 |
 | `POST /accounts/{id}/login/start` | 创建登录事务 | 202 + challenge_id；号码脱敏 |
 | `POST /login-challenges/{id}/code`、`/password` | 提交验证码 / 2FA | 短时、限次、不可记录 body |
 | `POST /accounts/{id}/start`、`/pause`、`/stop`、`/revoke` | 生命周期 | 异步 command_id；revoke 二次确认 |
