@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Vue
+node_modules/
+dist/
+*.local
+
+# Env & secrets — never commit credentials or Telegram sessions
+.env
+.env.*
+*.session
+*.session-journal
+secret*
+
+# Runtime artifacts
+*.log
+*.sqlite3
+*.db
+media/
+tmp/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
