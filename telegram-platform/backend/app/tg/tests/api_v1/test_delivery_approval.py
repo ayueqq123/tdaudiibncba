@@ -199,6 +199,23 @@ def test_approval_flow(client: TestClient, token_headers: dict[str, str]) -> Non
     cand2 = client.get('/tg/approvals/candidates', headers=token_headers, params={'project_id': pid}).json()['data'][0]
     assert cand2['status'] == 'approved'
 
+    # D2:审批通过 → delivery_job(ready) 落共享表,幂等键 approval:{uuid}
+    async def _job_count() -> int:
+        conn = await _conn()
+        try:
+            return await conn.fetchval(
+                "SELECT count(*) FROM delivery_job WHERE idempotency_key = $1",
+                f'approval:{appr["uuid"]}',
+            )
+        finally:
+            await conn.close()
+
+    assert _run(_job_count()) == 1
+    jobs = client.get(
+        '/tg/deliveries', headers=token_headers, params={'project_id': pid, 'status': 'ready'}
+    ).json()['data']
+    assert any(j['idempotency_key'] == f'approval:{appr["uuid"]}' for j in jobs)
+
     # 过期审批不可通过
     resp = client.post(
         '/tg/approvals/candidates',

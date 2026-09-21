@@ -2,9 +2,12 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.tg.crud.crud_approval import approval_dao, reply_candidate_dao
+from backend.app.tg.crud.crud_delivery import delivery_job_dao
 from backend.app.tg.crud.crud_membership import membership_dao
+from backend.app.tg.crud.crud_project import project_dao
 from backend.app.tg.crud.crud_telegram_account import telegram_account_dao
-from backend.app.tg.model import TgApproval, TgReplyCandidate
+from backend.app.tg.crud.crud_tenant import tenant_dao
+from backend.app.tg.model import TgApproval, TgDeliveryJob, TgReplyCandidate
 from backend.app.tg.schema.approval import (
     ApproveCandidateParam,
     CreateApprovalParam,
@@ -12,6 +15,7 @@ from backend.app.tg.schema.approval import (
     RejectCandidateParam,
 )
 from backend.common.exception import errors
+from backend.database.db import uuid4_str
 from backend.utils.timezone import timezone
 
 
@@ -92,7 +96,58 @@ class ApprovalService:
             },
         )
         await reply_candidate_dao.update_status(db, candidate.id, decision)
+        if decision == 'approved':
+            await ApprovalService._create_send_job(db, approval, candidate)
         return await approval_dao.get(db, pk)
+
+    @staticmethod
+    async def _create_send_job(
+        db: AsyncSession, approval: TgApproval, candidate: TgReplyCandidate
+    ) -> None:
+        """审批通过 → delivery_job(ready)。幂等键 approval:{uuid},重复审批不会重建。"""
+        if await delivery_job_dao.get_by_idempotency_key(db, f'approval:{approval.uuid}'):
+            return
+        tenant = await tenant_dao.get(db, approval.tenant_id)
+        project = await project_dao.get(db, approval.project_id)
+        account = await telegram_account_dao.get_by_scope(
+            db, approval.tenant_id, approval.project_id, candidate.account_id
+        )
+        if not tenant or not project or not account:
+            raise errors.NotFoundError(msg='候选关联的租户/项目/账号缺失')
+        now = timezone.now()
+        job = TgDeliveryJob(
+            id=uuid4_str(),
+            tenant_id=str(tenant.uuid),
+            project_id=str(project.uuid),
+            idempotency_key=f'approval:{approval.uuid}',
+            kind='send_message',
+            route_id=f'ai_candidate:{candidate.uuid}',
+            rule_id=str(candidate.rule_id) if candidate.rule_id else 'ai',
+            rule_version=0,
+            account_id=str(account.uuid),
+            source_scope='ai_reply',
+            source_chat_id=candidate.target_chat_id,
+            source_message_id=candidate.reply_to_source_id or 0,
+            revision=0,
+            target_chat_id=candidate.target_chat_id,
+            target_topic_id=candidate.target_topic_id,
+            mode='copy',
+            # 内容正文以候选为唯一载体;worker 经控制面取回(text 不冗余进共享表)
+            payload_ref=f'candidate:{candidate.uuid}',
+            payload_hash=candidate.content_hash,
+            requires_approval=True,
+            reply_to_target_message_id=None,
+            grouped_id=None,
+            status='ready',
+            attempt_count=0,
+            next_attempt_at=None,
+            flood_wait_until=None,
+            last_error_class=None,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(job)
+        await db.flush()
 
     @staticmethod
     async def approve(*, db: AsyncSession, request: Request, pk: int, obj: ApproveCandidateParam) -> TgApproval:
