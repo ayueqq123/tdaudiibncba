@@ -330,6 +330,18 @@ class Settings(BaseSettings):
     EMAIL_CAPTCHA_REDIS_PREFIX: str
     EMAIL_CAPTCHA_EXPIRE_SECONDS: int
 
+    ##################################################
+    # [ App ] tg — Telegram 平台
+    ##################################################
+    # telegram-runtime 进程目录与解释器(跨进程调用,GPL 隔离)
+    TG_RUNTIME_DIR: str = ''
+    TG_RUNTIME_PYTHON: str = ''
+    # 导入 zip 与会话文件的暂存目录(部署时应挂加密卷)
+    TG_IMPORT_STORAGE_DIR: str = '/tmp/tg_imports'
+    # 单包大小上限(MB)与单项验证超时(秒)
+    TG_IMPORT_MAX_SIZE_MB: int = 64
+    TG_IMPORT_ITEM_TIMEOUT: int = 25
+
     @model_validator(mode='before')
     @classmethod
     def check_env(cls, values: Any) -> Any:

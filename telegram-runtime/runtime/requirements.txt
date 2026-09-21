@@ -1,0 +1,4 @@
+# runtime-layer dependencies (on top of vendored telemirror requirements.txt)
+SQLAlchemy[asyncio]>=2.0,<3.0
+cryptography>=43,<47
+asyncpg>=0.29; platform_system != "Windows"

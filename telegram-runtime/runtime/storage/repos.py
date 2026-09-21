@@ -77,7 +77,10 @@ class EventInboxRepository:
             source_scope=event.source_scope, source_chat_id=event.source_chat_id,
             source_message_id=event.source_message_id, kind=event.kind.value,
             revision=event.revision, account_id=event.account_id,
-            payload_ref=event.payload_ref, ingest_seq=ingest_seq,
+            payload_ref=event.payload_ref, payload_hash=event.payload_hash,
+            grouped_id=event.grouped_id, topic_id=event.topic_id,
+            reply_to_source_id=event.reply_to_source_id,
+            protected=event.protected, ingest_seq=ingest_seq,
         ))
         try:
             await self.s.commit()
@@ -85,6 +88,35 @@ class EventInboxRepository:
             await self.s.rollback()
             return False
         return True
+
+
+    async def next_unprocessed(self, *, limit: int = 200) -> list[EventInbox]:
+        rows = (await self.s.execute(
+            select(EventInbox)
+            .where(EventInbox.processed.is_(False))
+            .order_by(EventInbox.ingest_seq).limit(limit)
+        )).scalars().all()
+        return list(rows)
+
+    async def drain_to_jobs(self, rows: list[EventInbox], plans_for, *,
+                            tenant_id: str, project_id: str) -> int:
+        """§6.4 boundary 2 (plan side): for each unprocessed inbox row, build
+        DeliveryPlans via plans_for(row) and insert jobs; mark the row
+        processed. One commit for the whole batch; per-plan savepoint turns
+        an idempotency-key conflict into a skip instead of a batch abort."""
+        for row in rows:
+            for plan in plans_for(row):
+                job = _job_from_plan(plan, tenant_id=tenant_id,
+                                     project_id=project_id)
+                try:
+                    async with self.s.begin_nested():
+                        self.s.add(job)
+                        await self.s.flush()
+                except IntegrityError:
+                    self.s.expunge(job)
+            row.processed = True
+        await self.s.commit()
+        return len(rows)
 
 
 class DeliveryJobRepository:
@@ -96,20 +128,7 @@ class DeliveryJobRepository:
     async def create_from_plan(self, plan: DeliveryPlan, *,
                                tenant_id: str, project_id: str) -> str | None:
         """Returns job id, or None when the idempotency key already exists."""
-        job = DeliveryJob(
-            tenant_id=tenant_id, project_id=project_id,
-            idempotency_key=plan.idempotency_key, kind=plan.kind.value,
-            route_id=plan.route_id, rule_id=plan.rule_id,
-            rule_version=plan.rule_version, account_id=plan.account_id,
-            source_scope=plan.source_scope, source_chat_id=plan.source_chat_id,
-            source_message_id=plan.source_message_id, revision=plan.revision,
-            target_chat_id=plan.target_chat_id, target_topic_id=plan.target_topic_id,
-            mode=plan.mode.value, payload_ref=plan.payload_ref,
-            payload_hash=plan.payload_hash, requires_approval=plan.requires_approval,
-            reply_to_target_message_id=plan.reply_to_target_message_id,
-            grouped_id=plan.grouped_id,
-            status="waiting_approval" if plan.requires_approval else "ready",
-        )
+        job = _job_from_plan(plan, tenant_id=tenant_id, project_id=project_id)
         self.s.add(job)
         try:
             await self.s.commit()
@@ -117,6 +136,55 @@ class DeliveryJobRepository:
             await self.s.rollback()
             return None
         return job.id
+
+    async def record_result(self, job: DeliveryJob, *, attempt_no: int,
+                            new_status: str, error_class: str | None = None,
+                            next_attempt_at: datetime | None = None,
+                            flood_wait_until: datetime | None = None,
+                            target_message_id: int | None = None,
+                            request_ref: str | None = None) -> bool:
+        """§6.4 boundary 4: finish the attempt row, move the job, and (on a
+        successful SEND) write message_map — one commit. Returns False when the
+        job no longer sits in 'sending' (e.g. superseded by a newer revision)."""
+        now = _utcnow()
+        res = await self.s.execute(
+            update(DeliveryJob)
+            .where(DeliveryJob.id == job.id, DeliveryJob.status == "sending")
+            .values(status=new_status, next_attempt_at=next_attempt_at,
+                    flood_wait_until=flood_wait_until, last_error_class=error_class)
+        )
+        if res.rowcount == 0:
+            await self.s.rollback()
+            return False
+        await self.s.execute(
+            update(DeliveryAttempt)
+            .where(DeliveryAttempt.job_id == job.id,
+                   DeliveryAttempt.attempt_no == attempt_no)
+            .values(finished_at=now, result_status=new_status,
+                    error_class=error_class, request_ref=request_ref)
+        )
+        if new_status == "succeeded" and job.kind == "send" \
+                and target_message_id is not None:
+            row = MessageMap(
+                tenant_id=job.tenant_id, project_id=job.project_id,
+                rule_id=job.rule_id, route_id=job.route_id,
+                rule_version_at_create=job.rule_version,
+                source_scope=job.source_scope, source_chat_id=job.source_chat_id,
+                source_message_id=job.source_message_id,
+                source_album_id=job.grouped_id,
+                sender_account_id=job.account_id, target_chat_id=job.target_chat_id,
+                target_topic_id=job.target_topic_id,
+                target_message_id=target_message_id,
+                last_applied_revision=job.revision, delivery_job_id=job.id,
+            )
+            try:
+                async with self.s.begin_nested():
+                    self.s.add(row)
+                    await self.s.flush()
+            except IntegrityError:
+                self.s.expunge(row)  # map already written by a twin attempt
+        await self.s.commit()
+        return True
 
     async def claim_next(self, account_id: str, *, worker_generation: int) -> DeliveryJob | None:
         """Atomic conditional update: first due ready job for the account goes
@@ -198,6 +266,20 @@ class MappingRepository:
             await self.s.rollback()
             return None
         return row.id
+
+    async def lookup_many(self, source_scope: str, source_chat_id: int,
+                          source_message_ids) -> list[MessageMap]:
+        """Batch reverse-lookup source for reply resolution prefetch."""
+        if not source_message_ids:
+            return []
+        rows = (await self.s.execute(
+            select(MessageMap).where(
+                MessageMap.source_scope == source_scope,
+                MessageMap.source_chat_id == source_chat_id,
+                MessageMap.source_message_id.in_(list(source_message_ids)),
+                MessageMap.deleted_at.is_(None),
+            ))).scalars().all()
+        return list(rows)
 
     async def find_target_message_id(self, route_id: str, source_scope: str,
                                      source_chat_id: int,
@@ -282,3 +364,21 @@ class LeaseRepository:
         )
         await self.s.commit()
         return res.rowcount == 1
+
+
+def _job_from_plan(plan: DeliveryPlan, *, tenant_id: str,
+                   project_id: str) -> DeliveryJob:
+    return DeliveryJob(
+        tenant_id=tenant_id, project_id=project_id,
+        idempotency_key=plan.idempotency_key, kind=plan.kind.value,
+        route_id=plan.route_id, rule_id=plan.rule_id,
+        rule_version=plan.rule_version, account_id=plan.account_id,
+        source_scope=plan.source_scope, source_chat_id=plan.source_chat_id,
+        source_message_id=plan.source_message_id, revision=plan.revision,
+        target_chat_id=plan.target_chat_id, target_topic_id=plan.target_topic_id,
+        mode=plan.mode.value, payload_ref=plan.payload_ref,
+        payload_hash=plan.payload_hash, requires_approval=plan.requires_approval,
+        reply_to_target_message_id=plan.reply_to_target_message_id,
+        grouped_id=plan.grouped_id,
+        status="waiting_approval" if plan.requires_approval else "ready",
+    )
