@@ -58,7 +58,12 @@ def _zip_bytes(names: list[str]) -> bytes:
     return buf.getvalue()
 
 
+def _unique_tg_uid() -> int:
+    return 500000 + uuid.uuid4().int % 400000
+
+
 def _mk_tenant_project(client: TestClient, headers: dict[str, str], suffix: str) -> tuple[int, int]:
+    suffix = f'{suffix}-{uuid.uuid4().hex[:6]}'
     client.post('/tg/tenants', headers=headers, json={'name': f'导入租户{suffix}', 'status': 1})
     tid = client.get('/tg/tenants', headers=headers, params={'name': f'导入租户{suffix}'}).json()['data'][0]['id']
     client.post('/tg/projects', headers=headers, json={'name': f'导入项目{suffix}', 'tenant_id': tid, 'status': 1})
@@ -67,8 +72,10 @@ def _mk_tenant_project(client: TestClient, headers: dict[str, str], suffix: str)
 
 
 @pytest.fixture
-def fake_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def fake_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> int:
     """伪造 runtime CLI:写一个假 session 文件并返回 manifest"""
+
+    uid = _unique_tg_uid()
 
     async def _fake(package_path: str) -> dict:  # ruff: ignore[unused-async] — 需匹配异步签名
         sp = tmp_path / 'acc1.session'
@@ -82,7 +89,7 @@ def fake_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
                 {
                     'key': 'acc1',
                     'status': 'verified',
-                    'user_id': 777001,
+                    'user_id': uid,
                     'username': 'acc_one',
                     'session_path': str(sp),
                     'meta_path': str(mp),
@@ -93,10 +100,11 @@ def fake_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(account_service, '_run_import_cli', _fake)
     monkeypatch.setattr(account_service.settings, 'TG_IMPORT_STORAGE_DIR', str(tmp_path / 'store'))
+    return uid
     return _fake
 
 
-def test_import_and_query(client: TestClient, token_headers: dict[str, str], fake_runtime: None) -> None:
+def test_import_and_query(client: TestClient, token_headers: dict[str, str], fake_runtime: int) -> None:
     tid, pid = _mk_tenant_project(client, token_headers, 'A')
     # 幂等:清掉历史残留账号
     for a in client.get('/tg/accounts', headers=token_headers, params={'project_id': pid}).json()['data']:
@@ -121,7 +129,7 @@ def test_import_and_query(client: TestClient, token_headers: dict[str, str], fak
     resp = client.get('/tg/accounts', headers=token_headers, params={'tenant_id': tid, 'project_id': pid})
     accounts = resp.json()['data']
     assert len(accounts) == 1
-    assert accounts[0]['telegram_user_id'] == 777001
+    assert accounts[0]['telegram_user_id'] == fake_runtime
     assert accounts[0]['observed_status'] == 'imported_quarantine'
     assert accounts[0]['username'] == 'acc_one'
 
@@ -146,7 +154,7 @@ def test_import_and_query(client: TestClient, token_headers: dict[str, str], fak
     assert len(resp.json()['data']) == 1
 
 
-def test_import_cross_project_denied(client: TestClient, token_headers: dict[str, str], fake_runtime: None) -> None:
+def test_import_cross_project_denied(client: TestClient, token_headers: dict[str, str], fake_runtime: int) -> None:
     """非超管且无 membership → 403(§6.1 跨项目拒绝)"""
     tid, pid = _mk_tenant_project(client, token_headers, 'B')
 
