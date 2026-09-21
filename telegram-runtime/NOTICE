@@ -1,0 +1,13 @@
+telegram-runtime
+================
+
+This subtree is a derivative work of telemirror
+(https://github.com/khoben/telemirror), which is licensed under the
+GNU General Public License version 3 (GPL-3.0).
+
+Upstream baseline: commit 19cf3acee1003191b7a30e337ee6cab95e59c2f9.
+
+This subtree, including modifications and additions under runtime/,
+is distributed under GPL-3.0. A copy of the license is in LICENSE.
+Corresponding source and build instructions are provided to every
+recipient of this software, per GPL conditions.
