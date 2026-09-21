@@ -1,7 +1,9 @@
 from fastapi import APIRouter
 
 from backend.app.tg.api.v1.account import router as account_router
+from backend.app.tg.api.v1.approval import router as approval_router
 from backend.app.tg.api.v1.clone_rule import router as clone_rule_router
+from backend.app.tg.api.v1.delivery import router as delivery_router
 from backend.app.tg.api.v1.import_batch import router as import_batch_router
 from backend.app.tg.api.v1.membership import router as membership_router
 from backend.app.tg.api.v1.project import router as project_router
@@ -18,3 +20,5 @@ v1.include_router(account_router, prefix='/accounts', tags=['TG 账号'])
 v1.include_router(import_batch_router, prefix='/imports', tags=['TG 导入批次'])
 v1.include_router(clone_rule_router, prefix='/clone-rules', tags=['TG Clone 规则'])
 v1.include_router(runtime_router, prefix='/runtime', tags=['TG 运行时'])
+v1.include_router(delivery_router, prefix='/deliveries', tags=['TG 投递'])
+v1.include_router(approval_router, prefix='/approvals', tags=['TG 审批'])
