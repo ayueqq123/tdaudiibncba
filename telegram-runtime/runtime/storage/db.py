@@ -24,6 +24,7 @@ def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession
 # applied to databases created before the column existed.
 _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("event_inbox", "source_sender_id", "BIGINT"),
+    ("event_inbox", "source_media_kind", "VARCHAR(32)"),
 )
 
 

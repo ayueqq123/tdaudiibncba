@@ -54,12 +54,25 @@ def _sender_whitelist(rule: RuleSnapshot) -> set[int] | None:
     return allowed or None
 
 
+def _media_whitelist(rule: RuleSnapshot) -> set[str] | None:
+    """Union of `media_kinds` across the route's filter dicts; None = off."""
+    allowed: set[str] = set()
+    for f in rule.filters:
+        kinds = f.get("media_kinds") if isinstance(f, dict) else None
+        if kinds:
+            allowed.update(str(k) for k in kinds)
+    return allowed or None
+
+
 def _passes_filters(event: SourceEvent, rule: RuleSnapshot) -> bool:
     """Config-filter gate for CREATEs. `sender_user_ids` whitelists the TG author;
-    anonymous admin posts (sender = channel) and service messages never match.
+    `media_kinds` whitelists coarse message types (photo/video/text/...).
     Edits/deletes bypass this gate so previously-cloned messages still sync."""
-    allowed = _sender_whitelist(rule)
-    if allowed is not None and event.sender_id not in allowed:
+    senders = _sender_whitelist(rule)
+    if senders is not None and event.sender_id not in senders:
+        return False
+    kinds = _media_whitelist(rule)
+    if kinds is not None and (event.media_kind or "text") not in kinds:
         return False
     return True
 

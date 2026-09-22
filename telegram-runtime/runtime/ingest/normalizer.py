@@ -35,6 +35,7 @@ class RawUpdate:
     protected: bool = False              # noforwards / content protection flag
     payload_ref: str | None = None
     sender_id: int | None = None         # TG author id (None for anonymous/service)
+    media_kind: str | None = None        # photo/video/document/voice/audio/sticker/gif/poll/text
 
 
 def source_scope_for(chat_class: ChatClass, chat_id: int, account_id: str) -> str:
@@ -81,4 +82,5 @@ class EventNormalizer:
             topic_id=raw.topic_id,
             protected=raw.protected,
             sender_id=raw.sender_id,
+            media_kind=raw.media_kind,
         )

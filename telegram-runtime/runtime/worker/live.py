@@ -336,6 +336,30 @@ def _sender_id(msg) -> int | None:
     return utils.get_peer_id(from_id) if from_id is not None else None
 
 
+_MEDIA_ATTRS: tuple[tuple[str, str], ...] = (
+    ("sticker", "sticker"),
+    ("photo", "photo"),
+    ("video", "video"),
+    ("gif", "gif"),
+    ("voice", "voice"),
+    ("audio", "audio"),
+    ("document", "document"),
+    ("poll", "poll"),
+    ("contact", "contact"),
+    ("geo", "location"),
+    ("venue", "location"),
+)
+
+
+def _media_kind(msg) -> str:
+    """Classify a message into a coarse media bucket for target filtering.
+    Order matters: sticker/gif are documents too, so they are tested first."""
+    for attr, kind in _MEDIA_ATTRS:
+        if getattr(msg, attr, None) is not None:
+            return kind
+    return "text"
+
+
 def _to_raws(event) -> list[RawUpdate]:
     """Adapt one Telethon event into zero-or-more RawUpdates. MessageDeleted
     carries a whole deleted_ids list — each id is its own inbox row."""
@@ -362,6 +386,7 @@ def _to_raws(event) -> list[RawUpdate]:
             if reply_to else None,
             protected=bool(getattr(msg, "noforwards", False)),
             sender_id=_sender_id(msg),
+            media_kind=_media_kind(msg),
         )]
     if isinstance(event, events.MessageDeleted.Event):
         chat_id = event.chat_id or 0

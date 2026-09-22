@@ -127,3 +127,20 @@ def test_whitelist_does_not_block_edit_or_delete():
     assert [x.kind for x in p.plan(ev_edit, [rule])] == [PlanKind.EDIT] * 2
     ev_del = _event(kind=EventKind.DELETE, sender_id=None)
     assert [x.kind for x in p.plan(ev_del, [rule])] == [PlanKind.DELETE] * 2
+
+
+def test_media_kinds_whitelist():
+    p = ClonePlanner(DictMapping())
+    rule = _rule(filters=({"media_kinds": ["photo", "text"]},))
+    assert p.plan(_event(media_kind="photo"), [rule]) != []
+    assert p.plan(_event(media_kind="video"), [rule]) == []
+    # untyped events count as text
+    assert p.plan(_event(media_kind=None), [rule]) != []
+
+
+def test_media_and_sender_filters_compose():
+    p = ClonePlanner(DictMapping())
+    rule = _rule(filters=({"sender_user_ids": [111], "media_kinds": ["photo"]},))
+    assert p.plan(_event(sender_id=111, media_kind="photo"), [rule]) != []
+    assert p.plan(_event(sender_id=111, media_kind="video"), [rule]) == []
+    assert p.plan(_event(sender_id=222, media_kind="photo"), [rule]) == []
