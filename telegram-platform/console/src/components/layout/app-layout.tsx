@@ -2,8 +2,6 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
   Send,
   LogOut,
-  Moon,
-  Sun,
   LayoutDashboard,
   Users,
   FolderKanban,
@@ -14,10 +12,10 @@ import {
   ShieldCheck,
   Terminal,
 } from 'lucide-react'
-import { useState } from 'react'
 import { fetchLogout } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/lib/auth'
+import { ThemeToggle } from '@/components/theme-toggle'
 
 const GROUPS = [
   {
@@ -47,14 +45,6 @@ const GROUPS = [
 export default function AppLayout() {
   const { user, logout } = useAuth()
   const nav = useNavigate()
-  const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'))
-
-  function toggleTheme() {
-    const d = !dark
-    setDark(d)
-    document.documentElement.classList.toggle('dark', d)
-  }
-
   async function doLogout() {
     try {
       await fetchLogout()
@@ -101,9 +91,7 @@ export default function AppLayout() {
         <header className="flex h-14 shrink-0 items-center justify-between border-b px-4">
           <div className="text-sm text-muted-foreground">多账号 Userbot · 消息 Clone · 炒群 AI</div>
           <div className="flex items-center gap-2">
-            <button onClick={toggleTheme} className="cursor-pointer rounded-md p-2 hover:bg-accent">
-              {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-            </button>
+            <ThemeToggle />
             <span className="text-sm">{user?.nickname || user?.username}</span>
             <button onClick={doLogout} className="cursor-pointer rounded-md p-2 hover:bg-accent" title="退出登录">
               <LogOut className="h-4 w-4" />
