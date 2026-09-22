@@ -1,0 +1,306 @@
+# 首期生产拓扑(架构文档 §13.1):
+#   edge:  reverse-proxy(:443) → web / control-api
+#   app:   control-api / task-worker / scheduler / tg-runtime-worker / langbot
+#   data:  postgres / redis / minio
+#   ops:   prometheus / grafana / pg-backup
+#
+# 公网仅暴露 443;数据库/Redis/LangBot/metrics 一律不映射公网端口。
+# 所有密钥走 .env 注入,不写进镜像与仓库。
+
+name: tg-platform
+
+networks:
+  edge:
+    internal: true
+  # app 网保留出站 NAT(经宿主)—— tg-runtime-worker 要连 Telegram,
+  # langbot 要连模型端点;出站白名单由宿主防火墙/egress 代理收敛(README)。
+  app:
+  data:
+    internal: true
+  ops:
+    internal: true
+
+volumes:
+  pg_data:
+  redis_data:
+  minio_data:
+  langbot_data:
+  backups:
+  grafana_data:
+  prometheus_data:
+  tg_imports:
+  fba_log:
+
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: '50m'
+      max-file: '5'
+
+services:
+  # ---------- edge ----------
+  reverse-proxy:
+    <<: *hardening
+    image: nginxinc/nginx-unprivileged:stable
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    ports:
+      - '${HTTPS_PORT:-443}:443'
+    depends_on:
+      web:
+        condition: service_started
+      control-api:
+        condition: service_healthy
+    networks:
+      - edge
+
+  web:
+    <<: *hardening
+    build:
+      context: ../telegram-platform/web
+      dockerfile: Dockerfile
+    image: tg-platform-web:latest
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    networks:
+      - edge
+
+  # ---------- app ----------
+  control-api:
+    <<: *hardening
+    build:
+      context: ../telegram-platform
+      dockerfile: backend/Dockerfile
+    image: tg-platform-api:latest
+    env_file: .env
+    environment:
+      ENVIRONMENT: 'prod'
+      DATABASE_HOST: postgres
+      DATABASE_PORT: '5432'
+      REDIS_HOST: redis
+      CELERY_BROKER: 'redis'
+      TG_IMPORT_STORAGE_DIR: /var/lib/tg-imports
+      TG_RUNTIME_DIR: /srv/telegram-runtime
+      TG_RUNTIME_PYTHON: 'python3'
+      PYTHONDONTWRITEBYTECODE: '1'
+    volumes:
+      - tg_imports:/var/lib/tg-imports:rw
+      - fba_log:/app/backend/log:rw
+    tmpfs:
+      - /tmp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request,urllib.error\ntry:\n urllib.request.urlopen('http://127.0.0.1:8000/api/v1/sys/menus',timeout=3)\nexcept urllib.error.HTTPError as e:\n sys.exit(0 if e.code in (401,403) else 1)\nexcept Exception:\n sys.exit(1)\nsys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - edge
+      - app
+      - data
+
+  task-worker:
+    <<: *hardening
+    image: tg-platform-api:latest
+    env_file: .env
+    environment:
+      ENVIRONMENT: 'prod'
+      DATABASE_HOST: postgres
+      REDIS_HOST: redis
+      CELERY_BROKER: 'redis'
+    command: ['celery', '-A', 'backend.app.task.celery', 'worker', '-l', 'info', '-P', 'gevent', '-c', '200']
+    volumes:
+      - fba_log:/app/backend/log:rw
+    tmpfs:
+      - /tmp
+    depends_on:
+      control-api:
+        condition: service_healthy
+    networks:
+      - app
+      - data
+
+  scheduler:
+    <<: *hardening
+    image: tg-platform-api:latest
+    env_file: .env
+    environment:
+      ENVIRONMENT: 'prod'
+      DATABASE_HOST: postgres
+      REDIS_HOST: redis
+      CELERY_BROKER: 'redis'
+    command: ['celery', '-A', 'backend.app.task.celery', 'beat', '-l', 'info']
+    volumes:
+      - fba_log:/app/backend/log:rw
+    tmpfs:
+      - /tmp
+    deploy:
+      replicas: 1 # 单活调度器(§13.1):多实例需先实现 Postgres leader 锁
+    depends_on:
+      control-api:
+        condition: service_healthy
+    networks:
+      - app
+      - data
+
+  # Telegram runtime worker:一个 Worker 托管多账号,进程内按账号隔离(§1.1)。
+  tg-runtime-worker:
+    <<: *hardening
+    build:
+      context: ../telegram-runtime
+      dockerfile: Dockerfile
+    image: tg-runtime-worker:latest
+    env_file: .env
+    environment:
+      RUNTIME_CONTROL_API: 'http://control-api:8000/api/v1/tg/runtime'
+      DATABASE_URL: 'postgresql+asyncpg://${DATABASE_USER}:${DATABASE_PASSWORD}@postgres:5432/${DATABASE_SCHEMA:-fba}'
+      SESSION_KEK: '${SESSION_KEK:?set in .env}'
+      WORKER_ID: 'worker-1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    tmpfs:
+      - /tmp
+    depends_on:
+      control-api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    # TODO(D 期):runtime/worker/__main__.py 生产宿主循环落地后启用
+    profiles: ['runtime']
+    networks:
+      - app
+      - data
+
+  # LangBot 引擎:只跑 HTTP Bot adapter;plugin/box 由 PLUGIN__ENABLE=false +
+  # 不部署 plugin_runtime/box 服务关闭(§13.1, D0 结论)。
+  langbot:
+    <<: *hardening
+    image: ${LANGBOT_IMAGE:-rockchin/langbot:latest}
+    env_file: .env
+    environment:
+      PLUGIN__ENABLE: 'false'
+      API__PORT: '5300'
+    volumes:
+      - langbot_data:/app/data
+    tmpfs:
+      - /tmp
+    # 回调面不外露:平台通过 control-api 内部转发/webhook 接收
+    profiles: ['ai']
+    networks:
+      - app
+
+  # ---------- data ----------
+  postgres:
+    <<: *hardening
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: '${DATABASE_USER:?set in .env}'
+      POSTGRES_PASSWORD: '${DATABASE_PASSWORD:?set in .env}'
+      POSTGRES_DB: '${DATABASE_SCHEMA:-fba}'
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    # WAL 归档建议:wal_level=replica + archive_command 指向 minio/异地存储(README §备份)
+    networks:
+      - data
+
+  redis:
+    <<: *hardening
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes', '--requirepass', '${REDIS_PASSWORD:?set in .env}']
+    volumes:
+      - redis_data:/data
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli -a $$REDIS_PASSWORD --no-auth-warning ping | grep -q PONG']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - data
+
+  minio:
+    <<: *hardening
+    image: minio/minio:latest
+    command: ['server', '/data']
+    environment:
+      MINIO_ROOT_USER: '${MINIO_ROOT_USER:?set in .env}'
+      MINIO_ROOT_PASSWORD: '${MINIO_ROOT_PASSWORD:?set in .env}'
+    volumes:
+      - minio_data:/data
+    tmpfs:
+      - /tmp
+    profiles: ['object-storage']
+    networks:
+      - data
+
+  # ---------- ops ----------
+  prometheus:
+    <<: *hardening
+    image: prom/prometheus:stable
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    tmpfs:
+      - /tmp
+    networks:
+      - ops
+      - app
+
+  grafana:
+    <<: *hardening
+    image: grafana/grafana:stable
+    env_file: .env
+    volumes:
+      - grafana_data:/var/lib/grafana
+    tmpfs:
+      - /tmp
+    depends_on:
+      - prometheus
+    # 无公网端口:经 ops 网或 SSH 隧道访问(README §访问)
+    networks:
+      - ops
+
+  # 逻辑备份作业:每小时 pg_dump 到 backups 卷(WAL/PITR 需另行配 archive,见 README)
+  pg-backup:
+    <<: *hardening
+    image: postgres:16-alpine
+    env_file: .env
+    environment:
+      PGPASSWORD: '${DATABASE_PASSWORD:?set in .env}'
+    entrypoint: ['/backup/backup.sh']
+    volumes:
+      - ./backup:/backup:ro
+      - backups:/backups
+    tmpfs:
+      - /tmp
+    profiles: ['backup']
+    networks:
+      - data
+      - ops
+
