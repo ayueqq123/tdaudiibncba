@@ -11,6 +11,7 @@ from backend.app.tg.api.v1.membership import router as membership_router
 from backend.app.tg.api.v1.project import router as project_router
 from backend.app.tg.api.v1.runtime import router as runtime_router
 from backend.app.tg.api.v1.tenant import router as tenant_router
+from backend.app.tg.api.v1.workspace import router as workspace_router
 from backend.core.conf import settings
 
 v1 = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/tg')
@@ -18,6 +19,7 @@ v1 = APIRouter(prefix=f'{settings.FASTAPI_API_V1_PATH}/tg')
 v1.include_router(tenant_router, prefix='/tenants', tags=['TG 租户'])
 v1.include_router(project_router, prefix='/projects', tags=['TG 项目'])
 v1.include_router(membership_router, prefix='/memberships', tags=['TG 成员'])
+v1.include_router(workspace_router, prefix='/workspaces', tags=['TG 工作空间'])
 v1.include_router(account_router, prefix='/accounts', tags=['TG 账号'])
 v1.include_router(import_batch_router, prefix='/imports', tags=['TG 导入批次'])
 v1.include_router(clone_rule_router, prefix='/clone-rules', tags=['TG Clone 规则'])

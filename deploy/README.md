@@ -47,8 +47,27 @@ docker compose --profile ai --profile runtime --profile backup up -d   # 按需
 3. 核对在途 job 状态:`uncertain`/`sending` 一律人工核实(数据库备份不能回滚已发出的 Telegram 副作用)。
 4. 记录 RTO 实测耗时,写回演练记录。
 
+## 域名子路径挂载(ggyzn1.top/tg)
+
+栈自带 edge(`:8443`,自签)对内完整可用;对外入口由宿主 nginx 把域名子路径剥前缀转进来:
+
+- 前端按 `VITE_BASE=/tg/` + `VITE_GLOB_API_URL=/tg` 构建(`web/apps/web-antdv-next/.env.production`),资源与 API 请求都自带 `/tg/` 前缀。
+- 宿主站点 `/etc/nginx/sites-enabled/ggyzn1.top`(Let's Encrypt 证书)内:
+
+```nginx
+location = /tg { return 301 /tg/; }
+location /tg/ {
+    client_max_body_size 80m;
+    proxy_pass https://127.0.0.1:8443/;   # 尾部 / 剥掉 /tg 前缀
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 300s;
+}
+```
+
+- 换路径只需同步三处:`.env.production` 两个变量、宿主 location 前缀。直接走 IP:8443 时首页仍出,但 `/tg/` 前缀资产在该入口下 404——域名路径是唯一对外入口。
+
 ## 已知未实现(D 期)
 
-- `tg-runtime-worker` 的生产宿主循环(`runtime/worker/__main__.py`:租约心跳 + 平台 `/runtime` 轮询 + LiveAdapter 接线)尚未落地,该服务在 `runtime` profile 下暂缓。
 - `/metrics` 已由 FBA 挂载(prometheus_client);tg 域指标见 `docs/runbook.md` §6。
 - LangBot `data/config.yaml` 的 bot/model 绑定由部署方在 `langbot_data` 卷内配置;`PLUGIN__ENABLE=false` 已在 compose 层强制。
