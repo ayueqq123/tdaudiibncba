@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { RefreshCw, Upload } from 'lucide-react'
 import { toast } from 'sonner'
-import { tgApi, type TgAccount, type Tenant, type Project } from '@/lib/api'
+import { tgApi, type TgAccount } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 const statusVariant: Record<string, 'success' | 'warning' | 'destructive' | 'default' | 'secondary'> = {
@@ -20,21 +19,17 @@ const statusVariant: Record<string, 'success' | 'warning' | 'destructive' | 'def
 
 export default function AccountsPage() {
   const [rows, setRows] = useState<TgAccount[]>([])
-  const [tenants, setTenants] = useState<Tenant[]>([])
-  const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
-  const [imp, setImp] = useState<{ tenant: string; project: string; file: File | null }>({ tenant: '', project: '', file: null })
+  const [file, setFile] = useState<File | null>(null)
   const [importing, setImporting] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   async function load() {
     setLoading(true)
     try {
-      const [acc, ten, proj] = await Promise.all([tgApi.accounts(), tgApi.tenants(), tgApi.projects()])
+      const acc = await tgApi.accounts()
       setRows(acc)
-      setTenants(ten)
-      setProjects(proj)
     } catch (e: any) {
       toast.error(e?.detail || '加载失败')
     } finally {
@@ -44,8 +39,6 @@ export default function AccountsPage() {
   useEffect(() => {
     load()
   }, [])
-
-  const projName = (id: number) => projects.find((p) => p.id === id)?.name ?? `#${id}`
 
   async function setDesired(r: TgAccount, status: string) {
     try {
@@ -63,16 +56,17 @@ export default function AccountsPage() {
   }
 
   async function doImport() {
-    if (!imp.tenant || !imp.project || !imp.file) {
-      toast.warning('请选择用户、项目和 zip 文件')
+    if (!file) {
+      toast.warning('请选择 zip 文件')
       return
     }
     setImporting(true)
     try {
-      await tgApi.importAccounts(Number(imp.tenant), Number(imp.project), imp.file)
+      const ws = await tgApi.ensureWorkspace()
+      await tgApi.importAccounts(ws.tenant_id, ws.project_id, file)
       toast.success('导入完成,去"Session 导入"页看分级结果')
       setOpen(false)
-      setImp({ tenant: '', project: '', file: null })
+      setFile(null)
       load()
     } catch (e: any) {
       toast.error(e?.detail || '导入失败')
@@ -97,41 +91,10 @@ export default function AccountsPage() {
                 <DialogTitle>批量导入 Session 包(zip)</DialogTitle>
               </DialogHeader>
               <div className="flex flex-col gap-3">
-                <div className="flex flex-col gap-1.5">
-                  <Label>用户(租户)</Label>
-                  <Select value={imp.tenant} onValueChange={(v) => setImp({ ...imp, tenant: v })}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="选择用户" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {tenants.map((t) => (
-                        <SelectItem key={t.id} value={String(t.id)}>
-                          {t.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label>项目</Label>
-                  <Select value={imp.project} onValueChange={(v) => setImp({ ...imp, project: v })}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="选择项目" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {projects
-                        .filter((p) => !imp.tenant || p.tenant_id === Number(imp.tenant))
-                        .map((p) => (
-                          <SelectItem key={p.id} value={String(p.id)}>
-                            {p.name}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                <p className="text-sm text-muted-foreground">上传 zip 协议号包,自动验证并归入你的账号列表</p>
                 <div className="flex flex-col gap-1.5">
                   <Label>zip 文件</Label>
-                  <Input ref={fileRef} type="file" accept=".zip" onChange={(e) => setImp({ ...imp, file: e.target.files?.[0] || null })} />
+                  <Input ref={fileRef} type="file" accept=".zip" onChange={(e) => setFile(e.target.files?.[0] || null)} />
                 </div>
               </div>
               <DialogFooter>
@@ -156,7 +119,6 @@ export default function AccountsPage() {
               <TableHead>ID</TableHead>
               <TableHead>TG UID</TableHead>
               <TableHead>手机号</TableHead>
-              <TableHead>项目</TableHead>
               <TableHead>期望</TableHead>
               <TableHead>实际</TableHead>
               <TableHead>备注</TableHead>
@@ -169,7 +131,6 @@ export default function AccountsPage() {
                 <TableCell>{r.id}</TableCell>
                 <TableCell className="font-mono text-xs">{r.telegram_user_id ?? '-'}</TableCell>
                 <TableCell>{r.phone || '-'}</TableCell>
-                <TableCell>{projName(r.project_id)}</TableCell>
                 <TableCell>
                   <Badge variant={r.desired_status === 'running' ? 'success' : 'secondary'}>{r.desired_status}</Badge>
                 </TableCell>

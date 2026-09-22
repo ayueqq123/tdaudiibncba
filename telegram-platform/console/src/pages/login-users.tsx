@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Ban, CheckCircle2, Copy, KeyRound, Link2, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Ban, CheckCircle2, Copy, KeyRound, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { membershipApi, sysApi, tgApi, type Membership, type Project, type SysUser, type Tenant } from '@/lib/api'
+import { sysApi, tgApi, type SysUser } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -24,11 +24,6 @@ export default function LoginUsersPage() {
   const [pwdUser, setPwdUser] = useState<SysUser | null>(null)
   const [newPwd, setNewPwd] = useState('')
   const [cred, setCred] = useState<{ username: string; password: string } | null>(null)
-  const [bindUser, setBindUser] = useState<SysUser | null>(null)
-  const [projects, setProjects] = useState<Project[]>([])
-  const [tenants, setTenants] = useState<Tenant[]>([])
-  const [bound, setBound] = useState<Record<number, number>>({}) // project_id -> membership id
-  const [bindBusy, setBindBusy] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -58,6 +53,13 @@ export default function LoginUsersPage() {
         dept_id: DEFAULT_DEPT,
         roles: DEFAULT_ROLES,
       })
+      try {
+        const list = await sysApi.users()
+        const nu = list.items.find((u) => u.username === form.username)
+        if (nu) await tgApi.ensureWorkspace(nu.id)
+      } catch {
+        /* 空间会在对方首次使用时再建,失败不阻塞 */
+      }
       setCred({ username: form.username, password: form.password })
       setOpen(false)
       setForm({ username: '', password: '', nickname: '' })
@@ -89,44 +91,6 @@ export default function LoginUsersPage() {
       load()
     } catch (e: any) {
       toast.error(e?.detail || '操作失败')
-    }
-  }
-
-  async function openBind(r: SysUser) {
-    setBindUser(r)
-    try {
-      const [ps, ts, ms] = await Promise.all([tgApi.projects(), tgApi.tenants(), membershipApi.list(r.id)])
-      setProjects(ps)
-      setTenants(ts)
-      const m: Record<number, number> = {}
-      ms.forEach((x: Membership) => (m[x.project_id] = x.id))
-      setBound(m)
-    } catch (e: any) {
-      toast.error(e?.detail || '加载项目失败')
-    }
-  }
-
-  async function toggleBind(p: Project) {
-    if (!bindUser || bindBusy) return
-    setBindBusy(true)
-    try {
-      const mid = bound[p.id]
-      if (mid) {
-        await membershipApi.remove(mid)
-        const next = { ...bound }
-        delete next[p.id]
-        setBound(next)
-      } else {
-        await membershipApi.add({ tenant_id: p.tenant_id, project_id: p.id, user_id: bindUser.id })
-        const ms = await membershipApi.list(bindUser.id)
-        const m: Record<number, number> = {}
-        ms.forEach((x: Membership) => (m[x.project_id] = x.id))
-        setBound(m)
-      }
-    } catch (e: any) {
-      toast.error(e?.detail || '操作失败')
-    } finally {
-      setBindBusy(false)
     }
   }
 
@@ -169,7 +133,7 @@ export default function LoginUsersPage() {
                   <Label>昵称(可选)</Label>
                   <Input value={form.nickname} onChange={(e) => setForm({ ...form, nickname: e.target.value })} />
                 </div>
-                <p className="text-xs text-muted-foreground">新账号登录后可看到全部业务数据,不能管理用户</p>
+                <p className="text-xs text-muted-foreground">新账号有独立空间,只能看自己的数据;登录后可自行上传 TG 账号</p>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setOpen(false)}>
@@ -192,7 +156,7 @@ export default function LoginUsersPage() {
               <TableHead>用户名</TableHead>
               <TableHead>昵称</TableHead>
               <TableHead>状态</TableHead>
-              <TableHead className="w-80">操作</TableHead>
+              <TableHead className="w-64">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -222,9 +186,6 @@ export default function LoginUsersPage() {
                     </Button>
                     {r.username !== me?.username && (
                       <>
-                        <Button size="sm" variant="outline" onClick={() => openBind(r)}>
-                          <Link2 className="h-3.5 w-3.5" /> 绑定项目
-                        </Button>
                         <Button size="sm" variant="outline" onClick={() => toggle(r)}>
                           {r.status === 1 ? (
                             <>
@@ -281,39 +242,6 @@ export default function LoginUsersPage() {
               <Copy className="h-4 w-4" /> 复制凭据
             </Button>
             <Button onClick={() => setCred(null)}>知道了</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={!!bindUser} onOpenChange={() => setBindUser(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>「{bindUser?.username}」可访问的项目</DialogTitle>
-          </DialogHeader>
-          <p className="text-xs text-muted-foreground">
-            勾选的项目及所属租户下的账号/规则/投递/审批对该用户可见;不勾的完全看不到
-          </p>
-          <div className="flex max-h-64 flex-col gap-1 overflow-y-auto">
-            {projects.map((p) => (
-              <label
-                key={p.id}
-                className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent"
-              >
-                <input
-                  type="checkbox"
-                  disabled={bindBusy}
-                  checked={!!bound[p.id]}
-                  onChange={() => toggleBind(p)}
-                />
-                <span className="text-sm">
-                  {tenants.find((t) => t.id === p.tenant_id)?.name || `租户${p.tenant_id}`} / {p.name}
-                </span>
-              </label>
-            ))}
-            {!projects.length && <div className="py-6 text-center text-sm text-muted-foreground">还没有项目,先去「项目」页创建</div>}
-          </div>
-          <DialogFooter>
-            <Button onClick={() => setBindUser(null)}>完成</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

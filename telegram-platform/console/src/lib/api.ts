@@ -217,6 +217,8 @@ export const tgApi = {
   reject: (id: number, b: any) => api.post(`${TG}/approvals/${id}/reject`, b),
   commands: () => api.get<RuntimeCommand[]>(`${TG}/runtime/commands`),
   issueCommand: (accountId: number, b: any) => api.post(`${TG}/runtime/accounts/${accountId}/commands`, b),
+  ensureWorkspace: (userId?: number) =>
+    api.post<{ tenant_id: number; project_id: number }>(`${TG}/workspaces/ensure`, userId ? { user_id: userId } : {}),
 }
 
 // ---------- sys 登录账号 ----------

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Plus, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
-import { tgApi, type CloneRule, type TgAccount, type Tenant, type Project } from '@/lib/api'
+import { tgApi, type CloneRule, type TgAccount } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
@@ -14,12 +14,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 export default function RulesPage() {
   const [rows, setRows] = useState<CloneRule[]>([])
   const [accounts, setAccounts] = useState<TgAccount[]>([])
-  const [tenants, setTenants] = useState<Tenant[]>([])
-  const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(false)
 
   const [open, setOpen] = useState(false)
-  const [form, setForm] = useState<any>({ tenant_id: '', project_id: '', account_id: '', name: '', mode: 'copy', enabled: true, remark: '' })
+  const [form, setForm] = useState<any>({ account_id: '', name: '', mode: 'copy', enabled: true, remark: '' })
 
   const [targetOpen, setTargetOpen] = useState(false)
   const [targetRule, setTargetRule] = useState<CloneRule | null>(null)
@@ -32,11 +30,9 @@ export default function RulesPage() {
   async function load() {
     setLoading(true)
     try {
-      const [r, a, t, p] = await Promise.all([tgApi.rules(), tgApi.accounts(), tgApi.tenants(), tgApi.projects()])
+      const [r, a] = await Promise.all([tgApi.rules(), tgApi.accounts()])
       setRows(r)
       setAccounts(a)
-      setTenants(t)
-      setProjects(p)
     } catch (e: any) {
       toast.error(e?.detail || '加载失败')
     } finally {
@@ -48,15 +44,21 @@ export default function RulesPage() {
   }, [])
 
   async function doCreate() {
-    if (!form.tenant_id || !form.project_id || !form.account_id || !form.name) {
-      toast.warning('用户/项目/账号/名称必填')
+    const acc = accounts.find((a) => a.id === +form.account_id)
+    if (!acc || !form.name) {
+      toast.warning('账号/名称必填')
       return
     }
     try {
-      await tgApi.createRule({ ...form, tenant_id: +form.tenant_id, project_id: +form.project_id, account_id: +form.account_id })
+      await tgApi.createRule({
+        ...form,
+        tenant_id: acc.tenant_id,
+        project_id: acc.project_id,
+        account_id: acc.id,
+      })
       toast.success('规则已创建,添加目标后点"发布"生效')
       setOpen(false)
-      setForm({ tenant_id: '', project_id: '', account_id: '', name: '', mode: 'copy', enabled: true, remark: '' })
+      setForm({ account_id: '', name: '', mode: 'copy', enabled: true, remark: '' })
       load()
     } catch (e: any) {
       toast.error(e?.detail || '创建失败')
@@ -123,51 +125,17 @@ export default function RulesPage() {
               </DialogHeader>
               <div className="flex flex-col gap-3">
                 <div className="flex flex-col gap-1.5">
-                  <Label>用户(租户)</Label>
-                  <Select value={form.tenant_id} onValueChange={(v) => setForm({ ...form, tenant_id: v })}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="选择用户" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {tenants.map((t) => (
-                        <SelectItem key={t.id} value={String(t.id)}>
-                          {t.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label>项目</Label>
-                  <Select value={form.project_id} onValueChange={(v) => setForm({ ...form, project_id: v })}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="选择项目" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {projects
-                        .filter((p) => !form.tenant_id || p.tenant_id === +form.tenant_id)
-                        .map((p) => (
-                          <SelectItem key={p.id} value={String(p.id)}>
-                            {p.name}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label>执行账号</Label>
+                  <Label>执行账号(用哪个号搬运)</Label>
                   <Select value={form.account_id} onValueChange={(v) => setForm({ ...form, account_id: v })}>
                     <SelectTrigger>
                       <SelectValue placeholder="选择账号" />
                     </SelectTrigger>
                     <SelectContent>
-                      {accounts
-                        .filter((a) => !form.project_id || a.project_id === +form.project_id)
-                        .map((a) => (
-                          <SelectItem key={a.id} value={String(a.id)}>
-                            {a.phone || String(a.telegram_user_id || a.id)}
-                          </SelectItem>
-                        ))}
+                      {accounts.map((a) => (
+                        <SelectItem key={a.id} value={String(a.id)}>
+                          {a.phone || String(a.telegram_user_id || a.id)}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>

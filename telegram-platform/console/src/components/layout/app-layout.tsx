@@ -6,7 +6,6 @@ import {
   LogOut,
   LayoutDashboard,
   Users,
-  FolderKanban,
   Radio,
   Layers,
   GitBranch,
@@ -50,7 +49,6 @@ const GROUPS: { label: string; items: NavItem[] }[] = [
     label: '设置',
     items: [
       { to: '/users', icon: Users, label: '用户', admin: true },
-      { to: '/projects', icon: FolderKanban, label: '项目' },
       { to: '/commands', icon: Terminal, label: '运行时命令' },
     ],
   },
