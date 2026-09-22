@@ -238,3 +238,19 @@ export const sysApi = {
     api.put('/sys/users/me/password', { old_password, new_password, confirm_password: new_password }),
   deleteUser: (id: number) => api.del(`/sys/users/${id}`),
 }
+
+// ---------- 项目成员绑定 ----------
+export interface Membership {
+  id: number
+  tenant_id: number
+  project_id: number
+  user_id: number
+  role: 'owner' | 'admin' | 'member'
+  status: number
+}
+export const membershipApi = {
+  list: (userId: number) => api.get<Membership[]>(`${TG}/memberships`, { user_id: userId }),
+  add: (b: { tenant_id: number; project_id: number; user_id: number }) =>
+    api.post(`${TG}/memberships`, { ...b, role: 'member', status: 1 }),
+  remove: (id: number) => api.del(`${TG}/memberships/${id}`),
+}

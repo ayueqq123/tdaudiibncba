@@ -24,7 +24,14 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
-const GROUPS = [
+interface NavItem {
+  to: string
+  icon: typeof LayoutDashboard
+  label: string
+  end?: boolean
+  admin?: boolean
+}
+const GROUPS: { label: string; items: NavItem[] }[] = [
   {
     label: '消息 Clone',
     items: [
@@ -42,7 +49,7 @@ const GROUPS = [
   {
     label: '设置',
     items: [
-      { to: '/users', icon: Users, label: '用户' },
+      { to: '/users', icon: Users, label: '用户', admin: true },
       { to: '/projects', icon: FolderKanban, label: '项目' },
       { to: '/commands', icon: Terminal, label: '运行时命令' },
     ],
@@ -91,7 +98,9 @@ export default function AppLayout() {
           {GROUPS.map((g) => (
             <div key={g.label} className="mb-2">
               <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">{g.label}</div>
-              {g.items.map((it) => (
+              {g.items
+                .filter((it) => !it.admin || user?.is_superuser)
+                .map((it) => (
                 <NavLink
                   key={it.to}
                   to={it.to}
