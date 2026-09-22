@@ -49,7 +49,7 @@ const GROUPS: { label: string; items: NavItem[] }[] = [
     label: '设置',
     items: [
       { to: '/users', icon: Users, label: '用户', admin: true },
-      { to: '/commands', icon: Terminal, label: '运行时命令' },
+      { to: '/commands', icon: Terminal, label: '命令记录' },
     ],
   },
 ]

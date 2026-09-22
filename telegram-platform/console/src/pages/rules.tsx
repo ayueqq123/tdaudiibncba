@@ -99,7 +99,12 @@ export default function RulesPage() {
   async function doPublish(r: CloneRule) {
     try {
       await tgApi.publishRule(r.id, r.current_version)
-      toast.success('已发布,worker 将热加载新规则')
+      try {
+        await tgApi.issueCommand(r.account_id, { type: 'ReloadConfig' })
+        toast.success('已发布并刷新到 worker')
+      } catch {
+        toast.success('已发布(请稍后手动到账号页刷新规则)')
+      }
       load()
     } catch (e: any) {
       toast.error(e?.detail || '发布失败')

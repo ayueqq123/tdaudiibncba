@@ -55,6 +55,15 @@ export default function AccountsPage() {
     }
   }
 
+  async function syncChats(r: TgAccount) {
+    try {
+      await tgApi.issueCommand(r.id, { type: 'SyncChats' })
+      toast.success('已下发同步群列表')
+    } catch (e: any) {
+      toast.error(e?.detail || '下发失败')
+    }
+  }
+
   async function doImport() {
     if (!file) {
       toast.warning('请选择 zip 文件')
@@ -122,7 +131,7 @@ export default function AccountsPage() {
               <TableHead>期望</TableHead>
               <TableHead>实际</TableHead>
               <TableHead>备注</TableHead>
-              <TableHead className="w-28">操作</TableHead>
+              <TableHead className="w-44">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -139,15 +148,20 @@ export default function AccountsPage() {
                 </TableCell>
                 <TableCell className="text-muted-foreground">{r.remark || '-'}</TableCell>
                 <TableCell>
-                  {r.desired_status !== 'running' ? (
-                    <Button size="sm" onClick={() => setDesired(r, 'running')}>
-                      启动
+                  <div className="flex gap-1.5">
+                    {r.desired_status !== 'running' ? (
+                      <Button size="sm" onClick={() => setDesired(r, 'running')}>
+                        启动
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="outline" onClick={() => setDesired(r, 'stopped')}>
+                        停止
+                      </Button>
+                    )}
+                    <Button size="sm" variant="outline" onClick={() => syncChats(r)}>
+                      同步群
                     </Button>
-                  ) : (
-                    <Button size="sm" variant="outline" onClick={() => setDesired(r, 'stopped')}>
-                      停止
-                    </Button>
-                  )}
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
