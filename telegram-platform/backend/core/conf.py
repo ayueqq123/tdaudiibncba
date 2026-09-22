@@ -354,8 +354,10 @@ class Settings(BaseSettings):
             values['FASTAPI_OPENAPI_URL'] = None
             values['FASTAPI_STATIC_FILES'] = False
 
-            # task
-            values['CELERY_BROKER'] = 'rabbitmq'
+            # task:celery CLI 的 auto_envvar_prefix=CELERY 会把 CELERY_BROKER 环境变量
+            # 当成 --broker URL 解析('redis' → amqp://redis:5672),所以 broker 不能靠
+            # 环境变量传;本部署栈固定 redis
+            values['CELERY_BROKER'] = 'redis'
 
             # Grafana
             values['GRAFANA_METRICS_ENABLE'] = True

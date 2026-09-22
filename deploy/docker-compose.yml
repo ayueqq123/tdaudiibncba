@@ -10,8 +10,8 @@
 name: tg-platform
 
 networks:
+  # edge 不能 internal:internal 网络禁止发布端口,8443 会静默丢失
   edge:
-    internal: true
   # app 网保留出站 NAT(经宿主)—— tg-runtime-worker 要连 Telegram,
   # langbot 要连模型端点;出站白名单由宿主防火墙/egress 代理收敛(README)。
   app:
@@ -24,6 +24,7 @@ volumes:
   pg_data:
   redis_data:
   minio_data:
+  fba_static:
   langbot_data:
   backups:
   grafana_data:
@@ -49,13 +50,18 @@ services:
   reverse-proxy:
     <<: *hardening
     image: nginxinc/nginx-unprivileged:stable
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - NET_BIND_SERVICE
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro
     tmpfs:
       - /tmp
-      - /var/cache/nginx
-      - /var/run
+      - /var/cache/nginx:rw,mode=1777
+      - /var/run:rw,mode=1777
     ports:
       - '${HTTPS_PORT:-443}:443'
     depends_on:
@@ -63,21 +69,30 @@ services:
         condition: service_started
       control-api:
         condition: service_healthy
+    # app 网承载服务发现(control-api/web 的服务名别名只在 app 上);
+    # edge 只负责对公网端口发布
     networks:
       - edge
+      - app
 
   web:
     <<: *hardening
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - NET_BIND_SERVICE
     build:
       context: ../telegram-platform/web
       dockerfile: Dockerfile
     image: tg-platform-web:latest
     tmpfs:
       - /tmp
-      - /var/cache/nginx
-      - /var/run
+      - /var/cache/nginx:rw,mode=1777
+      - /var/run:rw,mode=1777
     networks:
       - edge
+      - app
 
   # ---------- app ----------
   control-api:
@@ -92,7 +107,6 @@ services:
       DATABASE_HOST: postgres
       DATABASE_PORT: '5432'
       REDIS_HOST: redis
-      CELERY_BROKER: 'redis'
       TG_IMPORT_STORAGE_DIR: /var/lib/tg-imports
       TG_RUNTIME_DIR: /srv/telegram-runtime
       TG_RUNTIME_PYTHON: 'python3'
@@ -101,6 +115,9 @@ services:
     volumes:
       - tg_imports:/var/lib/tg-imports:rw
       - fba_log:/app/backend/log:rw
+      # FBA get_settings() 需要可读 .env 文件本身;挂宿主 .env 只读
+      - ./.env:/app/backend/.env:ro
+      - fba_static:/app/backend/static/upload:rw
       # session_import 子进程源码(GPL 子树,只读挂载;TG_RUNTIME_DIR 指向此处)
       - ../telegram-runtime:/srv/telegram-runtime:ro
     tmpfs:
@@ -116,9 +133,11 @@ services:
       timeout: 5s
       retries: 3
     networks:
-      - edge
-      - app
-      - data
+      edge:
+      data:
+      app:
+        aliases:
+          - fba_server
 
   task-worker:
     <<: *hardening
@@ -128,10 +147,10 @@ services:
       ENVIRONMENT: 'prod'
       DATABASE_HOST: postgres
       REDIS_HOST: redis
-      CELERY_BROKER: 'redis'
     command: ['celery', '-A', 'backend.app.task.celery', 'worker', '-l', 'info', '-P', 'gevent', '-c', '200']
     volumes:
       - fba_log:/app/backend/log:rw
+      - ./.env:/app/backend/.env:ro
     tmpfs:
       - /tmp
     depends_on:
@@ -149,10 +168,10 @@ services:
       ENVIRONMENT: 'prod'
       DATABASE_HOST: postgres
       REDIS_HOST: redis
-      CELERY_BROKER: 'redis'
     command: ['celery', '-A', 'backend.app.task.celery', 'beat', '-l', 'info']
     volumes:
       - fba_log:/app/backend/log:rw
+      - ./.env:/app/backend/.env:ro
     tmpfs:
       - /tmp
     deploy:
@@ -269,7 +288,7 @@ services:
   # ---------- ops ----------
   prometheus:
     <<: *hardening
-    image: prom/prometheus:stable
+    image: prom/prometheus:v3.5.0
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -281,7 +300,7 @@ services:
 
   grafana:
     <<: *hardening
-    image: grafana/grafana:stable
+    image: grafana/grafana:12.1.0
     env_file: .env
     volumes:
       - grafana_data:/var/lib/grafana

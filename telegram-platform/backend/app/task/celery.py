@@ -35,7 +35,9 @@ def find_task_packages() -> list[str]:
     task_dir = BASE_PATH / 'app' / 'task' / 'tasks'
     for root, _dirs, files in os.walk(task_dir):
         if 'tasks.py' in files:
-            package = root.replace(str(BASE_PATH.parent) + os.path.sep, '').replace(os.path.sep, '.')
+            # 用 relpath 而非全局 replace:容器内 BASE_PATH.parent == '/app' 时,
+            # 包内 'app' 目录会被误删,生成不存在的 'backendtask' 模块名
+            package = os.path.relpath(root, BASE_PATH.parent).replace(os.path.sep, '.')
             packages.append(package)
     return packages
 
