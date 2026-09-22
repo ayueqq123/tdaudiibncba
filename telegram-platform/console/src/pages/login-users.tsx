@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { KeyRound, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Ban, CheckCircle2, KeyRound, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { sysApi, type SysUser } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
@@ -76,6 +76,16 @@ export default function LoginUsersPage() {
     }
   }
 
+  async function toggle(r: SysUser) {
+    try {
+      await sysApi.toggleStatus(r.id)
+      toast.success(r.status === 1 ? '已停用,对方无法登录' : '已启用')
+      load()
+    } catch (e: any) {
+      toast.error(e?.detail || '操作失败')
+    }
+  }
+
   async function del(r: SysUser) {
     if (!confirm(`确认删除账号「${r.username}」?对方将立即无法登录`)) return
     try {
@@ -90,7 +100,7 @@ export default function LoginUsersPage() {
   return (
     <div>
       <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold">登录账号</h2>
+        <h2 className="text-lg font-semibold">用户</h2>
         <div className="flex gap-2">
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
@@ -115,7 +125,7 @@ export default function LoginUsersPage() {
                   <Label>昵称(可选)</Label>
                   <Input value={form.nickname} onChange={(e) => setForm({ ...form, nickname: e.target.value })} />
                 </div>
-                <p className="text-xs text-muted-foreground">新账号登录后可看到全部业务数据,不能管理登录账号</p>
+                <p className="text-xs text-muted-foreground">新账号登录后可看到全部业务数据,不能管理用户</p>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setOpen(false)}>
@@ -138,7 +148,7 @@ export default function LoginUsersPage() {
               <TableHead>用户名</TableHead>
               <TableHead>昵称</TableHead>
               <TableHead>状态</TableHead>
-              <TableHead className="w-44">操作</TableHead>
+              <TableHead className="w-64">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -167,9 +177,22 @@ export default function LoginUsersPage() {
                       <KeyRound className="h-3.5 w-3.5" /> 改密
                     </Button>
                     {r.username !== me?.username && (
-                      <Button size="sm" variant="outline" onClick={() => del(r)}>
-                        <Trash2 className="h-3.5 w-3.5" /> 删除
-                      </Button>
+                      <>
+                        <Button size="sm" variant="outline" onClick={() => toggle(r)}>
+                          {r.status === 1 ? (
+                            <>
+                              <Ban className="h-3.5 w-3.5" /> 停用
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 className="h-3.5 w-3.5" /> 启用
+                            </>
+                          )}
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => del(r)}>
+                          <Trash2 className="h-3.5 w-3.5" /> 删除
+                        </Button>
+                      </>
                     )}
                   </div>
                 </TableCell>

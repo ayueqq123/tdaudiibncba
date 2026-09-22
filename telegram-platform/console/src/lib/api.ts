@@ -233,5 +233,8 @@ export const sysApi = {
   createUser: (b: { username: string; password: string; nickname?: string; dept_id: number; roles: number[] }) =>
     api.post('/sys/users', b),
   resetPassword: (id: number, password: string) => api.put(`/sys/users/${id}/password`, { password }),
+  toggleStatus: (id: number) => api.put(`/sys/users/${id}/permissions?type=status`),
+  updateMyPassword: (old_password: string, new_password: string) =>
+    api.put('/sys/users/me/password', { old_password, new_password, confirm_password: new_password }),
   deleteUser: (id: number) => api.del(`/sys/users/${id}`),
 }
