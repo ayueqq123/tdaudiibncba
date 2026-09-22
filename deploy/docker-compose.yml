@@ -83,9 +83,9 @@ services:
       - SETGID
       - NET_BIND_SERVICE
     build:
-      context: ../telegram-platform/web
+      context: ../telegram-platform/console
       dockerfile: Dockerfile
-    image: tg-platform-web:latest
+    image: tg-platform-console:latest
     tmpfs:
       - /tmp
       - /var/cache/nginx:rw,mode=1777
