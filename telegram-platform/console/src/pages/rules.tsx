@@ -17,11 +17,16 @@ export default function RulesPage() {
   const [loading, setLoading] = useState(false)
 
   const [open, setOpen] = useState(false)
-  const [form, setForm] = useState<any>({ account_id: '', name: '', mode: 'copy', enabled: true, remark: '' })
+  const [form, setForm] = useState<any>({ account_id: '', name: '', mode: 'copy', sync_edit: true, sync_delete: true, enabled: true, remark: '' })
 
   const [targetOpen, setTargetOpen] = useState(false)
   const [targetRule, setTargetRule] = useState<CloneRule | null>(null)
-  const [tf, setTf] = useState<any>({ source_chat_id: '', source_topic_id: '', target_chat_id: '', target_topic_id: '', sender_user_ids: '', remark: '' })
+  const MEDIA_KINDS: [string, string][] = [
+    ['text', '文字'], ['photo', '图片'], ['video', '视频'], ['gif', 'GIF'], ['voice', '语音'],
+    ['audio', '音频'], ['document', '文件'], ['sticker', '贴纸'], ['poll', '投票'], ['contact', '联系人'], ['location', '位置'],
+  ]
+
+  const [tf, setTf] = useState<any>({ source_chat_id: '', source_topic_id: '', target_chat_id: '', target_topic_id: '', sender_user_ids: '', media_kinds: [] as string[], remark: '' })
 
   const [verOpen, setVerOpen] = useState(false)
   const [versions, setVersions] = useState<any[]>([])
@@ -58,7 +63,7 @@ export default function RulesPage() {
       })
       toast.success('规则已创建,添加目标后点"发布"生效')
       setOpen(false)
-      setForm({ account_id: '', name: '', mode: 'copy', enabled: true, remark: '' })
+      setForm({ account_id: '', name: '', mode: 'copy', sync_edit: true, sync_delete: true, enabled: true, remark: '' })
       load()
     } catch (e: any) {
       toast.error(e?.detail || '创建失败')
@@ -80,12 +85,15 @@ export default function RulesPage() {
         toast.warning('发言人 ID 必须是正整数')
         return
       }
+      const filters: any = {}
+      if (senders.length) filters.sender_user_ids = senders
+      if (tf.media_kinds.length) filters.media_kinds = tf.media_kinds
       await tgApi.addTarget(targetRule.id, {
         source_chat_id: +tf.source_chat_id,
         source_topic_id: tf.source_topic_id ? +tf.source_topic_id : null,
         target_chat_id: +tf.target_chat_id,
         target_topic_id: tf.target_topic_id ? +tf.target_topic_id : null,
-        filters: senders.length ? { sender_user_ids: senders } : null,
+        filters: Object.keys(filters).length ? filters : null,
         remark: tf.remark || null,
       })
       toast.success('目标已添加')
@@ -176,6 +184,16 @@ export default function RulesPage() {
                     <Switch checked={form.enabled} onCheckedChange={(v) => setForm({ ...form, enabled: v })} />
                   </div>
                 </div>
+                <div className="flex items-center gap-6">
+                  <div className="flex items-center gap-2">
+                    <Label>同步编辑</Label>
+                    <Switch checked={form.sync_edit} onCheckedChange={(v) => setForm({ ...form, sync_edit: v })} />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Label>同步删除</Label>
+                    <Switch checked={form.sync_delete} onCheckedChange={(v) => setForm({ ...form, sync_delete: v })} />
+                  </div>
+                </div>
                 <div className="flex flex-col gap-1.5">
                   <Label>备注</Label>
                   <Input value={form.remark} onChange={(e) => setForm({ ...form, remark: e.target.value })} />
@@ -225,7 +243,7 @@ export default function RulesPage() {
                       variant="outline"
                       onClick={() => {
                         setTargetRule(r)
-                        setTf({ source_chat_id: '', source_topic_id: '', target_chat_id: '', target_topic_id: '', sender_user_ids: '', remark: '' })
+                        setTf({ source_chat_id: '', source_topic_id: '', target_chat_id: '', target_topic_id: '', sender_user_ids: '', media_kinds: [], remark: '' })
                         setTargetOpen(true)
                       }}
                     >
@@ -281,6 +299,28 @@ export default function RulesPage() {
                 onChange={(e) => setTf({ ...tf, sender_user_ids: e.target.value })}
                 placeholder="留空=搬全群;填后只搬这些用户的发言"
               />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>只克隆这些消息类型(不勾=全部)</Label>
+              <div className="grid grid-cols-3 gap-2">
+                {MEDIA_KINDS.map(([k, label]) => (
+                  <label key={k} className="flex items-center gap-1.5 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={tf.media_kinds.includes(k)}
+                      onChange={(e) =>
+                        setTf({
+                          ...tf,
+                          media_kinds: e.target.checked
+                            ? [...tf.media_kinds, k]
+                            : tf.media_kinds.filter((x: string) => x !== k),
+                        })
+                      }
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
           <DialogFooter>

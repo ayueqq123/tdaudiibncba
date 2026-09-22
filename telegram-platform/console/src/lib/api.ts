@@ -138,6 +138,8 @@ export interface CloneRule {
   account_id: number
   name: string
   mode: 'copy' | 'forward'
+  sync_edit?: boolean
+  sync_delete?: boolean
   enabled: boolean
   current_version: number
   remark: string | null

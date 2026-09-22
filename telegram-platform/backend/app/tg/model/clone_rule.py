@@ -24,6 +24,8 @@ class TgCloneRule(Base):
     account_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='发送账号ID')
     name: Mapped[str] = mapped_column(sa.String(128), comment='规则名称')
     mode: Mapped[str] = mapped_column(sa.String(16), default='copy', comment='模式(copy/forward)')
+    sync_edit: Mapped[bool] = mapped_column(default=True, comment='是否同步编辑')
+    sync_delete: Mapped[bool] = mapped_column(default=True, comment='是否同步删除')
     enabled: Mapped[bool] = mapped_column(default=True, comment='是否启用')
     current_version: Mapped[int] = mapped_column(default=0, comment='当前已发布版本号(0=未发布)')
     status: Mapped[str] = mapped_column(

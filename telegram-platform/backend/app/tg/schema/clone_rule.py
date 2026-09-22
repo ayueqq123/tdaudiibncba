@@ -12,6 +12,8 @@ class CloneRuleSchemaBase(SchemaBase):
     account_id: int = Field(description='发送账号 ID')
     name: str = Field(description='规则名称')
     mode: Literal['copy', 'forward'] = Field('copy', description='投递模式')
+    sync_edit: bool = Field(True, description='是否同步源消息编辑')
+    sync_delete: bool = Field(True, description='是否同步源消息删除')
     enabled: bool = Field(True, description='是否启用')
     remark: str | None = Field(None, description='备注')
 
@@ -28,6 +30,8 @@ class UpdateCloneRuleParam(SchemaBase):
 
     name: str = Field(description='规则名称')
     mode: Literal['copy', 'forward'] = Field(description='投递模式')
+    sync_edit: bool = Field(description='是否同步源消息编辑')
+    sync_delete: bool = Field(description='是否同步源消息删除')
     enabled: bool = Field(description='是否启用')
     remark: str | None = Field(None, description='备注')
 
