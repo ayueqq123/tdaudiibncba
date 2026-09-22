@@ -218,3 +218,20 @@ export const tgApi = {
   commands: () => api.get<RuntimeCommand[]>(`${TG}/runtime/commands`),
   issueCommand: (accountId: number, b: any) => api.post(`${TG}/runtime/accounts/${accountId}/commands`, b),
 }
+
+// ---------- sys 登录账号 ----------
+export interface SysUser {
+  id: number
+  username: string
+  nickname: string | null
+  status: number
+  dept_id: number | null
+  created_time?: string
+}
+export const sysApi = {
+  users: () => api.get<{ items: SysUser[]; total: number }>('/sys/users', { size: 200 }),
+  createUser: (b: { username: string; password: string; nickname?: string; dept_id: number; roles: number[] }) =>
+    api.post('/sys/users', b),
+  resetPassword: (id: number, password: string) => api.put(`/sys/users/${id}/password`, { password }),
+  deleteUser: (id: number) => api.del(`/sys/users/${id}`),
+}

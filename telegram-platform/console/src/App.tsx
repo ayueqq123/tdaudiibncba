@@ -10,6 +10,7 @@ import RulesPage from '@/pages/rules'
 import DeliveriesPage from '@/pages/deliveries'
 import ApprovalsPage from '@/pages/approvals'
 import UsersPage from '@/pages/users'
+import LoginUsersPage from '@/pages/login-users'
 import ProjectsPage from '@/pages/projects'
 import CommandsPage from '@/pages/commands'
 
@@ -34,6 +35,7 @@ export default function App() {
             <Route path="/deliveries" element={<DeliveriesPage />} />
             <Route path="/approvals" element={<ApprovalsPage />} />
             <Route path="/users" element={<UsersPage />} />
+            <Route path="/login-users" element={<LoginUsersPage />} />
             <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/commands" element={<CommandsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />

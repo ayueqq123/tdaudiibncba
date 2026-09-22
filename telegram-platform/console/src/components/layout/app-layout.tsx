@@ -2,6 +2,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
   Send,
   LogOut,
+  KeyRound,
   LayoutDashboard,
   Users,
   FolderKanban,
@@ -35,6 +36,7 @@ const GROUPS = [
   {
     label: '设置',
     items: [
+      { to: '/login-users', icon: KeyRound, label: '登录账号' },
       { to: '/users', icon: Users, label: '用户(租户)' },
       { to: '/projects', icon: FolderKanban, label: '项目' },
       { to: '/commands', icon: Terminal, label: '运行时命令' },
