@@ -228,6 +228,7 @@ export interface SysUser {
   nickname: string | null
   status: number
   dept_id: number | null
+  last_password?: string | null
   created_time?: string
 }
 export const sysApi = {

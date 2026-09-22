@@ -10,10 +10,43 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 
-const CMD_TYPES = ['StartAccount', 'StopAccount', 'ReloadConfig', 'SyncChats', 'ReconcileSource', 'CancelJob']
+const CMD_TYPES = ['StartAccount', 'StopAccount', 'ReloadConfig', 'SyncChats', 'ReconcileSource', 'CancelJob', 'PauseAccount', 'ResumeAccount']
+const CMD_LABELS: Record<string, string> = {
+  StartAccount: '启动账号',
+  StopAccount: '停止账号',
+  PauseAccount: '暂停账号',
+  ResumeAccount: '恢复账号',
+  ReloadConfig: '重载配置(刷新规则)',
+  SyncChats: '同步群列表',
+  ReconcileSource: '校准源会话',
+  CancelJob: '取消任务',
+}
+const cmdLabel = (t: string) => CMD_LABELS[t] || t
+const STATUS_LABELS: Record<string, string> = {
+  pending: '待执行',
+  done: '已完成',
+  acked: '已确认',
+  rejected: '已拒绝',
+  failed: '失败',
+  cancelled: '已取消',
+}
+const RESULT_LABELS: Record<string, string> = {
+  rules_refreshed: '规则已刷新',
+  dialogs_warmed: '群列表已同步',
+  released: '已释放账号',
+  already_hosted: '已在运行',
+  paused: '已暂停',
+  resumed: '已恢复',
+  cancelled: '已取消',
+  job_not_cancellable: '任务不可取消',
+}
+const resultLabel = (r?: string | null) => (r ? RESULT_LABELS[r] || r : '-')
+const statusLabel = (s: string) => STATUS_LABELS[s] || s
 const statusVariant: Record<string, 'success' | 'warning' | 'destructive' | 'default' | 'secondary'> = {
   pending: 'warning',
+  done: 'success',
   acked: 'success',
+  rejected: 'destructive',
   failed: 'destructive',
   cancelled: 'secondary',
 }
@@ -103,7 +136,7 @@ export default function CommandsPage() {
                     <SelectContent>
                       {CMD_TYPES.map((t) => (
                         <SelectItem key={t} value={t}>
-                          {t}
+                          {cmdLabel(t)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -144,11 +177,11 @@ export default function CommandsPage() {
               <TableRow key={r.id}>
                 <TableCell>{r.id}</TableCell>
                 <TableCell>{r.account_id}</TableCell>
-                <TableCell>{r.type}</TableCell>
+                <TableCell>{cmdLabel(r.type)}</TableCell>
                 <TableCell>
-                  <Badge variant={statusVariant[r.status] || 'secondary'}>{r.status}</Badge>
+                  <Badge variant={statusVariant[r.status] || 'secondary'}>{statusLabel(r.status)}</Badge>
                 </TableCell>
-                <TableCell className="max-w-xs truncate text-xs text-muted-foreground">{r.result || '-'}</TableCell>
+                <TableCell className="max-w-xs truncate text-xs text-muted-foreground">{resultLabel(r.result)}</TableCell>
                 <TableCell className="text-muted-foreground">{r.created_time?.slice(0, 19).replace('T', ' ')}</TableCell>
               </TableRow>
             ))}
