@@ -24,6 +24,7 @@ from telethon.errors import (
     ChatWriteForbiddenError,
     FloodWaitError,
     MessageEmptyError,
+    PeerIdInvalidError,
     SessionRevokedError,
     SlowModeWaitError,
     UnauthorizedError,
@@ -122,7 +123,7 @@ def _classify(exc: Exception) -> TransportErrorKind:
     if isinstance(exc, (AuthKeyUnregisteredError, SessionRevokedError,
                         UnauthorizedError)):
         return TransportErrorKind.AUTH
-    if isinstance(exc, (MessageEmptyError, ValueError)):
+    if isinstance(exc, (MessageEmptyError, PeerIdInvalidError, ValueError)):
         return TransportErrorKind.CONTENT
     if isinstance(exc, (TimeoutError, ConnectionError)):
         return TransportErrorKind.RESULT_UNKNOWN
@@ -139,6 +140,14 @@ class TelethonTransport(SendTransport):
         self.account_id = account_id
         self.registry = registry
         self.resolver = resolver
+        self._self_id: int | None = None
+
+    async def _entity(self, target_id: int):
+        # Telegram rejects PeerUser(self) in send/edit/delete — Saved
+        # Messages must go through PeerSelf ('me').
+        if self._self_id is None:
+            self._self_id = (await self.client.get_me()).id
+        return 'me' if target_id == self._self_id else target_id
 
     async def _call(self, fn: Callable[[], Awaitable]):
         try:
@@ -165,8 +174,9 @@ class TelethonTransport(SendTransport):
     async def send(self, plan: DeliveryPlan) -> list[int]:
         text = await self._resolve_text(plan)
         if text is not None:
+            entity = await self._entity(plan.target_chat_id)
             msg = await self._call(lambda: self.client.send_message(
-                plan.target_chat_id, text,
+                entity, text,
                 reply_to=plan.reply_to_target_message_id))
             return [msg.id]
         if plan.mode is CloneMode.FORWARD:
@@ -180,8 +190,9 @@ class TelethonTransport(SendTransport):
         if src is None:
             raise TransportError(TransportErrorKind.CONTENT,
                                  "source message missing")
+        entity = await self._entity(plan.target_chat_id)
         msg = await self._call(lambda: self.client.send_message(
-            plan.target_chat_id, getattr(src, "text", None) or "",
+            entity, getattr(src, "text", None) or "",
             file=getattr(src, "media", None),
             reply_to=plan.reply_to_target_message_id))
         return [msg.id]
@@ -192,14 +203,16 @@ class TelethonTransport(SendTransport):
         if src is None:
             raise TransportError(TransportErrorKind.CONTENT,
                                  "source message missing for edit")
+        entity = await self._entity(plan.target_chat_id)
         await self._call(lambda: self.client.edit_message(
-            plan.target_chat_id, target_message_id,
+            entity, target_message_id,
             getattr(src, "text", None) or "", file=getattr(src, "media", None)))
 
     async def delete(self, plan: DeliveryPlan,
                      target_message_ids: list[int]) -> None:
+        entity = await self._entity(plan.target_chat_id)
         await self._call(lambda: self.client.delete_messages(
-            plan.target_chat_id, target_message_ids))
+            entity, target_message_ids))
 
 
 class TransportRouter(SendTransport):

@@ -3,3 +3,4 @@ httpx==0.28.1
 SQLAlchemy[asyncio]==2.0.44
 asyncpg==0.30.0
 cryptography==45.0.7
+aiosqlite==0.21.0  # 测试用 sqlite 异步驱动
