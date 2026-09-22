@@ -1,14 +1,8 @@
 {
-  "categories": {
-    "correctness": "error",
-    "suspicious": "error"
-  },
-  "plugins": ["eslint", "typescript", "unicorn", "oxc", "import", "vue"],
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["react", "typescript", "oxc"],
   "rules": {
-    "import/no-unassigned-import": "off",
-    "unicorn/consistent-function-scoping": "off",
-    "unicorn/no-array-sort": "off",
-    "unicorn/no-array-reverse": "off",
-    "unicorn/require-module-specifiers": "off"
+    "react/rules-of-hooks": "error",
+    "react/only-export-components": ["warn", { "allowConstantExport": true }]
   }
 }

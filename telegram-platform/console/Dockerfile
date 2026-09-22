@@ -1,20 +1,14 @@
-FROM guergeiro/pnpm:lts-latest-slim AS build
-
-WORKDIR /console
-
+# ---------- build ----------
+FROM node:20-alpine AS build
+RUN corepack enable && corepack prepare pnpm@10.34.5 --activate
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 COPY . .
+RUN pnpm build
 
-# CI=true: is-ci 命中后 prepare 里的 hooks install 被短路(构建镜像无 git)
-ENV CI=true
-RUN pnpm install \
-    && pnpm build
-
-FROM nginx
-
-COPY scripts/deploy/nginx.conf /etc/nginx/nginx.conf
-
-COPY --from=build /console/dist /var/www/console
-
+# ---------- serve ----------
+FROM nginx:1.27-alpine
+COPY scripts/deploy/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist /var/www/console
 EXPOSE 80
-
-CMD ["nginx", "-g", "daemon off;"]
