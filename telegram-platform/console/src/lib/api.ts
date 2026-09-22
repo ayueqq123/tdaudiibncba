@@ -129,6 +129,7 @@ export interface CloneTarget {
   target_chat_id: number
   target_topic_id: number | null
   status: string
+  filters?: Record<string, any> | null
   remark: string | null
 }
 export interface CloneRule {
@@ -205,7 +206,10 @@ export const tgApi = {
   rules: () => api.get<CloneRule[]>(`${TG}/clone-rules`),
   rule: (id: number) => api.get<CloneRule>(`${TG}/clone-rules/${id}`),
   createRule: (b: any) => api.post<CloneRule>(`${TG}/clone-rules`, b),
+  updateRule: (id: number, b: any) => api.put(`${TG}/clone-rules/${id}`, b),
+  deleteRule: (id: number) => api.del(`${TG}/clone-rules/${id}`),
   addTarget: (id: number, b: any) => api.post(`${TG}/clone-rules/${id}/targets`, b),
+  retireTarget: (id: number, targetId: number) => api.del(`${TG}/clone-rules/${id}/targets/${targetId}`),
   publishRule: (id: number, expectedVersion: number) =>
     api.post(`${TG}/clone-rules/${id}/publish`, { expected_version: expectedVersion }),
   ruleVersions: (id: number) => api.get<any[]>(`${TG}/clone-rules/${id}/versions`),
