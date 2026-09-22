@@ -13,6 +13,8 @@ import {
   ShieldCheck,
   Terminal,
   KeyRound,
+  Menu,
+  X,
 } from 'lucide-react'
 import { fetchLogout, sysApi } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -57,6 +59,7 @@ const GROUPS: { label: string; items: NavItem[] }[] = [
 export default function AppLayout() {
   const { user, logout } = useAuth()
   const nav = useNavigate()
+  const [navOpen, setNavOpen] = useState(false)
   const [pwdOpen, setPwdOpen] = useState(false)
   const [pwdForm, setPwdForm] = useState({ old: '', next: '' })
   async function doLogout() {
@@ -85,13 +88,18 @@ export default function AppLayout() {
     }
   }
 
-  return (
-    <div className="flex h-screen">
-      <aside className="flex w-56 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground">
-        <div className="flex h-14 items-center gap-2 border-b px-4">
-          <Send className="h-5 w-5 text-primary" />
-          <span className="font-semibold">TG 自动化平台</span>
-        </div>
+  const sidebar = (
+    <>
+      <div className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+        <Send className="h-5 w-5 text-primary" />
+        <span className="font-semibold">TG 自动化平台</span>
+        <button
+          onClick={() => setNavOpen(false)}
+          className="ml-auto cursor-pointer rounded-md p-1 hover:bg-sidebar-accent lg:hidden"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
         <nav className="flex-1 overflow-y-auto p-2">
           {GROUPS.map((g) => (
             <div key={g.label} className="mb-2">
@@ -103,6 +111,7 @@ export default function AppLayout() {
                   key={it.to}
                   to={it.to}
                   end={it.end}
+                  onClick={() => setNavOpen(false)}
                   className={({ isActive }) =>
                     cn(
                       'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors',
@@ -117,11 +126,35 @@ export default function AppLayout() {
             </div>
           ))}
         </nav>
+    </>
+  )
+
+  return (
+    <div className="flex h-screen">
+      <aside className="hidden w-56 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground lg:flex">
+        {sidebar}
       </aside>
+      {navOpen && (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setNavOpen(false)} />
+          <aside className="absolute inset-y-0 left-0 flex w-56 flex-col bg-sidebar text-sidebar-foreground shadow-xl">
+            {sidebar}
+          </aside>
+        </div>
+      )}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center justify-between border-b px-4">
-          <div className="text-sm text-muted-foreground">多账号 Userbot · 消息 Clone · 炒群 AI</div>
+        <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b px-3 sm:px-4">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setNavOpen(true)}
+              className="cursor-pointer rounded-md p-2 hover:bg-accent lg:hidden"
+              title="菜单"
+            >
+              <Menu className="h-4 w-4" />
+            </button>
+            <div className="hidden text-sm text-muted-foreground sm:block">多账号 Userbot · 消息 Clone · 炒群 AI</div>
+          </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
             <button
@@ -134,13 +167,13 @@ export default function AppLayout() {
             >
               <KeyRound className="h-4 w-4" />
             </button>
-            <span className="text-sm">{user?.nickname || user?.username}</span>
+            <span className="hidden text-sm sm:inline">{user?.nickname || user?.username}</span>
             <button onClick={doLogout} className="cursor-pointer rounded-md p-2 hover:bg-accent" title="退出登录">
               <LogOut className="h-4 w-4" />
             </button>
           </div>
         </header>
-        <main className="min-w-0 flex-1 overflow-y-auto p-4">
+        <main className="min-w-0 flex-1 overflow-y-auto p-3 sm:p-4">
           <Outlet />
         </main>
 

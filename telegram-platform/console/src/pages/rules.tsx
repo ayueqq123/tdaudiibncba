@@ -211,7 +211,7 @@ export default function RulesPage() {
   const accLabel = (id: number) => accounts.find((a) => a.id === id)?.phone || `#${id}`
 
   return (
-    <div className="p-3 sm:p-0">
+    <div>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="text-lg font-semibold">Clone 规则</h2>
