@@ -50,5 +50,5 @@ docker compose --profile ai --profile runtime --profile backup up -d   # 按需
 ## 已知未实现(D 期)
 
 - `tg-runtime-worker` 的生产宿主循环(`runtime/worker/__main__.py`:租约心跳 + 平台 `/runtime` 轮询 + LiveAdapter 接线)尚未落地,该服务在 `runtime` profile 下暂缓。
-- Prometheus 指标端点(`/metrics`)需在 backend 加 exporter 后才有实际数据。
+- `/metrics` 已由 FBA 挂载(prometheus_client);tg 域指标见 `docs/runbook.md` §6。
 - LangBot `data/config.yaml` 的 bot/model 绑定由部署方在 `langbot_data` 卷内配置;`PLUGIN__ENABLE=false` 已在 compose 层强制。
