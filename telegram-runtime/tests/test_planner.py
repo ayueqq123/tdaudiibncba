@@ -102,3 +102,28 @@ def test_reply_resolution_via_mapping():
     by_route = {x.route_id: x for x in plans}
     assert by_route["rt-1"].reply_to_target_message_id == 9001
     assert by_route["rt-2"].reply_to_target_message_id is None
+
+
+def test_sender_user_ids_whitelist():
+    p = ClonePlanner(DictMapping())
+    rule = _rule(filters=({"sender_user_ids": [111, 222]},))
+    assert p.plan(_event(sender_id=111), [rule]) != []
+    assert p.plan(_event(sender_id=333), [rule]) == []
+    # anonymous/service posts carry no sender -> filtered out
+    assert p.plan(_event(sender_id=None), [rule]) == []
+
+
+def test_no_whitelist_passes_all_senders():
+    p = ClonePlanner(DictMapping())
+    for filters in ((), ({},), ({"sender_user_ids": []},)):
+        assert p.plan(_event(sender_id=333), [_rule(filters=filters)]) != []
+        assert p.plan(_event(sender_id=None), [_rule(filters=filters)]) != []
+
+
+def test_whitelist_does_not_block_edit_or_delete():
+    p = ClonePlanner(DictMapping())
+    rule = _rule(filters=({"sender_user_ids": [111]},))
+    ev_edit = _event(kind=EventKind.EDIT, revision=2, sender_id=333)
+    assert [x.kind for x in p.plan(ev_edit, [rule])] == [PlanKind.EDIT] * 2
+    ev_del = _event(kind=EventKind.DELETE, sender_id=None)
+    assert [x.kind for x in p.plan(ev_del, [rule])] == [PlanKind.DELETE] * 2

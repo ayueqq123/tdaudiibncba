@@ -326,6 +326,16 @@ def make_ingest_handler(session_factory, account_id: str, tenant_id: str,
     return on_update
 
 
+def _sender_id(msg) -> int | None:
+    """Telethon sender_id (None for service messages; channel id for anonymous
+    admin posts — which therefore never match a user-id whitelist)."""
+    sid = getattr(msg, "sender_id", None)
+    if sid is not None:
+        return sid
+    from_id = getattr(msg, "from_id", None)
+    return utils.get_peer_id(from_id) if from_id is not None else None
+
+
 def _to_raws(event) -> list[RawUpdate]:
     """Adapt one Telethon event into zero-or-more RawUpdates. MessageDeleted
     carries a whole deleted_ids list — each id is its own inbox row."""
@@ -351,6 +361,7 @@ def _to_raws(event) -> list[RawUpdate]:
             topic_id=getattr(reply_to, "reply_to_top_id", None)
             if reply_to else None,
             protected=bool(getattr(msg, "noforwards", False)),
+            sender_id=_sender_id(msg),
         )]
     if isinstance(event, events.MessageDeleted.Event):
         chat_id = event.chat_id or 0

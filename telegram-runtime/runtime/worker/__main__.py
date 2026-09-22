@@ -17,7 +17,7 @@ import os
 import signal
 import socket
 
-from runtime.storage.db import make_engine, make_session_factory
+from runtime.storage.db import create_schema, make_engine, make_session_factory
 from runtime.worker.control_client import ControlClient
 from runtime.worker.host import WorkerHostMain
 
@@ -40,6 +40,7 @@ async def _main() -> None:
     control = ControlClient(
         _env("RUNTIME_CONTROL_API"), _env("RUNTIME_WORKER_TOKEN"))
     engine = make_engine(database_url)
+    await create_schema(engine)
     factory = make_session_factory(engine)
 
     host = WorkerHostMain(
