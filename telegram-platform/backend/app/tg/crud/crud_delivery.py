@@ -32,6 +32,9 @@ class CRUDDeliveryJob(CRUDPlus[TgDeliveryJob]):
         }
         return await self.select_models(db, **filters)
 
+    async def get_by_idempotency_key(self, db: AsyncSession, key: str) -> TgDeliveryJob | None:
+        return await self.select_model_by_column(db, idempotency_key=key)
+
     async def update(self, db: AsyncSession, pk: str, obj: dict) -> int:
         return await self.update_model_by_column(db, obj, id=pk)
 

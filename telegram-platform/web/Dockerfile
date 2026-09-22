@@ -4,6 +4,8 @@ WORKDIR /fba_ui
 
 COPY . .
 
+# CI=true: is-ci 命中后 prepare 里的 lefthook install 被短路(构建镜像无 git)
+ENV CI=true
 RUN pnpm install \
     && pnpm build
 
