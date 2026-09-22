@@ -41,7 +41,11 @@ async def _run_import_cli(package_path: str) -> dict[str, Any]:
     if not settings.TG_RUNTIME_DIR or not settings.TG_RUNTIME_PYTHON:
         raise errors.ServerError(msg='未配置 TG_RUNTIME_DIR/TG_RUNTIME_PYTHON,无法执行导入验证')
     env = dict(os.environ)
-    env['PYTHONPATH'] = settings.TG_RUNTIME_DIR
+    # 追加而非覆盖:容器里 telethon 等依赖已在 PYTHONPATH(如 /app/dependencies)
+    existing = env.get('PYTHONPATH')
+    env['PYTHONPATH'] = (
+        f'{settings.TG_RUNTIME_DIR}{os.pathsep}{existing}' if existing else settings.TG_RUNTIME_DIR
+    )
     proc = await asyncio.create_subprocess_exec(
         settings.TG_RUNTIME_PYTHON,
         '-m',

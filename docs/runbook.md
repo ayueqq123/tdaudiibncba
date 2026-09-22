@@ -63,6 +63,23 @@ tg 路由权限点(RequestPermission 强制,超级管理员自动放行):
 
 **导入号必做**:2FA 轮换 + 踢其他已授权会话(`ResetAuthorizations`),否则号不算独占。
 
+### 4.1 Worker 宿主(runtime/worker)
+
+启动依赖:`DATABASE_URL`(直连 postgres,与平台共库共表)、`RUNTIME_CONTROL_API`(如 `http://control-api:8000`)、`RUNTIME_WORKER_TOKEN`(与 control-api `.env` 同值,轮换时双端同步更新、滚动重启)、`WORKER_ID`(缺省 hostname)、`WORKER_POLL_S`(默认 2s)、`LEASE_TTL_S`(45)/`LEASE_HEARTBEAT_S`(10)。
+
+排障:
+
+| 症状 | 查 | 处理 |
+|---|---|---|
+| worker 起不来 401 | RUNTIME_WORKER_TOKEN 两端是否一致 | 同步 .env 后重启 |
+| 账号不托管 | `GET /tg/runtime/accounts` 是否返回该账号(desired_status=running) | 平台侧把期望态切 running |
+| 会话拉取 404 | `TG_IMPORT_STORAGE_DIR` 下 secret_ref 文件在不在 | 重新导入;查存储卷挂载 |
+| `lease_lost` 释放 | account_lease.generation 被抢 | 正常接管语义;若反复互抢,查是否多 worker 同 WORKER_ID |
+| 发送停在 `pending_approval` | reply_candidate.status | 审批台 approve 后下轮自动发出 |
+| `candidate:xxx` 解析 CONTENT 错 | 候选是否 approved / content_hash 是否匹配 job.payload_hash | 重新走审批;不要手改 hash |
+
+命令通道:平台 `POST /runtime/commands`(StartAccount/StopAccount/ReloadConfig/SyncChats/ReconcileSource/CancelJob),worker 每轮拉取并回执;`acknowledged/failed` 见 runtime_command 表。
+
 ## 5. 备份/恢复
 
 `deploy/backup/backup.sh`(pg-backup profile)→ `/backups/*.dump` + sha256 manifest,保留 14d。

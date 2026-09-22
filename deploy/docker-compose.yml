@@ -96,10 +96,13 @@ services:
       TG_IMPORT_STORAGE_DIR: /var/lib/tg-imports
       TG_RUNTIME_DIR: /srv/telegram-runtime
       TG_RUNTIME_PYTHON: 'python3'
+      RUNTIME_WORKER_TOKEN: '${RUNTIME_WORKER_TOKEN:?set in .env}'
       PYTHONDONTWRITEBYTECODE: '1'
     volumes:
       - tg_imports:/var/lib/tg-imports:rw
       - fba_log:/app/backend/log:rw
+      # session_import 子进程源码(GPL 子树,只读挂载;TG_RUNTIME_DIR 指向此处)
+      - ../telegram-runtime:/srv/telegram-runtime:ro
     tmpfs:
       - /tmp
     depends_on:
@@ -108,7 +111,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ['CMD', 'python', '-c', "import urllib.request,urllib.error\ntry:\n urllib.request.urlopen('http://127.0.0.1:8000/api/v1/sys/menus',timeout=3)\nexcept urllib.error.HTTPError as e:\n sys.exit(0 if e.code in (401,403) else 1)\nexcept Exception:\n sys.exit(1)\nsys.exit(0)"]
+      test: ['CMD', 'python', '-c', "import sys,urllib.request,urllib.error\ntry:\n urllib.request.urlopen('http://127.0.0.1:8000/api/v1/sys/menus',timeout=3)\nexcept urllib.error.HTTPError as e:\n sys.exit(0 if e.code in (401,403) else 1)\nexcept Exception:\n sys.exit(1)\nsys.exit(0)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -171,6 +174,7 @@ services:
     env_file: .env
     environment:
       RUNTIME_CONTROL_API: 'http://control-api:8000/api/v1/tg/runtime'
+      RUNTIME_WORKER_TOKEN: '${RUNTIME_WORKER_TOKEN:?set in .env}'
       DATABASE_URL: 'postgresql+asyncpg://${DATABASE_USER}:${DATABASE_PASSWORD}@postgres:5432/${DATABASE_SCHEMA:-fba}'
       SESSION_KEK: '${SESSION_KEK:?set in .env}'
       WORKER_ID: 'worker-1'
@@ -182,8 +186,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    # TODO(D 期):runtime/worker/__main__.py 生产宿主循环落地后启用
-    profiles: ['runtime']
     networks:
       - app
       - data
@@ -210,6 +212,8 @@ services:
   postgres:
     <<: *hardening
     image: postgres:16-alpine
+    # cap_drop ALL 下入口脚本不能 setuid;直接以 postgres 运行(具名卷继承镜像目录属主)
+    user: postgres
     environment:
       POSTGRES_USER: '${DATABASE_USER:?set in .env}'
       POSTGRES_PASSWORD: '${DATABASE_PASSWORD:?set in .env}'
@@ -231,6 +235,9 @@ services:
   redis:
     <<: *hardening
     image: redis:7-alpine
+    user: redis
+    environment:
+      REDIS_PASSWORD: '${REDIS_PASSWORD:?set in .env}'
     command: ['redis-server', '--appendonly', 'yes', '--requirepass', '${REDIS_PASSWORD:?set in .env}']
     volumes:
       - redis_data:/data

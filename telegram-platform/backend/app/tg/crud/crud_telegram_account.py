@@ -24,6 +24,13 @@ class CRUDTgTelegramAccount(CRUDPlus[TgTelegramAccount]):
         """当前部署内同一 Telegram 身份默认唯一(§6.2)"""
         return await self.select_model_by_column(db, telegram_user_id=telegram_user_id, deleted=0)
 
+    async def get_by_uuid(self, db: AsyncSession, uuid: str) -> TgTelegramAccount | None:
+        return await self.select_model_by_column(db, uuid=uuid, deleted=0)
+
+    async def get_running(self, db: AsyncSession) -> Sequence[TgTelegramAccount]:
+        """Worker 侧分配视图:期望运行中的账号(§5.3 租约接管前置条件)"""
+        return await self.select_models(db, desired_status='running', deleted=0)
+
     async def get_all(
         self,
         db: AsyncSession,

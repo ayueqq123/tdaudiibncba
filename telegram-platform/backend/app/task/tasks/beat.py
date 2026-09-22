@@ -31,4 +31,8 @@ def get_local_beat_schedule() -> dict[str, dict[str, Any]]:
             'task': 'backend.app.task.tasks.db_log.tasks.delete_db_login_log',
             'schedule': TzAwareCrontab('0', '0', day_of_month='15'),
         },
+        'TG-AI 超时清扫': {
+            'task': 'backend.app.task.tasks.tg.tasks.tg_ai_sweep_deadlines',
+            'schedule': schedule(60),
+        },
     }
