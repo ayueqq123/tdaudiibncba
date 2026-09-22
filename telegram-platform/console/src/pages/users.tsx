@@ -35,7 +35,7 @@ export default function UsersPage() {
       return
     }
     try {
-      await tgApi.createTenant({ name: form.name, remark: form.remark || null })
+      await tgApi.createTenant({ name: form.name, status: 1, remark: form.remark || null })
       toast.success('已创建')
       setOpen(false)
       setForm({ name: '', remark: '' })

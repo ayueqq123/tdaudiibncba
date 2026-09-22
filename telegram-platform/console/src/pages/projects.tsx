@@ -38,7 +38,7 @@ export default function ProjectsPage() {
       return
     }
     try {
-      await tgApi.createProject({ tenant_id: +form.tenant_id, name: form.name, remark: form.remark || null })
+      await tgApi.createProject({ tenant_id: +form.tenant_id, name: form.name, status: 1, remark: form.remark || null })
       toast.success('已创建')
       setOpen(false)
       setForm({ tenant_id: '', name: '', remark: '' })
