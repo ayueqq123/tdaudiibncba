@@ -19,6 +19,17 @@ const statusVariant: Record<string, 'success' | 'warning' | 'destructive' | 'def
   cancelled: 'secondary',
 }
 const STATUS_OPTS = ['ready', 'in_flight', 'retry_scheduled', 'gated_approval', 'succeeded', 'failed_permanent', 'dead_letter', 'cancelled']
+const STATUS_LABELS: Record<string, string> = {
+  ready: '待发送',
+  in_flight: '发送中',
+  retry_scheduled: '等待重试',
+  gated_approval: '等待审批',
+  succeeded: '已送达',
+  failed_permanent: '发送失败',
+  dead_letter: '已放弃',
+  cancelled: '已取消',
+}
+const statusLabel = (s: string) => STATUS_LABELS[s] || s
 
 export default function DeliveriesPage() {
   const [rows, setRows] = useState<DeliveryJob[]>([])
@@ -72,7 +83,7 @@ export default function DeliveriesPage() {
             <SelectContent>
               {STATUS_OPTS.map((s) => (
                 <SelectItem key={s} value={s}>
-                  {s}
+                  {statusLabel(s)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -111,7 +122,7 @@ export default function DeliveriesPage() {
                 </TableCell>
                 <TableCell className="font-mono text-xs">{r.target_chat_id}</TableCell>
                 <TableCell>
-                  <Badge variant={statusVariant[r.status] || 'secondary'}>{r.status}</Badge>
+                  <Badge variant={statusVariant[r.status] || 'secondary'}>{statusLabel(r.status)}</Badge>
                 </TableCell>
                 <TableCell>{r.attempt_count}</TableCell>
                 <TableCell className="text-xs text-muted-foreground">{r.last_error_class || '-'}</TableCell>
