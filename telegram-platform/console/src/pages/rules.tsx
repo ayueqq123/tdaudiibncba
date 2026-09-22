@@ -21,7 +21,7 @@ export default function RulesPage() {
 
   const [targetOpen, setTargetOpen] = useState(false)
   const [targetRule, setTargetRule] = useState<CloneRule | null>(null)
-  const [tf, setTf] = useState<any>({ source_chat_id: '', source_topic_id: '', target_chat_id: '', target_topic_id: '', remark: '' })
+  const [tf, setTf] = useState<any>({ source_chat_id: '', source_topic_id: '', target_chat_id: '', target_topic_id: '', sender_user_ids: '', remark: '' })
 
   const [verOpen, setVerOpen] = useState(false)
   const [versions, setVersions] = useState<any[]>([])
@@ -71,11 +71,21 @@ export default function RulesPage() {
       return
     }
     try {
+      const senders = tf.sender_user_ids
+        .split(/[,\s]+/)
+        .map((s: string) => s.trim())
+        .filter(Boolean)
+        .map(Number)
+      if (senders.some((n: number) => !Number.isInteger(n) || n <= 0)) {
+        toast.warning('发言人 ID 必须是正整数')
+        return
+      }
       await tgApi.addTarget(targetRule.id, {
         source_chat_id: +tf.source_chat_id,
         source_topic_id: tf.source_topic_id ? +tf.source_topic_id : null,
         target_chat_id: +tf.target_chat_id,
         target_topic_id: tf.target_topic_id ? +tf.target_topic_id : null,
+        filters: senders.length ? { sender_user_ids: senders } : null,
         remark: tf.remark || null,
       })
       toast.success('目标已添加')
@@ -210,7 +220,7 @@ export default function RulesPage() {
                       variant="outline"
                       onClick={() => {
                         setTargetRule(r)
-                        setTf({ source_chat_id: '', source_topic_id: '', target_chat_id: '', target_topic_id: '', remark: '' })
+                        setTf({ source_chat_id: '', source_topic_id: '', target_chat_id: '', target_topic_id: '', sender_user_ids: '', remark: '' })
                         setTargetOpen(true)
                       }}
                     >
@@ -258,6 +268,14 @@ export default function RulesPage() {
             <div className="flex flex-col gap-1.5">
               <Label>目标话题 topic_id(可选)</Label>
               <Input value={tf.target_topic_id} onChange={(e) => setTf({ ...tf, target_topic_id: e.target.value })} />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>只克隆这些发言人 ID(可选,逗号分隔)</Label>
+              <Input
+                value={tf.sender_user_ids}
+                onChange={(e) => setTf({ ...tf, sender_user_ids: e.target.value })}
+                placeholder="留空=搬全群;填后只搬这些用户的发言"
+              />
             </div>
           </div>
           <DialogFooter>

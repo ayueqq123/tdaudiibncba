@@ -39,7 +39,9 @@ class CloneTargetParam(SchemaBase):
     source_topic_id: int | None = Field(None, description='源 topic')
     target_chat_id: int = Field(description='目标 chat ID')
     target_topic_id: int | None = Field(None, description='目标 topic')
-    filters: dict[str, Any] | None = Field(None, description='过滤条件')
+    filters: dict[str, Any] | None = Field(
+        None, description="过滤条件,如 {'sender_user_ids': [123]} 只克隆指定发言人的消息"
+    )
     remark: str | None = Field(None, description='备注')
 
 
