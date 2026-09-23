@@ -208,7 +208,10 @@ export default function RulesPage() {
     }
   }
 
-  const accLabel = (id: number) => accounts.find((a) => a.id === id)?.phone || `#${id}`
+  const accLabel = (id: number) => {
+    const a = accounts.find((x) => x.id === id)
+    return `号:${a?.phone || a?.telegram_user_id || id}`
+  }
 
   return (
     <div>
