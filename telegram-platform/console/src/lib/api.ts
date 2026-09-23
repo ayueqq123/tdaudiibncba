@@ -247,6 +247,7 @@ export interface AiBinding {
   has_provider_key: boolean
   speak_policy: string
   reply_delay_s?: number
+  random_prob?: number
   status: string
   remark: string | null
 }

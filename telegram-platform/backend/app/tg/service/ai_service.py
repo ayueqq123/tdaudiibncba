@@ -294,6 +294,9 @@ class AiService:
             if b.speak_policy == 'mention' and username:
                 if f'@{username}' not in (obj.text or ''):
                     continue
+            if b.speak_policy == 'random':
+                if random.randint(1, 100) > (b.random_prob or 30):
+                    continue
             # 上报账号自己发的消息不触发(防自问自答循环)
             if obj.sender_id is not None and obj.sender_id == account.telegram_user_id:
                 continue

@@ -22,6 +22,7 @@ interface FormState {
   provider_key: string
   speak_policy: string
   reply_delay_s: string
+  random_prob: string
   remark: string
 }
 
@@ -34,6 +35,7 @@ const EMPTY: FormState = {
   provider_key: '',
   speak_policy: 'all',
   reply_delay_s: '10',
+  random_prob: '30',
   remark: '',
 }
 
@@ -91,6 +93,7 @@ export default function AiBindingsPage() {
         provider_key: form.provider_key.trim(),
         speak_policy: form.speak_policy,
         reply_delay_s: Number(form.reply_delay_s) || 0,
+        random_prob: Number(form.random_prob) || 30,
         remark: form.remark.trim() || null,
       })
       toast.success('已创建,群里来消息会自动生成回复进审批')
@@ -172,7 +175,7 @@ export default function AiBindingsPage() {
                       {b.persona || '默认人设'}
                     </TableCell>
                     <TableCell>
-                      {b.speak_policy === 'mention' ? '仅被@时' : '每条消息'}
+                      {b.speak_policy === 'mention' ? '仅被@时' : b.speak_policy === 'random' ? `随机 ~${b.random_prob ?? 30}%` : '每条消息'}
                       {(b.reply_delay_s ?? 0) > 0 && (
                         <div className="text-xs text-muted-foreground">延迟 ~{b.reply_delay_s}s</div>
                       )}
@@ -279,9 +282,22 @@ export default function AiBindingsPage() {
                 <SelectContent>
                   <SelectItem value="all">每条消息都接话</SelectItem>
                   <SelectItem value="mention">仅被 @ 时回复</SelectItem>
+                  <SelectItem value="random">随机接话(按概率)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
+            {form.speak_policy === 'random' && (
+              <div>
+                <Label>发言概率(%,1-100;每条消息按此概率回复)</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={form.random_prob}
+                  onChange={(e) => setForm({ ...form, random_prob: e.target.value })}
+                />
+              </div>
+            )}
             <div>
               <Label>发言延迟(秒,0-300;实际等待 = 该值 ±30%,更像真人)</Label>
               <Input
