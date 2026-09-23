@@ -109,6 +109,7 @@ export interface TgAccount {
   project_id: number
   telegram_user_id: number | null
   phone: string | null
+  username?: string | null
   desired_status: string
   observed_status: string
   remark: string | null

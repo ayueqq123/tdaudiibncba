@@ -128,6 +128,7 @@ export default function AccountsPage() {
               <TableHead>ID</TableHead>
               <TableHead>TG UID</TableHead>
               <TableHead>手机号</TableHead>
+              <TableHead>用户名</TableHead>
               <TableHead>期望</TableHead>
               <TableHead>实际</TableHead>
               <TableHead>备注</TableHead>
@@ -140,6 +141,7 @@ export default function AccountsPage() {
                 <TableCell>{r.id}</TableCell>
                 <TableCell className="font-mono text-xs">{r.telegram_user_id ?? '-'}</TableCell>
                 <TableCell>{r.phone || '-'}</TableCell>
+                <TableCell>{r.username ? `@${r.username}` : '-'}</TableCell>
                 <TableCell>
                   <Badge variant={r.desired_status === 'running' ? 'success' : 'secondary'}>{r.desired_status}</Badge>
                 </TableCell>
