@@ -36,6 +36,7 @@ class TgAiBinding(Base):
     provider_model: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='OpenAI 兼容模型名')
     provider_key_enc: Mapped[str | None] = mapped_column(sa.String(1024), default=None, comment='模型 API key 密文(ItsDCipher)')
     speak_policy: Mapped[str] = mapped_column(sa.String(20), default='all', comment='发言策略 all|mention')
+    reply_delay_s: Mapped[int] = mapped_column(sa.Integer, default=0, comment='发言延迟秒数 0-300,随机 ±30%')
 
     __table_args__ = ({'comment': 'TG AI LangBot 绑定表'},)
 

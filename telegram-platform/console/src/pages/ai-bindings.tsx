@@ -21,6 +21,7 @@ interface FormState {
   provider_model: string
   provider_key: string
   speak_policy: string
+  reply_delay_s: string
   remark: string
 }
 
@@ -32,6 +33,7 @@ const EMPTY: FormState = {
   provider_model: 'deepseek-chat',
   provider_key: '',
   speak_policy: 'all',
+  reply_delay_s: '10',
   remark: '',
 }
 
@@ -88,6 +90,7 @@ export default function AiBindingsPage() {
         provider_model: form.provider_model.trim(),
         provider_key: form.provider_key.trim(),
         speak_policy: form.speak_policy,
+        reply_delay_s: Number(form.reply_delay_s) || 0,
         remark: form.remark.trim() || null,
       })
       toast.success('已创建,群里来消息会自动生成回复进审批')
@@ -168,7 +171,12 @@ export default function AiBindingsPage() {
                     <TableCell className="max-w-[200px] truncate text-xs text-muted-foreground">
                       {b.persona || '默认人设'}
                     </TableCell>
-                    <TableCell>{b.speak_policy === 'mention' ? '仅被@时' : '每条消息'}</TableCell>
+                    <TableCell>
+                      {b.speak_policy === 'mention' ? '仅被@时' : '每条消息'}
+                      {(b.reply_delay_s ?? 0) > 0 && (
+                        <div className="text-xs text-muted-foreground">延迟 ~{b.reply_delay_s}s</div>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <Switch checked={b.status === 'active'} onCheckedChange={() => void doToggle(b)} />
@@ -273,6 +281,16 @@ export default function AiBindingsPage() {
                   <SelectItem value="mention">仅被 @ 时回复</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            <div>
+              <Label>发言延迟(秒,0-300;实际等待 = 该值 ±30%,更像真人)</Label>
+              <Input
+                type="number"
+                min={0}
+                max={300}
+                value={form.reply_delay_s}
+                onChange={(e) => setForm({ ...form, reply_delay_s: e.target.value })}
+              />
             </div>
             <div>
               <Label>备注</Label>

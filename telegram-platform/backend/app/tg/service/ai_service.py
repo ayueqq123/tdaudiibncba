@@ -1,5 +1,7 @@
+import asyncio
 import hashlib
 import json
+import random
 
 from datetime import timedelta
 
@@ -225,6 +227,12 @@ class AiService:
         context: list,
     ) -> TgAiRun:
         """OpenAI 兼容引擎:同步生成 → 直接产候选进审批链(§9 复用)。"""
+        # 发言延迟:模拟真人看消息再回;run 挂 pending/dispatched 期间会话锁定,
+        # 新来的消息自然排队(重复消息不会并发触发第二个生成)
+        delay = binding.reply_delay_s or 0
+        if delay > 0:
+            await asyncio.sleep(random.uniform(delay * 0.7, delay * 1.3))
+
         api_key = AiService._decrypt_provider_key(binding)
         if not api_key or not binding.base_url or not binding.provider_model:
             await ai_run_dao.update_fields(

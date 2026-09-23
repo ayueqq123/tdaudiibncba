@@ -246,6 +246,7 @@ export interface AiBinding {
   provider_model: string | null
   has_provider_key: boolean
   speak_policy: string
+  reply_delay_s?: number
   status: string
   remark: string | null
 }

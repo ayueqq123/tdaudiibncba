@@ -22,6 +22,7 @@ class CreateAiBindingParam(SchemaBase):
     provider_model: str | None = Field(default=None, description='OpenAI 兼容模型名')
     provider_key: str | None = Field(default=None, description='模型 API key(服务端加密落库,不回显)')
     speak_policy: str = Field(default='all', description='发言策略 all|mention')
+    reply_delay_s: int = Field(default=0, ge=0, le=300, description='发言延迟秒数,实际等待 = 该值 ±30%')
     remark: str | None = None
 
 
@@ -40,6 +41,7 @@ class UpdateAiBindingParam(SchemaBase):
     provider_model: str | None = None
     provider_key: str | None = None
     speak_policy: str | None = None
+    reply_delay_s: int | None = Field(default=None, ge=0, le=300)
     status: str | None = None
     remark: str | None = None
 
@@ -129,6 +131,7 @@ class GetAiBindingDetail(SchemaBase):
     provider_model: str | None
     has_provider_key: bool = False
     speak_policy: str
+    reply_delay_s: int
 
 
 class GetAiConversationDetail(SchemaBase):
