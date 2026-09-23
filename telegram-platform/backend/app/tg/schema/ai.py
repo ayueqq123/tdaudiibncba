@@ -74,6 +74,7 @@ class AiTriggerParam(SchemaBase):
     agent_key: str | None = None
     source_refs: list[dict] | None = Field(default=None, description='触发来源消息集合')
     context_max_messages: int = Field(default=12, ge=0, le=100, description='内嵌上下文条数上限')
+    context_override: list[dict] | None = Field(default=None, description='覆盖上下文(群最新消息缓存)')
 
 
 class CreateAiConversationParam(SchemaBase):

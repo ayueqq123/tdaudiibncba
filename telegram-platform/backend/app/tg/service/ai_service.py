@@ -119,7 +119,8 @@ class AiService:
             raise errors.ConflictError(msg='该会话已有生成中的 run,请等待回调或取消')
 
         # D0 结论:无历史注入接口 → 平台侧把最近已发送上下文内嵌进本条消息
-        context = (conv.context_messages or [])[-obj.context_max_messages :]
+        context_src = obj.context_override if obj.context_override is not None else (conv.context_messages or [])
+        context = context_src[-obj.context_max_messages :]
         lines = [f"[Context — epoch {conv.context_epoch}, last {len(context)} messages]"]
         lines += [f"- {m.get('sender', '?')}: {m.get('text', '')}" for m in context]
         lines.append('[Trigger]')
@@ -284,13 +285,17 @@ class AiService:
             b
             for b in bindings
             if b.engine == 'openai'
-            and b.status == 'active'
             and b.chat_id is not None
             and AiService._chat_match(b.chat_id, obj.chat_id)
             and (b.topic_id or None) == (obj.topic_id or None)
         ]
         n = 0
         for b in matched:
+            recent = list(b.recent_messages or [])
+            recent.append({'sender': obj.sender_name or 'User', 'text': (obj.text or '')[:500]})
+            b.recent_messages = recent[-100:]
+            if b.status != 'active':
+                continue
             if b.speak_policy == 'mention' and username:
                 if f'@{username}' not in (obj.text or ''):
                     continue
@@ -312,6 +317,7 @@ class AiService:
                         sender_id=str(obj.sender_id) if obj.sender_id else None,
                         source_refs=[{'chat_id': obj.chat_id, 'message_id': obj.message_id}],
                         context_max_messages=b.context_max_messages or 12,
+                        context_override=list(b.recent_messages[:-1]),
                     ),
                 )
                 n += 1

@@ -39,6 +39,9 @@ class TgAiBinding(Base):
     reply_delay_s: Mapped[int] = mapped_column(sa.Integer, default=0, comment='发言延迟秒数 0-300,随机 ±30%')
     random_prob: Mapped[int] = mapped_column(sa.Integer, default=30, comment='随机发言概率 1-100(speak_policy=random)')
     context_max_messages: Mapped[int] = mapped_column(sa.Integer, default=12, comment='发给 AI 的上下文条数 0-100')
+    recent_messages: Mapped[list] = mapped_column(
+        sa.JSON, default_factory=list, comment='群最新消息缓存(ring buffer,最多 100 条)'
+    )
 
     __table_args__ = ({'comment': 'TG AI LangBot 绑定表'},)
 
