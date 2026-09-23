@@ -226,6 +226,28 @@ export const tgApi = {
   issueCommand: (accountId: number, b: any) => api.post(`${TG}/runtime/accounts/${accountId}/commands`, b),
   ensureWorkspace: (userId?: number) =>
     api.post<{ tenant_id: number; project_id: number }>(`${TG}/workspaces/ensure`, userId ? { user_id: userId } : {}),
+  aiBindings: () => api.get<AiBinding[]>(`${TG}/ai/bindings`),
+  createAiBinding: (b: any) => api.post<AiBinding>(`${TG}/ai/bindings`, b),
+  updateAiBinding: (id: number, b: any) => api.put<AiBinding>(`${TG}/ai/bindings/${id}`, b),
+  deleteAiBinding: (id: number) => api.del(`${TG}/ai/bindings/${id}`),
+}
+
+export interface AiBinding {
+  id: number
+  uuid: string
+  tenant_id: number
+  project_id: number
+  account_id: number
+  engine: string
+  base_url: string
+  chat_id: number | null
+  topic_id: number | null
+  persona: string | null
+  provider_model: string | null
+  has_provider_key: boolean
+  speak_policy: string
+  status: string
+  remark: string | null
 }
 
 // ---------- sys 登录账号 ----------

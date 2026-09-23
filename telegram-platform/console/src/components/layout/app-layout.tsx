@@ -11,6 +11,7 @@ import {
   GitBranch,
   Truck,
   ShieldCheck,
+  Bot,
   Terminal,
   KeyRound,
   Menu,
@@ -45,7 +46,10 @@ const GROUPS: { label: string; items: NavItem[] }[] = [
   },
   {
     label: '炒群 AI',
-    items: [{ to: '/approvals', icon: ShieldCheck, label: 'AI 回复审批' }],
+    items: [
+      { to: '/ai-bindings', icon: Bot, label: '炒群配置' },
+      { to: '/approvals', icon: ShieldCheck, label: 'AI 回复审批' },
+    ],
   },
   {
     label: '设置',

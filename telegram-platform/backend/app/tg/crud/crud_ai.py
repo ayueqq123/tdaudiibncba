@@ -33,6 +33,12 @@ class CRUDAiBinding(CRUDPlus[TgAiBinding]):
     async def update_status(self, db: AsyncSession, pk: int, status: str) -> int:
         return await self.update_model(db, pk, {'status': status})
 
+    async def update_fields(self, db: AsyncSession, pk: int, fields: dict) -> int:
+        return await self.update_model(db, pk, fields)
+
+    async def delete(self, db: AsyncSession, pk: int) -> int:
+        return await self.delete_model_by_column(db, id=pk)
+
 
 class CRUDAiConversation(CRUDPlus[TgAiConversation]):
     """AI 会话表操作"""

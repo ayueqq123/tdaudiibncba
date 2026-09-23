@@ -269,3 +269,72 @@ def test_ai_orphan_callback_pending_link(
     resp = _post_cb(client, buuid, body)
     assert resp.status_code == 200
     assert resp.json()['result'] == 'ok'
+
+
+async def _fake_openai(*, base_url: str, api_key: str, model: str, messages: list) -> tuple:
+    return True, '好的亲,马上安排', None
+
+
+def _mk_openai_binding(
+    client: TestClient, headers: dict[str, str], tid: int, pid: int, aid: int
+) -> int:
+    resp = client.post(
+        '/tg/ai/bindings',
+        headers=headers,
+        json={
+            'tenant_id': tid,
+            'project_id': pid,
+            'account_id': aid,
+            'engine': 'openai',
+            'base_url': 'https://api.deepseek.com/v1',
+            'chat_id': -1002822138285,
+            'persona': '你是老群友,说话简短',
+            'provider_model': 'deepseek-chat',
+            'provider_key': 'sk-test-key-123',
+            'speak_policy': 'all',
+        },
+    )
+    assert resp.json()['code'] == 200, resp.text
+    data = resp.json()['data']
+    assert data['engine'] == 'openai'
+    assert data['has_provider_key'] is True
+    assert 'provider_key_enc' not in data and 'provider_key' not in data
+    return data['id']
+
+
+def test_openai_binding_generate_to_candidate(
+    client: TestClient, token_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tid, pid, aid = _mk_scope(client, token_headers, 'AI9')
+    bid = _mk_openai_binding(client, token_headers, tid, pid, aid)
+
+    monkeypatch.setattr('backend.app.tg.service.ai_service.openai_complete', _fake_openai)
+    run = _trigger(client, token_headers, bid, chat=-1002822138285)
+    assert run['status'] == 'completed'
+    assert run['candidate_id'] is not None
+
+    # 直接进审批链:pending 候选已生成
+    appr = client.get(
+        '/tg/approvals', headers=token_headers, params={'project_id': pid, 'status': 'pending'}
+    ).json()['data']
+    assert len(appr) >= 1
+    # provider_key 不出现在任何回显
+    assert 'sk-test' not in json.dumps(run)
+
+
+def test_openai_binding_update_and_delete(
+    client: TestClient, token_headers: dict[str, str]
+) -> None:
+    tid, pid, aid = _mk_scope(client, token_headers, 'AI10')
+    bid = _mk_openai_binding(client, token_headers, tid, pid, aid)
+
+    resp = client.put(
+        f'/tg/ai/bindings/{bid}',
+        headers=token_headers,
+        json={'status': 'paused', 'persona': '换人'},
+    )
+    assert resp.json()['code'] == 200
+    assert resp.json()['data']['status'] == 'paused'
+
+    resp = client.delete(f'/tg/ai/bindings/{bid}', headers=token_headers)
+    assert resp.json()['code'] == 200

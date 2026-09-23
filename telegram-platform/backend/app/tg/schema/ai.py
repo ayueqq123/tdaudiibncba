@@ -6,16 +6,54 @@ from backend.common.schema import SchemaBase
 
 
 class CreateAiBindingParam(SchemaBase):
-    """注册 LangBot HTTP Bot 绑定"""
+    """注册 AI 绑定:engine='langbot' 走 LangBot HTTP Bot;engine='openai' 直连 OpenAI 兼容接口(炒群)"""
 
     tenant_id: int
     project_id: int
     account_id: int = Field(description='默认发送账号')
-    bot_uuid: str = Field(description='LangBot bot UUID')
-    base_url: str = Field(description='LangBot 内部地址,如 http://langbot:5300')
-    inbound_secret_ref: str = Field(description='入站签名密钥引用,形如 env:NAME')
-    outbound_secret_ref: str = Field(description='回调验签密钥引用,形如 env:NAME')
+    engine: str = Field(default='langbot', description='引擎: langbot|openai')
+    bot_uuid: str = Field(default='', description='LangBot bot UUID')
+    base_url: str = Field(default='', description='LangBot 内部地址或 OpenAI 兼容 base_url')
+    inbound_secret_ref: str = Field(default='', description='入站签名密钥引用,形如 env:NAME')
+    outbound_secret_ref: str = Field(default='', description='回调验签密钥引用,形如 env:NAME')
+    chat_id: int | None = Field(default=None, description='绑定群 chat_id(openai 自动触发)')
+    topic_id: int | None = Field(default=None, description='绑定话题')
+    persona: str | None = Field(default=None, description='人设/系统提示词')
+    provider_model: str | None = Field(default=None, description='OpenAI 兼容模型名')
+    provider_key: str | None = Field(default=None, description='模型 API key(服务端加密落库,不回显)')
+    speak_policy: str = Field(default='all', description='发言策略 all|mention')
     remark: str | None = None
+
+
+class UpdateAiBindingParam(SchemaBase):
+    """更新 AI 绑定(provider_key 留空表示不更换)"""
+
+    account_id: int | None = None
+    engine: str | None = None
+    base_url: str | None = None
+    bot_uuid: str | None = None
+    inbound_secret_ref: str | None = None
+    outbound_secret_ref: str | None = None
+    chat_id: int | None = None
+    topic_id: int | None = None
+    persona: str | None = None
+    provider_model: str | None = None
+    provider_key: str | None = None
+    speak_policy: str | None = None
+    status: str | None = None
+    remark: str | None = None
+
+
+class AiGroupEventParam(SchemaBase):
+    """worker 上报的群消息事件(openai 引擎自动触发入口)"""
+
+    api_row_id: int = Field(description='账号 API 行 id')
+    chat_id: int
+    message_id: int
+    text: str = Field(description='消息文本')
+    sender_id: int | None = None
+    sender_name: str = 'User'
+    topic_id: int | None = None
 
 
 class AiTriggerParam(SchemaBase):
@@ -84,6 +122,13 @@ class GetAiBindingDetail(SchemaBase):
     outbound_secret_ref: str
     status: str
     remark: str | None
+    engine: str
+    chat_id: int | None
+    topic_id: int | None
+    persona: str | None
+    provider_model: str | None
+    has_provider_key: bool = False
+    speak_policy: str
 
 
 class GetAiConversationDetail(SchemaBase):

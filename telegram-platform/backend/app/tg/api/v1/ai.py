@@ -9,6 +9,7 @@ from backend.app.tg.schema.ai import (
     GetAiBindingDetail,
     GetAiConversationDetail,
     GetAiRunDetail,
+    UpdateAiBindingParam,
 )
 from backend.app.tg.service.ai_service import ai_service
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
@@ -38,9 +39,34 @@ async def get_bindings(
 async def create_binding(
     db: CurrentSessionTransaction, obj: CreateAiBindingParam
 ) -> ResponseSchemaModel[GetAiBindingDetail]:
-    binding = await ai_binding_dao.create(db, obj)
-    await db.flush()
+    binding = await ai_service.create_binding(db=db, obj=obj)
     return response_base.success(data=binding)
+
+
+@router.put(
+    '/bindings/{pk}',
+    summary='更新 AI 绑定',
+    dependencies=[Depends(RequestPermission('tg:ai:binding:edit')), DependsRBAC],
+)
+async def update_binding(
+    db: CurrentSessionTransaction,
+    pk: Annotated[int, Path(description='绑定 ID')],
+    obj: UpdateAiBindingParam,
+) -> ResponseSchemaModel[GetAiBindingDetail]:
+    binding = await ai_service.update_binding(db=db, pk=pk, obj=obj)
+    return response_base.success(data=binding)
+
+
+@router.delete(
+    '/bindings/{pk}',
+    summary='删除 AI 绑定',
+    dependencies=[Depends(RequestPermission('tg:ai:binding:edit')), DependsRBAC],
+)
+async def delete_binding(
+    db: CurrentSessionTransaction, pk: Annotated[int, Path(description='绑定 ID')]
+) -> ResponseSchemaModel[int]:
+    n = await ai_service.delete_binding(db=db, pk=pk)
+    return response_base.success(data=n)
 
 
 @router.get('/conversations', summary='AI 会话列表', dependencies=[DependsJwtAuth])

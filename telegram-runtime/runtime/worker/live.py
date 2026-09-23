@@ -309,8 +309,12 @@ class AccountSession:
 
 
 def make_ingest_handler(session_factory, account_id: str, tenant_id: str,
-                        project_id: str):
-    """Telethon event handler -> EventInbox.ingest (§6.4 boundary 1)."""
+                        project_id: str, *, control=None, api_row_id: int | None = None):
+    """Telethon event handler -> EventInbox.ingest (§6.4 boundary 1).
+
+    control/api_row_id set → also reports new text messages to the control
+    plane's AI trigger endpoint (fire-and-forget; failures never break ingest).
+    """
     normalizer = EventNormalizer()
 
     async def on_update(event) -> None:
@@ -320,10 +324,35 @@ def make_ingest_handler(session_factory, account_id: str, tenant_id: str,
                 async with session_factory() as s:
                     await EventInboxRepository(s).ingest(
                         src_event, tenant_id=tenant_id, project_id=project_id)
+                if control is not None and api_row_id is not None and raw.kind is EventKind.CREATE:
+                    await _report_ai_event(event, raw, control, api_row_id)
         except Exception:
             log.exception("ingest failed account=%s", account_id)
 
     return on_update
+
+
+async def _report_ai_event(event, raw, control, api_row_id: int) -> None:
+    """Best-effort group-message report for AI 炒群 (worker -> control plane)."""
+    msg = getattr(event, "message", None)
+    text = ((getattr(msg, "message", None) or "")).strip()
+    if not text:
+        return
+    sender = getattr(msg, "sender", None)
+    name = (
+        getattr(sender, "username", None)
+        or getattr(sender, "first_name", None)
+        or str(raw.sender_id or "User")
+    )
+    try:
+        await control.notify_ai_event({
+            "api_row_id": api_row_id, "chat_id": raw.chat_id,
+            "message_id": raw.message_id, "text": text[:2000],
+            "sender_id": raw.sender_id, "sender_name": name,
+            "topic_id": raw.topic_id,
+        })
+    except Exception:
+        log.warning("ai event notify failed", exc_info=True)
 
 
 def _sender_id(msg) -> int | None:

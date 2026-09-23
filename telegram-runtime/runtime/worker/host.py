@@ -192,7 +192,8 @@ class WorkerHostMain:
             register_live_events(
                 session,
                 make_ingest_handler(self._session_factory, a.account_id,
-                                    a.tenant_id, a.project_id),
+                                    a.tenant_id, a.project_id,
+                                    control=self.control, api_row_id=a.api_row_id),
             )
             self.registry.register(a.account_id, generation)
             self.router.add(

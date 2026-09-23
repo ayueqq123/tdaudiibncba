@@ -15,11 +15,13 @@ from backend.app.tg.crud.crud_clone_rule import clone_rule_dao, clone_rule_versi
 from backend.app.tg.crud.crud_project import project_dao
 from backend.app.tg.crud.crud_telegram_account import telegram_account_dao
 from backend.app.tg.crud.crud_tenant import tenant_dao
+from backend.app.tg.schema.ai import AiGroupEventParam
 from backend.app.tg.schema.runtime_command import (
     AckRuntimeCommandParam,
     CreateRuntimeCommandParam,
     GetRuntimeCommandDetail,
 )
+from backend.app.tg.service.ai_service import ai_service
 from backend.app.tg.service.command_service import runtime_command_service
 from backend.common.exception import errors
 from backend.common.response.response_schema import (
@@ -192,6 +194,24 @@ async def pull_commands(
 ) -> ResponseSchemaModel[list[GetRuntimeCommandDetail]]:
     data = await runtime_command_service.get_pending(db=db, account_id=account_id)
     return response_base.success(data=data)
+
+
+@router.post(
+    '/ai/event',
+    summary='Worker 上报群消息触发 AI 生成(炒群)',
+    dependencies=[DependsWorkerAuth],
+)
+async def ai_group_event(
+    db: CurrentSessionTransaction, obj: AiGroupEventParam
+) -> ResponseSchemaModel[dict]:
+    """openai 引擎绑定按 chat_id 匹配→逐绑定 trigger→生成→候选→审批。"""
+    account = await telegram_account_dao.get(db, obj.api_row_id)
+    if account is None:
+        raise errors.NotFoundError(msg='账号不存在')
+    n = await ai_service.handle_group_event(
+        db=db, obj=obj, account=account, username=account.username
+    )
+    return response_base.success(data={'triggered': n})
 
 
 @router.post(

@@ -2,6 +2,9 @@ import hashlib
 import json
 
 from datetime import timedelta
+
+from backend.core.conf import settings
+from backend.utils.encrypt import ItsDCipher
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
@@ -18,14 +21,18 @@ from backend.app.tg.metrics import tg_ai_callback_total, tg_ai_run_active, tg_ai
 from backend.app.tg.model import TgReplyCandidate
 from backend.app.tg.model.ai import TgAiBinding, TgAiCallback, TgAiConversation, TgAiRun
 from backend.app.tg.schema.ai import (
+    AiGroupEventParam,
     AiTriggerParam,
+    CreateAiBindingParam,
     CreateAiCallbackParam,
     CreateAiConversationParam,
     CreateAiRunParam,
+    UpdateAiBindingParam,
 )
 from backend.app.tg.schema.approval import CreateApprovalParam, CreateReplyCandidateParam
 from backend.app.tg.service.ai_engine import (
     langbot_engine_adapter,
+    openai_complete,
     resolve_secret,
     verify_callback_signature,
 )
@@ -37,6 +44,17 @@ from backend.utils.timezone import timezone
 RUN_DEADLINE_SECONDS = 180
 # 候选有效期:审批 SLA 之外的安全边界
 CANDIDATE_TTL_HOURS = 24
+
+DEFAULT_PERSONA = (
+    '你是一个群聊里的普通成员,说话自然简短,像真人聊天。'
+    '不要承认自己 AI,不要输出括号动作描述,不要长篇大论。'
+)
+
+
+def _provider_cipher() -> ItsDCipher:
+    """模型 API key 加解密器:TOKEN_SECRET_KEY 派生 32 字节密钥。"""
+    key = hashlib.sha256(settings.TOKEN_SECRET_KEY.encode()).digest()
+    return ItsDCipher(key)
 
 
 class AiService:
@@ -126,6 +144,9 @@ class AiService:
         )
         await db.flush()
 
+        if binding.engine == 'openai':
+            return await AiService._openai_generate(db, binding, conv, run, obj, context)
+
         result = await langbot_engine_adapter.submit(
             binding,
             conv.session_id,
@@ -154,6 +175,147 @@ class AiService:
             )
             tg_ai_run_total.labels(status='failed').inc()
         return await ai_run_dao.get(db, run.id)
+
+    @staticmethod
+    async def create_binding(*, db: AsyncSession, obj: CreateAiBindingParam):
+        """provider_key 明文只进不出:加密进 provider_key_enc,API 永不回显。"""
+        fields = obj.model_dump(exclude={'provider_key'})
+        if obj.provider_key:
+            fields['provider_key_enc'] = _provider_cipher().encrypt(obj.provider_key)
+        binding = TgAiBinding(**fields)
+        db.add(binding)
+        await db.flush()
+        return binding
+
+    @staticmethod
+    async def update_binding(*, db: AsyncSession, pk: int, obj: UpdateAiBindingParam):
+        binding = await ai_binding_dao.get(db, pk)
+        if not binding:
+            raise errors.NotFoundError(msg='绑定不存在')
+        fields = obj.model_dump(exclude_unset=True, exclude={'provider_key'})
+        if obj.provider_key:
+            fields['provider_key_enc'] = _provider_cipher().encrypt(obj.provider_key)
+        if fields:
+            await ai_binding_dao.update_fields(db, pk, fields)
+        return await ai_binding_dao.get(db, pk)
+
+    @staticmethod
+    async def delete_binding(*, db: AsyncSession, pk: int) -> int:
+        binding = await ai_binding_dao.get(db, pk)
+        if not binding:
+            raise errors.NotFoundError(msg='绑定不存在')
+        return await ai_binding_dao.delete(db, pk)
+
+    @staticmethod
+    def _decrypt_provider_key(binding: TgAiBinding) -> str | None:
+        if not binding.provider_key_enc:
+            return None
+        try:
+            return _provider_cipher().decrypt(binding.provider_key_enc)
+        except Exception:
+            return None
+
+    @staticmethod
+    async def _openai_generate(
+        db: AsyncSession,
+        binding: TgAiBinding,
+        conv: TgAiConversation,
+        run: TgAiRun,
+        obj: AiTriggerParam,
+        context: list,
+    ) -> TgAiRun:
+        """OpenAI 兼容引擎:同步生成 → 直接产候选进审批链(§9 复用)。"""
+        api_key = AiService._decrypt_provider_key(binding)
+        if not api_key or not binding.base_url or not binding.provider_model:
+            await ai_run_dao.update_fields(
+                db, run.id, {'status': 'failed', 'last_error': 'provider_not_configured'}
+            )
+            tg_ai_run_total.labels(status='failed').inc()
+            await AiService._unlock_conversation(db, conv.id)
+            return await ai_run_dao.get(db, run.id)
+
+        messages = [{'role': 'system', 'content': binding.persona or DEFAULT_PERSONA}]
+        messages += [
+            {'role': 'user', 'content': f"{m.get('sender', '?')}: {m.get('text', '')}"}
+            for m in context
+        ]
+        messages.append({'role': 'user', 'content': f'{obj.sender_name}: {obj.text}'})
+        ok, text, err = await openai_complete(
+            base_url=binding.base_url,
+            api_key=api_key,
+            model=binding.provider_model,
+            messages=messages,
+        )
+        if ok:
+            candidate = await AiService._create_candidate(db, run, conv, text)
+            await ai_run_dao.update_fields(
+                db,
+                run.id,
+                {
+                    'status': 'completed',
+                    'candidate_id': candidate.id,
+                    'completed_at': timezone.now(),
+                },
+            )
+            tg_ai_run_total.labels(status='completed').inc()
+        else:
+            await ai_run_dao.update_fields(
+                db, run.id, {'status': 'failed', 'last_error': err or 'generate_failed'}
+            )
+            tg_ai_run_total.labels(status='failed').inc()
+        await AiService._unlock_conversation(db, conv.id)
+        return await ai_run_dao.get(db, run.id)
+
+    @staticmethod
+    async def handle_group_event(*, db: AsyncSession, obj: AiGroupEventParam, account, username: str | None) -> int:
+        """worker 上报的群消息 → 匹配 openai 绑定 → trigger。返回触发的 run 数。"""
+        bindings = await ai_binding_dao.get_all(
+            db, tenant_id=account.tenant_id, project_id=account.project_id
+        )
+        matched = [
+            b
+            for b in bindings
+            if b.engine == 'openai'
+            and b.status == 'active'
+            and b.chat_id is not None
+            and AiService._chat_match(b.chat_id, obj.chat_id)
+            and (b.topic_id or None) == (obj.topic_id or None)
+        ]
+        n = 0
+        for b in matched:
+            if b.speak_policy == 'mention' and username:
+                if f'@{username}' not in (obj.text or ''):
+                    continue
+            # 上报账号自己发的消息不触发(防自问自答循环)
+            if obj.sender_id is not None and obj.sender_id == account.telegram_user_id:
+                continue
+            try:
+                await AiService.trigger(
+                    db=db,
+                    obj=AiTriggerParam(
+                        binding_id=b.id,
+                        chat_id=obj.chat_id,
+                        topic_id=obj.topic_id,
+                        text=obj.text,
+                        sender_name=obj.sender_name,
+                        sender_id=str(obj.sender_id) if obj.sender_id else None,
+                        source_refs=[{'chat_id': obj.chat_id, 'message_id': obj.message_id}],
+                    ),
+                )
+                n += 1
+            except errors.RequestError:
+                # 会话域已有活动 run → 让位,不触发重复生成
+                continue
+        return n
+
+    @staticmethod
+    def _chat_match(binding_chat: int, event_chat: int) -> bool:
+        """chat_id 等值匹配,兼容 -100 前缀差异。"""
+        if binding_chat == event_chat:
+            return True
+        norm = abs(binding_chat) % 10**15 if abs(binding_chat) > 10**10 else abs(binding_chat)
+        en = abs(event_chat) % 10**15 if abs(event_chat) > 10**10 else abs(event_chat)
+        return norm == en
 
     @staticmethod
     async def handle_callback(

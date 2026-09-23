@@ -28,8 +28,20 @@ class TgAiBinding(Base):
     outbound_secret_ref: Mapped[str] = mapped_column(sa.String(128), comment='回调验签密钥引用 env:NAME')
     status: Mapped[str] = mapped_column(sa.String(20), default='active', index=True)
     remark: Mapped[str | None] = mapped_column(sa.String(255), default=None)
+    # ---- 炒群配置(engine='openai' 时生效)----
+    engine: Mapped[str] = mapped_column(sa.String(20), default='langbot', index=True, comment='引擎 langbot|openai')
+    chat_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, index=True, comment='绑定群 chat_id')
+    topic_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, comment='绑定话题')
+    persona: Mapped[str | None] = mapped_column(sa.Text, default=None, comment='人设/系统提示词')
+    provider_model: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='OpenAI 兼容模型名')
+    provider_key_enc: Mapped[str | None] = mapped_column(sa.String(1024), default=None, comment='模型 API key 密文(ItsDCipher)')
+    speak_policy: Mapped[str] = mapped_column(sa.String(20), default='all', comment='发言策略 all|mention')
 
     __table_args__ = ({'comment': 'TG AI LangBot 绑定表'},)
+
+    @property
+    def has_provider_key(self) -> bool:
+        return bool(self.provider_key_enc)
 
 
 class TgAiConversation(Base):

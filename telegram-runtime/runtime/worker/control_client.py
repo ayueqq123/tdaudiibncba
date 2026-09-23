@@ -140,6 +140,10 @@ class ControlClient:
         await self._post(f"/commands/{command_id}/ack",
                          {"status": status, "result": result[:500]})
 
+    async def notify_ai_event(self, payload: dict[str, Any]) -> None:
+        """Best-effort group-message report for AI 炒群 triggers (fire-and-forget)."""
+        await self._post("/ai/event", payload)
+
     async def get_candidate(self, candidate_uuid: str) -> CandidatePayload:
         d = await self._get(f"/candidates/{candidate_uuid}")
         return CandidatePayload(
