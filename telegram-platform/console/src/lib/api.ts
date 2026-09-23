@@ -230,6 +230,8 @@ export const tgApi = {
   createAiBinding: (b: any) => api.post<AiBinding>(`${TG}/ai/bindings`, b),
   updateAiBinding: (id: number, b: any) => api.put<AiBinding>(`${TG}/ai/bindings/${id}`, b),
   deleteAiBinding: (id: number) => api.del(`${TG}/ai/bindings/${id}`),
+  setAutoApprove: (tenant_id: number, project_id: number, enabled: boolean) =>
+    api.put<{ updated: number; enabled: boolean }>(`${TG}/ai/auto-approve`, { tenant_id, project_id, enabled }),
 }
 
 export interface AiBinding {
@@ -249,6 +251,7 @@ export interface AiBinding {
   reply_delay_s?: number
   random_prob?: number
   context_max_messages?: number
+  auto_approve?: boolean
   status: string
   remark: string | null
 }

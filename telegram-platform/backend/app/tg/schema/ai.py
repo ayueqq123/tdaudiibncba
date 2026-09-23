@@ -24,6 +24,7 @@ class CreateAiBindingParam(SchemaBase):
     speak_policy: str = Field(default='all', description='发言策略 all|mention|random')
     random_prob: int = Field(default=30, ge=1, le=100, description='随机发言概率 1-100(speak_policy=random 时生效)')
     context_max_messages: int = Field(default=12, ge=0, le=100, description='发给 AI 的上下文条数')
+    auto_approve: bool = Field(default=False, description='自动审批:候选直通发送队列')
     reply_delay_s: int = Field(default=0, ge=0, le=300, description='发言延迟秒数,实际等待 = 该值 ±30%')
     remark: str | None = None
 
@@ -45,9 +46,18 @@ class UpdateAiBindingParam(SchemaBase):
     speak_policy: str | None = None
     random_prob: int | None = Field(default=None, ge=1, le=100)
     context_max_messages: int | None = Field(default=None, ge=0, le=100)
+    auto_approve: bool | None = None
     reply_delay_s: int | None = Field(default=None, ge=0, le=300)
     status: str | None = None
     remark: str | None = None
+
+
+class SetAutoApproveParam(SchemaBase):
+    """批量开关项目内 openai 绑定的自动审批"""
+
+    tenant_id: int
+    project_id: int
+    enabled: bool
 
 
 class AiGroupEventParam(SchemaBase):
@@ -139,6 +149,7 @@ class GetAiBindingDetail(SchemaBase):
     reply_delay_s: int
     random_prob: int
     context_max_messages: int
+    auto_approve: bool
 
 
 class GetAiConversationDetail(SchemaBase):

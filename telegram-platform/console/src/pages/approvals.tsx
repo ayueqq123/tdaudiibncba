@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
-import { tgApi, type Approval, type ReplyCandidate } from '@/lib/api'
+import { tgApi, type Approval, type ReplyCandidate, type AiBinding } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
+import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
@@ -26,15 +27,34 @@ export default function ApprovalsPage() {
   const [reason, setReason] = useState('')
   const [open, setOpen] = useState(false)
   const [acting, setActing] = useState(false)
+  const [bindings, setBindings] = useState<AiBinding[]>([])
+  const [toggling, setToggling] = useState(false)
+
+  const autoOn = bindings.length > 0 && bindings.every((b) => b.auto_approve)
+
+  async function toggleAuto(v: boolean) {
+    setToggling(true)
+    try {
+      const ws = await tgApi.ensureWorkspace()
+      await tgApi.setAutoApprove(ws.tenant_id, ws.project_id, v)
+      setBindings(await tgApi.aiBindings())
+      toast.success(v ? '自动审批已开:新候选直通发送' : '自动审批已关:候选需人工通过')
+    } catch {
+      toast.error('操作失败')
+    } finally {
+      setToggling(false)
+    }
+  }
 
   async function load() {
     setLoading(true)
     try {
-      const [list, candList] = await Promise.all([tgApi.approvals(status ? { status } : {}), tgApi.candidates()])
+      const [list, candList, bs] = await Promise.all([tgApi.approvals(status ? { status } : {}), tgApi.candidates(), tgApi.aiBindings()])
       setRows(list)
       const map: Record<number, ReplyCandidate> = {}
       for (const c of candList) map[c.id] = c
       setCands(map)
+      setBindings(bs.filter((b) => b.engine === 'openai'))
     } catch (e: any) {
       toast.error(e?.detail || '加载失败')
     } finally {
@@ -91,6 +111,10 @@ export default function ApprovalsPage() {
               ))}
             </SelectContent>
           </Select>
+          <div className="flex items-center gap-2 rounded-md border px-3 py-1.5">
+            <Switch checked={autoOn} onCheckedChange={(v) => void toggleAuto(v)} disabled={toggling || bindings.length === 0} />
+            <span className="text-sm">自动通过</span>
+          </div>
           <Button variant="outline" onClick={load} disabled={loading}>
             <RefreshCw className="h-4 w-4" /> 刷新
           </Button>

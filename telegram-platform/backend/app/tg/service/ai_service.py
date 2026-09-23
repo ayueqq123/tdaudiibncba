@@ -19,6 +19,7 @@ from backend.app.tg.crud.crud_ai import (
     ai_run_dao,
 )
 from backend.app.tg.crud.crud_approval import approval_dao, reply_candidate_dao
+from backend.app.tg.service.approval_service import ApprovalService
 from backend.app.tg.metrics import tg_ai_callback_total, tg_ai_run_active, tg_ai_run_total
 from backend.app.tg.model import TgReplyCandidate
 from backend.app.tg.model.ai import TgAiBinding, TgAiCallback, TgAiConversation, TgAiRun
@@ -256,7 +257,7 @@ class AiService:
             messages=messages,
         )
         if ok:
-            candidate = await AiService._create_candidate(db, run, conv, text)
+            candidate = await AiService._create_candidate(db, run, conv, text, binding=binding)
             await ai_run_dao.update_fields(
                 db,
                 run.id,
@@ -475,7 +476,8 @@ class AiService:
 
     @staticmethod
     async def _create_candidate(
-        db: AsyncSession, run: TgAiRun, conv: TgAiConversation, text: str
+        db: AsyncSession, run: TgAiRun, conv: TgAiConversation, text: str,
+        binding: TgAiBinding | None = None,
     ) -> TgReplyCandidate:
         content_hash = hashlib.sha256(text.encode()).hexdigest()
         expires = timezone.now() + timedelta(hours=CANDIDATE_TTL_HOURS)
@@ -494,7 +496,8 @@ class AiService:
             ),
         )
         await db.flush()
-        await approval_dao.create(
+        auto = bool(binding and binding.auto_approve)
+        approval = await approval_dao.create(
             db,
             CreateApprovalParam(
                 tenant_id=run.tenant_id,
@@ -503,9 +506,14 @@ class AiService:
                 candidate_version=candidate.version,
                 content_hash=content_hash,
                 expires_at=expires,
-                status='pending',
+                status='approved' if auto else 'pending',
+                decided_at=timezone.now() if auto else None,
             ),
         )
+        await db.flush()
+        if auto:
+            await reply_candidate_dao.update_status(db, candidate.id, 'approved')
+            await ApprovalService._create_send_job(db, approval, candidate)
         return candidate
 
     @staticmethod

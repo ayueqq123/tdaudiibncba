@@ -9,6 +9,7 @@ from backend.app.tg.schema.ai import (
     GetAiBindingDetail,
     GetAiConversationDetail,
     GetAiRunDetail,
+    SetAutoApproveParam,
     UpdateAiBindingParam,
 )
 from backend.app.tg.service.ai_service import ai_service
@@ -55,6 +56,23 @@ async def update_binding(
 ) -> ResponseSchemaModel[GetAiBindingDetail]:
     binding = await ai_service.update_binding(db=db, pk=pk, obj=obj)
     return response_base.success(data=binding)
+
+
+@router.put(
+    '/auto-approve',
+    summary='批量开关自动审批(项目内所有 openai 绑定)',
+    dependencies=[Depends(RequestPermission('tg:ai:binding:edit')), DependsRBAC],
+)
+async def set_auto_approve(
+    db: CurrentSessionTransaction, obj: SetAutoApproveParam
+) -> ResponseSchemaModel[dict]:
+    bindings = await ai_binding_dao.get_all(db, tenant_id=obj.tenant_id, project_id=obj.project_id)
+    n = 0
+    for b in bindings:
+        if b.engine == 'openai' and b.auto_approve != obj.enabled:
+            await ai_binding_dao.update_fields(db, b.id, {'auto_approve': obj.enabled})
+            n += 1
+    return response_base.success(data={'updated': n, 'enabled': obj.enabled})
 
 
 @router.delete(
