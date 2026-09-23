@@ -118,10 +118,16 @@ export default function ApprovalsPage() {
               ))}
             </SelectContent>
           </Select>
-          <div className="flex items-center gap-2 rounded-md border px-3 py-1.5">
-            <Switch checked={autoOn} onCheckedChange={(v) => void toggleAuto(v)} disabled={toggling || bindings.length === 0} />
+          <button
+            type="button"
+            className="flex items-center gap-2 rounded-md border px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={toggling || bindings.length === 0}
+            title={bindings.length === 0 ? '先在炒群配置里建绑定' : ''}
+            onClick={() => void toggleAuto(!autoOn)}
+          >
+            <Switch checked={autoOn} disabled className="pointer-events-none" />
             <span className="text-sm">自动通过</span>
-          </div>
+          </button>
           <Button variant="outline" onClick={load} disabled={loading}>
             <RefreshCw className="h-4 w-4" /> 刷新
           </Button>
