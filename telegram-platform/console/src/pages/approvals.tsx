@@ -18,6 +18,13 @@ const statusVariant: Record<string, 'success' | 'warning' | 'destructive' | 'def
   expired: 'secondary',
 }
 
+const statusLabel: Record<string, string> = {
+  pending: '待审批',
+  approved: '已通过',
+  rejected: '已拒绝',
+  expired: '已过期',
+}
+
 export default function ApprovalsPage() {
   const [rows, setRows] = useState<Approval[]>([])
   const [cands, setCands] = useState<Record<number, ReplyCandidate>>({})
@@ -106,7 +113,7 @@ export default function ApprovalsPage() {
             <SelectContent>
               {['pending', 'approved', 'rejected', 'expired'].map((s) => (
                 <SelectItem key={s} value={s}>
-                  {s}
+                  {statusLabel[s] || s}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -139,7 +146,7 @@ export default function ApprovalsPage() {
                   <TableCell>{r.id}</TableCell>
                   <TableCell className="max-w-md truncate">{c?.content || `#${r.candidate_id}`}</TableCell>
                   <TableCell>
-                    <Badge variant={statusVariant[r.status] || 'secondary'}>{r.status}</Badge>
+                    <Badge variant={statusVariant[r.status] || 'secondary'}>{statusLabel[r.status] || r.status}</Badge>
                   </TableCell>
                   <TableCell className="text-muted-foreground">{r.expires_at?.slice(0, 19).replace('T', ' ')}</TableCell>
                   <TableCell>
