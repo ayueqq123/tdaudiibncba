@@ -311,6 +311,7 @@ class AiService:
                         sender_name=obj.sender_name,
                         sender_id=str(obj.sender_id) if obj.sender_id else None,
                         source_refs=[{'chat_id': obj.chat_id, 'message_id': obj.message_id}],
+                        context_max_messages=b.context_max_messages or 12,
                     ),
                 )
                 n += 1

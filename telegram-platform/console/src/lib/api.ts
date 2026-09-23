@@ -248,6 +248,7 @@ export interface AiBinding {
   speak_policy: string
   reply_delay_s?: number
   random_prob?: number
+  context_max_messages?: number
   status: string
   remark: string | null
 }

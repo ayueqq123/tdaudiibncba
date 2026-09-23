@@ -23,6 +23,7 @@ interface FormState {
   speak_policy: string
   reply_delay_s: string
   random_prob: string
+  context_max: string
   remark: string
 }
 
@@ -36,6 +37,7 @@ const EMPTY: FormState = {
   speak_policy: 'all',
   reply_delay_s: '10',
   random_prob: '30',
+  context_max: '12',
   remark: '',
 }
 
@@ -94,6 +96,7 @@ export default function AiBindingsPage() {
         speak_policy: form.speak_policy,
         reply_delay_s: Number(form.reply_delay_s) || 0,
         random_prob: Number(form.random_prob) || 30,
+        context_max_messages: Number(form.context_max) || 12,
         remark: form.remark.trim() || null,
       })
       toast.success('已创建,群里来消息会自动生成回复进审批')
@@ -298,6 +301,16 @@ export default function AiBindingsPage() {
                 />
               </div>
             )}
+            <div>
+              <Label>上下文条数(0-100;生成时带最近 N 条已发送的群聊记录)</Label>
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                value={form.context_max}
+                onChange={(e) => setForm({ ...form, context_max: e.target.value })}
+              />
+            </div>
             <div>
               <Label>发言延迟(秒,0-300;实际等待 = 该值 ±30%,更像真人)</Label>
               <Input
