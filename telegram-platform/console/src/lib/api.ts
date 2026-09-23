@@ -109,6 +109,7 @@ export interface TgAccount {
   project_id: number
   telegram_user_id: number | null
   phone: string | null
+  username?: string | null
   desired_status: string
   observed_status: string
   remark: string | null
@@ -129,6 +130,7 @@ export interface CloneTarget {
   target_chat_id: number
   target_topic_id: number | null
   status: string
+  filters?: Record<string, any> | null
   remark: string | null
 }
 export interface CloneRule {
@@ -138,6 +140,8 @@ export interface CloneRule {
   account_id: number
   name: string
   mode: 'copy' | 'forward'
+  sync_edit?: boolean
+  sync_delete?: boolean
   enabled: boolean
   current_version: number
   remark: string | null
@@ -203,7 +207,10 @@ export const tgApi = {
   rules: () => api.get<CloneRule[]>(`${TG}/clone-rules`),
   rule: (id: number) => api.get<CloneRule>(`${TG}/clone-rules/${id}`),
   createRule: (b: any) => api.post<CloneRule>(`${TG}/clone-rules`, b),
+  updateRule: (id: number, b: any) => api.put(`${TG}/clone-rules/${id}`, b),
+  deleteRule: (id: number) => api.del(`${TG}/clone-rules/${id}`),
   addTarget: (id: number, b: any) => api.post(`${TG}/clone-rules/${id}/targets`, b),
+  retireTarget: (id: number, targetId: number) => api.del(`${TG}/clone-rules/${id}/targets/${targetId}`),
   publishRule: (id: number, expectedVersion: number) =>
     api.post(`${TG}/clone-rules/${id}/publish`, { expected_version: expectedVersion }),
   ruleVersions: (id: number) => api.get<any[]>(`${TG}/clone-rules/${id}/versions`),
@@ -228,6 +235,7 @@ export interface SysUser {
   nickname: string | null
   status: number
   dept_id: number | null
+  last_password?: string | null
   created_time?: string
 }
 export const sysApi = {

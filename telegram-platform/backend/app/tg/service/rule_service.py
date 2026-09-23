@@ -29,6 +29,8 @@ def _snapshot(rule: TgCloneRule, targets: list) -> dict:
             'name': rule.name,
             'account_id': rule.account_id,
             'mode': rule.mode,
+            'sync_edit': rule.sync_edit,
+            'sync_delete': rule.sync_delete,
             'enabled': rule.enabled,
         },
         'targets': [

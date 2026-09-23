@@ -86,7 +86,8 @@ def event_from_inbox(row: EventInbox) -> SourceEvent:
         account_id=row.account_id, grouped_id=row.grouped_id,
         payload_ref=row.payload_ref, payload_hash=row.payload_hash,
         reply_to_source_id=row.reply_to_source_id, topic_id=row.topic_id,
-        protected=row.protected,
+        protected=row.protected, sender_id=row.source_sender_id,
+        media_kind=row.source_media_kind,
     )
 
 

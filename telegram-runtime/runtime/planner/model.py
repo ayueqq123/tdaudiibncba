@@ -49,6 +49,8 @@ class SourceEvent:
     reply_to_source_id: int | None = None
     topic_id: int | None = None
     protected: bool = False             # source flagged no-save/no-forward
+    sender_id: int | None = None        # TG author id; None on deletes/anonymous service posts
+    media_kind: str | None = None       # photo/video/document/voice/audio/sticker/gif/poll/text/...
 
 
 @dataclass(frozen=True)
@@ -73,7 +75,7 @@ class RuleSnapshot:
     sync_edit: bool
     sync_delete: bool
     approval_policy: ApprovalPolicy = ApprovalPolicy.RULE_AUTHORIZED
-    filters: tuple[dict[str, Any], ...] = ()
+    filters: tuple[dict[str, Any], ...] = ()  # e.g. {"sender_user_ids": [..], "media_kinds": [..]} per target
 
 
 class PlanKind(enum.Enum):

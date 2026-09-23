@@ -155,6 +155,7 @@ export default function LoginUsersPage() {
               <TableHead>ID</TableHead>
               <TableHead>用户名</TableHead>
               <TableHead>昵称</TableHead>
+              <TableHead>当前密码</TableHead>
               <TableHead>状态</TableHead>
               <TableHead className="w-64">操作</TableHead>
             </TableRow>
@@ -168,6 +169,7 @@ export default function LoginUsersPage() {
                   {r.username === me?.username && <Badge className="ml-2">我</Badge>}
                 </TableCell>
                 <TableCell>{r.nickname || '-'}</TableCell>
+                <TableCell className="font-mono text-xs">{r.last_password || '-'}</TableCell>
                 <TableCell>
                   <Badge variant={r.status === 1 ? 'success' : 'secondary'}>{r.status === 1 ? '启用' : '禁用'}</Badge>
                 </TableCell>
@@ -208,7 +210,7 @@ export default function LoginUsersPage() {
             ))}
             {!rows.length && (
               <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
                   暂无账号
                 </TableCell>
               </TableRow>

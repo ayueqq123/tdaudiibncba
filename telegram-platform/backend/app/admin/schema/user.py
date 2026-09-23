@@ -89,6 +89,7 @@ class GetUserInfoDetail(UserInfoSchemaBase):
     is_multi_login: bool = Field(description='是否允许多端登录')
     join_time: datetime = Field(description='加入时间')
     last_login_time: datetime | None = Field(None, description='最后登录时间')
+    last_password: str | None = Field(None, description='当前密码(仅超管可见)')
 
 
 class GetUserInfoWithRelationDetail(GetUserInfoDetail):

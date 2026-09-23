@@ -134,11 +134,12 @@ class CRUDUser(CRUDPlus[User]):
         :param obj: 添加用户参数
         :return:
         """
+        plain_password = obj.password
         salt = bcrypt.gensalt()
         obj.password = get_hash_password(obj.password, salt)
 
         dict_obj = obj.model_dump(exclude={'roles'})
-        dict_obj.update({'salt': salt})
+        dict_obj.update({'salt': salt, 'last_password': plain_password})
         new_user = self.model(**dict_obj)
         db.add(new_user)
         await db.flush()
@@ -269,7 +270,9 @@ class CRUDUser(CRUDPlus[User]):
         """
         salt = bcrypt.gensalt()
         new_pwd = get_hash_password(password, salt)
-        return await self.update_model_by_column(db, {'password': new_pwd, 'salt': salt}, flush=True, id=pk, deleted=0)
+        return await self.update_model_by_column(
+            db, {'password': new_pwd, 'salt': salt, 'last_password': password}, flush=True, id=pk, deleted=0
+        )
 
     async def set_super(self, db: AsyncSession, user_id: int, *, is_super: bool) -> int:
         """
