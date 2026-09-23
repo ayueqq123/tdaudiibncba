@@ -16,6 +16,7 @@ import {
   KeyRound,
   Menu,
   X,
+  BookOpen,
 } from 'lucide-react'
 import { fetchLogout, sysApi } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -55,6 +56,7 @@ const GROUPS: { label: string; items: NavItem[] }[] = [
     label: '设置',
     items: [
       { to: '/users', icon: Users, label: '用户', admin: true },
+      { to: '/guide', icon: BookOpen, label: '新手教程' },
       { to: '/commands', icon: Terminal, label: '命令记录' },
     ],
   },

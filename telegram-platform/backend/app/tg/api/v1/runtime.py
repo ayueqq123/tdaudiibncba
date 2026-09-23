@@ -18,12 +18,14 @@ from backend.app.tg.crud.crud_tenant import tenant_dao
 from backend.app.tg.schema.ai import AiGroupEventParam
 from backend.app.tg.schema.runtime_command import (
     AckRuntimeCommandParam,
+    ReportAccountStatusParam,
     CreateRuntimeCommandParam,
     GetRuntimeCommandDetail,
 )
 from backend.app.tg.service.ai_service import ai_service
 from backend.app.tg.service.command_service import runtime_command_service
 from backend.common.exception import errors
+from backend.utils.timezone import timezone
 from backend.common.response.response_schema import (
     ResponseSchemaModel,
     response_base,
@@ -212,6 +214,31 @@ async def ai_group_event(
         db=db, obj=obj, account=account, username=account.username
     )
     return response_base.success(data={'triggered': n})
+
+
+@router.post(
+    '/accounts/{api_row_id}/status',
+    summary='Worker 上报账号观测状态',
+    dependencies=[DependsWorkerAuth],
+)
+async def report_account_status(
+    db: CurrentSessionTransaction,
+    api_row_id: Annotated[int, Path(description='账号 API 行 ID')],
+    obj: ReportAccountStatusParam,
+) -> ResponseSchemaModel[dict]:
+    account = await telegram_account_dao.get(db, api_row_id)
+    if account is None:
+        raise errors.NotFoundError(msg='账号不存在')
+    await telegram_account_dao.update(
+        db,
+        api_row_id,
+        {
+            'observed_status': obj.observed_status,
+            'last_error': obj.last_error,
+            'last_seen_at': timezone.now(),
+        },
+    )
+    return response_base.success(data={'ok': True})
 
 
 @router.post(

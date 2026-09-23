@@ -5,6 +5,13 @@ from pydantic import ConfigDict, Field
 
 from backend.common.schema import SchemaBase
 
+class ReportAccountStatusParam(SchemaBase):
+    """Worker 上报账号观测状态(连接成功/断开/失败)"""
+
+    observed_status: str = Field(description='active|stopped|error|reauth_required|revoked')
+    last_error: str | None = Field(default=None, description='失败原因')
+
+
 RuntimeCommandType = Literal[
     'StartAccount',
     'StopAccount',

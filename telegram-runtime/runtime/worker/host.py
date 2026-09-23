@@ -187,6 +187,7 @@ class WorkerHostMain:
             session = await self._session_connector(bundle)
         except Exception as exc:  # noqa: BLE001 — connect failure must not take the host down
             log.error("connect failed account=%s: %s", a.account_id, exc)
+            await self._report_status(a.api_row_id, "error", str(exc))
             return
         try:
             register_live_events(
@@ -209,11 +210,20 @@ class WorkerHostMain:
             self._hosted[a.account_id] = _Hosted(
                 assignment=a, session=session, heartbeat=hb,
                 heartbeat_task=asyncio.create_task(hb.run()))
+            await self._report_status(a.api_row_id, "active")
             log.info("assigned account=%s generation=%d", a.account_id,
                      generation)
         except Exception:
             await session.close()
             raise
+
+    async def _report_status(self, api_row_id: int, status: str,
+                             error: str = "") -> None:
+        """Best-effort observed-status report to control-api (§5.3)."""
+        try:
+            await self.control.report_status(api_row_id, status, error)
+        except Exception as exc:  # noqa: BLE001 — status report must never break the loop
+            log.warning("status report failed account=%s: %s", api_row_id, exc)
 
     def _make_renew(self, account_id: str, generation: int):
         async def renew() -> bool:
@@ -238,6 +248,8 @@ class WorkerHostMain:
         except Exception:  # noqa: BLE001 — best-effort cleanup on release
             log.warning("session close failed account=%s", account_id)
         log.info("released account=%s reason=%s", account_id, reason)
+        if reason != "lease_lost":
+            await self._report_status(hosted.assignment.api_row_id, "stopped")
         # lease row left to expire by TTL — no release mutation (§5.3)
 
     # ---------- rules / commands ----------

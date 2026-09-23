@@ -140,6 +140,12 @@ class ControlClient:
         await self._post(f"/commands/{command_id}/ack",
                          {"status": status, "result": result[:500]})
 
+    async def report_status(self, api_row_id: int, status: str,
+                            error: str = "") -> None:
+        await self._post(f"/accounts/{api_row_id}/status",
+                         {"observed_status": status,
+                          "last_error": error[:500] or None})
+
     async def notify_ai_event(self, payload: dict[str, Any]) -> None:
         """Best-effort group-message report for AI 炒群 triggers (fire-and-forget)."""
         await self._post("/ai/event", payload)

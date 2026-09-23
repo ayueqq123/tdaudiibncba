@@ -10,11 +10,28 @@ import { Label } from '@/components/ui/label'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 const statusVariant: Record<string, 'success' | 'warning' | 'destructive' | 'default' | 'secondary'> = {
+  active: 'success',
   running: 'success',
+  stopped: 'secondary',
   imported_quarantine: 'warning',
   imported_verified: 'default',
+  reauth_required: 'warning',
+  revoked: 'destructive',
+  disabled: 'secondary',
   auth_dead: 'destructive',
   error: 'destructive',
+}
+
+const statusLabel: Record<string, string> = {
+  active: '运行中',
+  stopped: '已停止',
+  error: '连接失败',
+  imported_quarantine: '待启动',
+  imported_verified: '已验证',
+  reauth_required: '需重新登录',
+  revoked: '已失效',
+  disabled: '已禁用',
+  auth_dead: '登录失效',
 }
 
 export default function AccountsPage() {
@@ -146,7 +163,7 @@ export default function AccountsPage() {
                   <Badge variant={r.desired_status === 'running' ? 'success' : 'secondary'}>{r.desired_status}</Badge>
                 </TableCell>
                 <TableCell>
-                  <Badge variant={statusVariant[r.observed_status] || 'secondary'}>{r.observed_status}</Badge>
+                  <Badge variant={statusVariant[r.observed_status] || 'secondary'}>{statusLabel[r.observed_status] || r.observed_status}</Badge>
                 </TableCell>
                 <TableCell className="text-muted-foreground">{r.remark || '-'}</TableCell>
                 <TableCell>
