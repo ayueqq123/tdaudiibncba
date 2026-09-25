@@ -43,6 +43,26 @@ class UpdateTgAccountParam(TgTelegramAccountSchemaBase):
     desired_status: Literal['stopped', 'running'] = Field(description='期望状态')
 
 
+class LoginStartParam(SchemaBase):
+    """验证码登录:发起"""
+
+    tenant_id: int
+    project_id: int
+    phone: str = Field(description='手机号(带国家码,如 +86138xxxxxxxx)')
+    api_id: int = Field(description='my.telegram.org 申请的 api_id')
+    api_hash: str = Field(description='api_hash')
+    device: str | None = Field(None, description='设备型号(可选)')
+    app_version: str | None = Field(None, description='App 版本(可选)')
+
+
+class LoginCompleteParam(SchemaBase):
+    """验证码登录:提交验证码"""
+
+    login_id: str = Field(description='login/start 返回的登录会话 ID')
+    code: str = Field(description='Telegram 收到的验证码')
+    password: str | None = Field(None, description='两步验证密码(如需)')
+
+
 class GetTgAccountDetail(TgTelegramAccountSchemaBase):
     """Telegram 账号详情"""
 

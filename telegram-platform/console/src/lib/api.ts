@@ -224,6 +224,10 @@ export const tgApi = {
   reject: (id: number, b: any) => api.post(`${TG}/approvals/${id}/reject`, b),
   commands: () => api.get<RuntimeCommand[]>(`${TG}/runtime/commands`),
   issueCommand: (accountId: number, b: any) => api.post(`${TG}/runtime/accounts/${accountId}/commands`, b),
+  loginStart: (b: { tenant_id: number; project_id: number; phone: string; api_id: number; api_hash: string; device?: string; app_version?: string }) =>
+    api.post<{ login_id: string; ttl: number }>(`${TG}/accounts/login/start`, b),
+  loginComplete: (b: { login_id: string; code: string; password?: string }) =>
+    api.post<{ account_id?: number; need_password?: boolean; username?: string }>(`${TG}/accounts/login/complete`, b),
   ensureWorkspace: (userId?: number) =>
     api.post<{ tenant_id: number; project_id: number }>(`${TG}/workspaces/ensure`, userId ? { user_id: userId } : {}),
   aiBindings: () => api.get<AiBinding[]>(`${TG}/ai/bindings`),
