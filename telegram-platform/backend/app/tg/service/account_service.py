@@ -102,10 +102,19 @@ async def _run_login_cli(mode: str, args: list[str], stdin_payload: dict | None 
     )
     stdin_data = json.dumps(stdin_payload).encode() if stdin_payload is not None else None
     stdout, stderr = await proc.communicate(input=stdin_data)
-    line = stdout.decode().strip().splitlines()
-    if not line:
-        raise errors.ServerError(msg=f'登录子进程无输出 rc={proc.returncode}: {stderr.decode()[:300]}')
-    return json.loads(line[-1])
+    lines = stdout.decode().strip().splitlines()
+    # stdout 可能被底层库污染(如交互提示),从尾部找第一条 { 开头的行
+    for line in reversed(lines):
+        line = line.strip()
+        if line.startswith('{'):
+            return json.loads(line)
+        idx = line.find('{')
+        if idx >= 0:
+            try:
+                return json.loads(line[idx:])
+            except json.JSONDecodeError:
+                continue
+    raise errors.ServerError(msg=f'登录子进程无输出 rc={proc.returncode}: {stderr.decode()[:300]}')
 
 
 _LOGIN_ERR = {

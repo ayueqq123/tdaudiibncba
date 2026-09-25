@@ -35,9 +35,13 @@ def _client(args):
 
 async def _send(args) -> None:
     try:
-        async with _client(args) as client:
+        client = _client(args)
+        await client.connect()
+        try:
             result = await client.send_code_request(args.phone)
             _emit({"ok": True, "phone_code_hash": result.phone_code_hash})
+        finally:
+            await client.disconnect()
     except Exception as exc:  # noqa: BLE001 — classified below
         _emit({"ok": False, "error": _classify(exc)})
 
@@ -49,7 +53,9 @@ async def _signin(args) -> None:
         payload = json.loads(sys.stdin.read() or "{}")
         code = payload.get("code") or ""
         password = payload.get("password") or None
-        async with _client(args) as client:
+        client = _client(args)
+        await client.connect()
+        try:
             try:
                 user = await client.sign_in(
                     phone=args.phone, code=code, phone_code_hash=args.code_hash
@@ -67,6 +73,8 @@ async def _signin(args) -> None:
                     "phone": user.phone,
                 }
             )
+        finally:
+            await client.disconnect()
     except Exception as exc:  # noqa: BLE001
         _emit({"ok": False, "error": _classify(exc)})
 
