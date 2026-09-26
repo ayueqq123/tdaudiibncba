@@ -64,10 +64,20 @@ def parse_ref(ref: str | int) -> tuple[str, str | int]:
 
 
 def _chat_meta(entity) -> dict:
+    from telethon import utils
+
     return {
-        'chat_id': int('-100' + str(entity.id)) if getattr(entity, 'broadcast', False) or getattr(entity, 'megagroup', False) else entity.id,
+        'chat_id': utils.get_peer_id(entity, add_mark=True),
         'title': getattr(entity, 'title', None) or getattr(entity, 'username', None),
     }
+
+
+async def _invite_chat(client, invite_hash: str):
+    """CheckChatInvite → chat object when already a participant, else None."""
+    from telethon.tl import functions
+
+    check = await client(functions.messages.CheckChatInviteRequest(hash=invite_hash))
+    return getattr(check, 'chat', None)
 
 
 async def _join_invite(client, invite_hash: str) -> dict:
@@ -75,28 +85,31 @@ async def _join_invite(client, invite_hash: str) -> dict:
     from telethon.tl import functions
 
     try:
-        check = await client(functions.messages.CheckChatInviteRequest(hash=invite_hash))
+        chat = await _invite_chat(client, invite_hash)
     except tg_errors.InviteHashExpiredError:
         return {'ok': False, 'error': {'status': 'invite_expired'}}
     except tg_errors.InviteHashInvalidError:
         return {'ok': False, 'error': {'status': 'invite_invalid'}}
-    chat = getattr(check, 'chat', None)
     if chat is not None:
-        return {'ok': True, **_chat_meta(chat), 'status': 'member'}
+        return {'ok': True, 'status': 'member', **_chat_meta(chat)}
     try:
         updates = await client(functions.messages.ImportChatInviteRequest(hash=invite_hash))
     except tg_errors.UserAlreadyParticipantError:
-        # already in but CheckChatInvite didn't return the chat (edge)
-        chats = getattr(updates, 'chats', [])
-        return {'ok': True, 'status': 'member', **(_chat_meta(chats[0]) if chats else {})}
+        updates = None
     except tg_errors.InviteRequestSentError as exc:
         return {'ok': False, 'error': {'status': 'join_approval_pending', 'detail': str(exc)[:200]}}
     except tg_errors.InviteHashExpiredError:
         return {'ok': False, 'error': {'status': 'invite_expired'}}
     except tg_errors.FloodWaitError as exc:
         return {'ok': False, 'error': {'status': 'flood_wait', 'seconds': exc.seconds}}
-    chats = getattr(updates, 'chats', [])
-    return {'ok': True, 'status': 'joined', **(_chat_meta(chats[0]) if chats else {})}
+    chats = getattr(updates, 'chats', None) or []
+    if chats:
+        return {'ok': True, 'status': 'joined', **_chat_meta(chats[0])}
+    # import succeeded but returned no entity — re-check invite (now a member)
+    chat = await _invite_chat(client, invite_hash)
+    if chat is not None:
+        return {'ok': True, 'status': 'joined', **_chat_meta(chat)}
+    return {'ok': False, 'error': {'status': 'resolve_failed', 'detail': 'joined but chat entity missing'}}
 
 
 async def _resolve_one(client, ref: str | int) -> dict:
@@ -111,15 +124,15 @@ async def _resolve_one(client, ref: str | int) -> dict:
         if kind == 'invite':
             return await _join_invite(client, value)
         if kind == 'username':
+            # public group resolves by name regardless of membership
+            entity = await client.get_entity(value)
+            meta = _chat_meta(entity)
             try:
-                updates = await client(functions.channels.JoinChannelRequest(channel=value))
+                await client(functions.channels.JoinChannelRequest(channel=entity))
             except tg_errors.UserAlreadyParticipantError:
-                entity = await client.get_entity(value)
-                return {'ok': True, 'status': 'member', **_chat_meta(entity)}
+                return {'ok': True, 'status': 'member', **meta}
             except tg_errors.InviteRequestSentError as exc:
                 return {'ok': False, 'error': {'status': 'join_approval_pending', 'detail': str(exc)[:200]}}
-            chats = getattr(updates, 'chats', [])
-            meta = _chat_meta(chats[0]) if chats else {}
             return {'ok': True, 'status': 'joined', **meta}
         entity = await client.get_entity(int(value))
         return {'ok': True, 'status': 'member', **_chat_meta(entity)}
