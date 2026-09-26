@@ -66,6 +66,7 @@ class CreateCloneTargetParam(SchemaBase):
     target_chat_id: int = Field(description='目标 chat ID')
     target_chat_ref: str | None = Field(None, description='目标群原始标识')
     target_topic_id: int | None = Field(None, description='目标 topic')
+    joined_account_id: int | None = Field(None, description='已完成进群的账号ID')
     filters: dict[str, Any] | None = None
     remark: str | None = Field(None, description='备注')
 

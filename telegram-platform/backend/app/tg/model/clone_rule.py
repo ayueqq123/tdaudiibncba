@@ -71,6 +71,9 @@ class TgCloneTarget(Base):
     target_chat_id: Mapped[int] = mapped_column(sa.BigInteger, comment='目标 chat ID')
     source_chat_ref: Mapped[str | None] = mapped_column(sa.Text, default=None, comment='源群原始标识(链接,供重新进群)')
     target_chat_ref: Mapped[str | None] = mapped_column(sa.Text, default=None, comment='目标群原始标识')
+    joined_account_id: Mapped[int | None] = mapped_column(
+        sa.BigInteger, default=None, comment='已完成进群的账号ID(同账号不重复进群)'
+    )
     source_topic_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, comment='源 topic')
     target_topic_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, comment='目标 topic')
     filters: Mapped[dict | None] = mapped_column(sa.JSON, default=None, comment='过滤条件{keywords,media,...}')

@@ -140,41 +140,25 @@ export default function RulesPage() {
     }
   }
 
-  async function doRun(r: CloneRule) {
-    setBusy(true)
+  // 点运行/停止立即在界面上切换状态,后台下发失败再回滚
+  async function toggleRun(r: CloneRule, enabled: boolean) {
+    setRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, enabled, current_version: Math.max(x.current_version, 1) } : x)))
     try {
       await tgApi.updateRule(r.id, {
         name: r.name, mode: r.mode,
         sync_edit: r.sync_edit ?? true, sync_delete: r.sync_delete ?? true,
-        enabled: true, remark: r.remark,
+        enabled, remark: r.remark,
       })
       await applyToWorker(r.id, r.current_version, r.account_id)
-      toast.success('已下发,账号开始搬运')
-      load()
+      toast.success(enabled ? '已下发,账号开始搬运' : '已停止搬运')
     } catch (e: any) {
-      toast.error(e?.detail || '启动失败')
+      toast.error(e?.detail || (enabled ? '启动失败' : '停止失败'))
     } finally {
-      setBusy(false)
+      load()
     }
   }
-
-  async function doStop(r: CloneRule) {
-    setBusy(true)
-    try {
-      await tgApi.updateRule(r.id, {
-        name: r.name, mode: r.mode,
-        sync_edit: r.sync_edit ?? true, sync_delete: r.sync_delete ?? true,
-        enabled: false, remark: r.remark,
-      })
-      await applyToWorker(r.id, r.current_version, r.account_id)
-      toast.success('已停止搬运')
-      load()
-    } catch (e: any) {
-      toast.error(e?.detail || '停止失败')
-    } finally {
-      setBusy(false)
-    }
-  }
+  const doRun = (r: CloneRule) => toggleRun(r, true)
+  const doStop = (r: CloneRule) => toggleRun(r, false)
 
   async function doDeleteRule(r: CloneRule) {
     if (!confirm(`确定删除规则「${r.name}」?`)) return
@@ -381,11 +365,11 @@ export default function RulesPage() {
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-1.5">
                   {isRunning(r) ? (
-                    <Button size="sm" variant="outline" onClick={() => doStop(r)} disabled={busy}>
+                    <Button size="sm" variant="outline" onClick={() => doStop(r)}>
                       <Square className="h-4 w-4" /> 停止
                     </Button>
                   ) : (
-                    <Button size="sm" onClick={() => doRun(r)} disabled={busy}>
+                    <Button size="sm" onClick={() => doRun(r)}>
                       <Play className="h-4 w-4" /> 运行
                     </Button>
                   )}

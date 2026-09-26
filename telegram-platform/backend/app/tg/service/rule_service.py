@@ -48,6 +48,10 @@ def _snapshot(rule: TgCloneRule, targets: list) -> dict:
     }
 
 
+def _route_key(t: TgCloneTarget) -> tuple:
+    return (t.source_chat_id, t.source_topic_id, t.target_chat_id, t.target_topic_id)
+
+
 class CloneRuleService:
     """Clone 规则服务类(§6.2/§7.1:发布产生不可变快照)"""
 
@@ -137,6 +141,10 @@ class CloneRuleService:
         dst_id = CloneRuleService._resolve_or_raise(results, dst_ref, '目标群')
         if src_id == dst_id and obj.source_topic_id == obj.target_topic_id:
             raise errors.RequestError(msg='禁止源=目标的自环')
+        route = (src_id, obj.source_topic_id, dst_id, obj.target_topic_id)
+        for t in await clone_target_dao.get_active_by_rule(db, rule.id):
+            if _route_key(t) == route:
+                raise errors.RequestError(msg='该规则已有相同的源群→目标群路线,不能重复添加')
         return await clone_target_dao.create(
             db,
             CreateCloneTargetParam(
@@ -149,6 +157,7 @@ class CloneRuleService:
                 target_chat_id=dst_id,
                 target_chat_ref=dst_ref,
                 target_topic_id=obj.target_topic_id,
+                joined_account_id=rule.account_id,
                 filters=obj.filters,
                 remark=obj.remark,
             ),
@@ -156,7 +165,8 @@ class CloneRuleService:
 
     @staticmethod
     async def _auto_join(db: AsyncSession, rule: TgCloneRule, targets: list[TgCloneTarget]) -> None:
-        """发布前让规则账号自动加入/验证每个群(链接可进群,纯 ID 仅验证)。"""
+        """运行前让规则账号自动加入/验证尚未由该账号进过的群(链接可进群,纯 ID 仅验证)。"""
+        targets = [t for t in targets if t.joined_account_id != rule.account_id]
         refs: list[str] = []
         for t in targets:
             refs.append(t.source_chat_ref or str(t.source_chat_id))
@@ -174,7 +184,8 @@ class CloneRuleService:
                 chat_id = CloneRuleService._resolve_or_raise(results, ref, label)
                 if getattr(t, attr_id) != chat_id:
                     setattr(t, attr_id, chat_id)
-                    db.add(t)
+            t.joined_account_id = rule.account_id
+            db.add(t)
         await db.flush()
 
     @staticmethod
@@ -220,9 +231,13 @@ class CloneRuleService:
         targets = list(await clone_target_dao.get_active_by_rule(db, rule.id))
         if not targets:
             raise errors.RequestError(msg='无 active 目标,不能发布')
-        # 运行时自动进群:按目标留存的原始标识(链接/ID)重新加入或验证成员关系,
+        routes = [_route_key(t) for t in targets]
+        if len(set(routes)) != len(routes):
+            raise errors.RequestError(msg='规则里有重复的源群→目标群路线,请先删除重复的再运行')
+        # 运行时自动进群:按目标留存的原始标识(链接/ID)加入或验证成员关系,
         # 解析出的 chat_id 若变化(群迁移等)同步更新目标行
-        await CloneRuleService._auto_join(db, rule, targets)
+        if rule.enabled:
+            await CloneRuleService._auto_join(db, rule, targets)
         new_version = rule.current_version + 1
         ver = await clone_rule_version_dao.create(
             db,
