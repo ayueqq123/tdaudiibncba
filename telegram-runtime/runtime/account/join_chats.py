@@ -1,14 +1,17 @@
 """Join/resolve Telegram chats for an existing session.
 
 CLI spawned by telegram-platform (GPL boundary: spawned, never imported).
-Reads {"refs": [...]} from stdin — each ref is a numeric chat id, a public
+Reads {"refs": [...], "users": [...]} from stdin — each ref is a numeric chat id, a public
 link/username (t.me/name, @name), or an invite link (t.me/+HASH,
 t.me/joinchat/HASH, tg://join?invite=HASH). Joins invite/username refs and
 verifies membership for numeric ids. Prints one JSON line to stdout:
 
     {"ok": true, "results": {"<ref>": {"ok": true, "chat_id": -100..,
      "title": "...", "status": "member|joined"} | {"ok": false,
-     "error": {"status": "..."}}}}
+     "error": {"status": "..."}}},
+     "users": {"@name": {"ok": true, "user_id": 123, "is_bot": false} | {"ok": false, ...}}}
+
+`users` entries (@username / t.me/username) are only resolved, never joined.
 """
 
 from __future__ import annotations
@@ -143,12 +146,33 @@ async def _resolve_one(client, ref: str | int) -> dict:
         return {'ok': False, 'error': {'status': status, 'detail': str(exc)[:200]}}
 
 
+async def _resolve_user(client, ref: str) -> dict:
+    from telethon import errors as tg_errors
+    from telethon.tl.types import User
+
+    s = str(ref).strip()
+    m = _TME_RE.match(s)
+    name = (m.group('path').split('/')[0] if m else s).lstrip('@')
+    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{3,}', name):
+        return {'ok': False, 'error': {'status': 'bad_ref'}}
+    try:
+        entity = await client.get_entity(name)
+    except tg_errors.FloodWaitError as exc:
+        return {'ok': False, 'error': {'status': 'flood_wait', 'seconds': exc.seconds}}
+    except Exception as exc:  # noqa: BLE001 — username not occupied etc.
+        return {'ok': False, 'error': {'status': 'user_not_found', 'detail': str(exc)[:200]}}
+    if not isinstance(entity, User):
+        return {'ok': False, 'error': {'status': 'not_a_user'}}
+    return {'ok': True, 'user_id': entity.id, 'is_bot': bool(entity.bot)}
+
+
 async def _run(args) -> None:
     from telethon import TelegramClient
     from telethon.sessions import SQLiteSession
 
     payload = json.loads(sys.stdin.read() or '{}')
     refs = payload.get('refs') or []
+    users = payload.get('users') or []
     client = TelegramClient(SQLiteSession(args.session), int(args.api_id), args.api_hash)
     await client.connect()
     try:
@@ -158,7 +182,10 @@ async def _run(args) -> None:
         results = {}
         for ref in refs:
             results[str(ref)] = await _resolve_one(client, ref)
-        print(json.dumps({'ok': True, 'results': results}))
+        user_results = {}
+        for ref in users:
+            user_results[str(ref)] = await _resolve_user(client, ref)
+        print(json.dumps({'ok': True, 'results': results, 'users': user_results}))
     finally:
         await client.disconnect()
 
