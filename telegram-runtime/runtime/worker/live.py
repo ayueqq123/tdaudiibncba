@@ -365,6 +365,20 @@ def _sender_id(msg) -> int | None:
     return utils.get_peer_id(from_id) if from_id is not None else None
 
 
+def _sender_is_bot(msg) -> bool:
+    """True when the author is a bot account (cached sender entity, or a
+    `...bot` username as fallback) or the message was sent via an inline bot."""
+    if getattr(msg, "via_bot_id", None):
+        return True
+    sender = getattr(msg, "sender", None)
+    if sender is None:
+        return False
+    if getattr(sender, "bot", False):
+        return True
+    username = getattr(sender, "username", None) or ""
+    return username.lower().endswith("bot")
+
+
 _MEDIA_ATTRS: tuple[tuple[str, str], ...] = (
     ("sticker", "sticker"),
     ("photo", "photo"),
@@ -416,6 +430,7 @@ def _to_raws(event) -> list[RawUpdate]:
             protected=bool(getattr(msg, "noforwards", False)),
             sender_id=_sender_id(msg),
             media_kind=_media_kind(msg),
+            sender_is_bot=_sender_is_bot(msg),
         )]
     if isinstance(event, events.MessageDeleted.Event):
         chat_id = event.chat_id or 0

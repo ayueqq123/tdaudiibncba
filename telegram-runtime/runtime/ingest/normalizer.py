@@ -36,6 +36,7 @@ class RawUpdate:
     payload_ref: str | None = None
     sender_id: int | None = None         # TG author id (None for anonymous/service)
     media_kind: str | None = None        # photo/video/document/voice/audio/sticker/gif/poll/text
+    sender_is_bot: bool = False          # author is a bot account or message sent via inline bot
 
 
 def source_scope_for(chat_class: ChatClass, chat_id: int, account_id: str) -> str:
@@ -83,4 +84,5 @@ class EventNormalizer:
             protected=raw.protected,
             sender_id=raw.sender_id,
             media_kind=raw.media_kind,
+            sender_is_bot=raw.sender_is_bot,
         )

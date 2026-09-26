@@ -144,3 +144,21 @@ def test_media_and_sender_filters_compose():
     assert p.plan(_event(sender_id=111, media_kind="photo"), [rule]) != []
     assert p.plan(_event(sender_id=111, media_kind="video"), [rule]) == []
     assert p.plan(_event(sender_id=222, media_kind="photo"), [rule]) == []
+
+
+def test_exclude_bots_filter():
+    p = ClonePlanner(DictMapping())
+    rule = _rule(filters=({"exclude_bots": True},))
+    assert p.plan(_event(sender_id=111, sender_is_bot=True), [rule]) == []
+    assert p.plan(_event(sender_id=111), [rule]) != []
+    assert p.plan(_event(sender_id=111, sender_is_bot=True), [_rule()]) != []
+
+
+def test_blocked_sender_ids_blacklist():
+    p = ClonePlanner(DictMapping())
+    rule = _rule(filters=({"blocked_sender_ids": [111]},))
+    assert p.plan(_event(sender_id=111), [rule]) == []
+    assert p.plan(_event(sender_id=222), [rule]) != []
+    assert p.plan(_event(sender_id=None), [rule]) != []
+    ev_edit = _event(kind=EventKind.EDIT, revision=2, sender_id=111)
+    assert p.plan(ev_edit, [rule]) != []

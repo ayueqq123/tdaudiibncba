@@ -82,6 +82,7 @@ class EventInboxRepository:
             reply_to_source_id=event.reply_to_source_id,
             protected=event.protected, source_sender_id=event.sender_id,
             source_media_kind=event.media_kind,
+            source_sender_bot=event.sender_is_bot,
             ingest_seq=ingest_seq,
         ))
         try:
