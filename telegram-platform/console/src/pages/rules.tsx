@@ -121,9 +121,10 @@ export default function RulesPage() {
         const filters: any = {}
         if (senders.length) filters.sender_user_ids = senders
         if (form.media_kinds.length) filters.media_kinds = form.media_kinds
+        const toRef = (s: string) => (/^-?\d+$/.test(s.trim()) ? Number(s.trim()) : s.trim())
         await tgApi.addTarget(created.id, {
-          source_chat_id: +form.source_chat_id,
-          target_chat_id: +form.target_chat_id,
+          source_chat_id: toRef(form.source_chat_id),
+          target_chat_id: toRef(form.target_chat_id),
           filters: Object.keys(filters).length ? filters : null,
         })
         toast.success('规则已建好,点"运行"开始搬运')
@@ -260,19 +261,19 @@ export default function RulesPage() {
                     </div>
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="flex flex-col gap-1.5">
-                        <Label>源群 ID(-100 开头)</Label>
+                        <Label>源群(ID 或链接)</Label>
                         <Input
                           value={form.source_chat_id}
                           onChange={(e) => setForm({ ...form, source_chat_id: e.target.value })}
-                          placeholder="从这个群搬"
+                          placeholder="-100 开头 ID 或 t.me/xx 链接"
                         />
                       </div>
                       <div className="flex flex-col gap-1.5">
-                        <Label>目标群 ID(-100 开头)</Label>
+                        <Label>目标群(ID 或链接)</Label>
                         <Input
                           value={form.target_chat_id}
                           onChange={(e) => setForm({ ...form, target_chat_id: e.target.value })}
-                          placeholder="搬到这个群"
+                          placeholder="-100 开头 ID 或 t.me/xx、t.me/+邀请链接"
                         />
                       </div>
                     </div>

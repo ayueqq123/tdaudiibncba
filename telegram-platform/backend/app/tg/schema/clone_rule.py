@@ -37,11 +37,16 @@ class UpdateCloneRuleParam(SchemaBase):
 
 
 class CloneTargetParam(SchemaBase):
-    """Clone 目标参数"""
+    """Clone 目标参数
 
-    source_chat_id: int = Field(description='源 chat ID')
+    chat 字段支持三种写法:数字群 ID、公开链接/用户名(t.me/xx 或 @xx)、
+    邀请链接(t.me/+HASH、joinchat/HASH、tg://join?invite=HASH)。
+    链接形式会在服务端解析/自动进群后落为数字 ID。
+    """
+
+    source_chat_id: int | str = Field(description='源 chat ID 或链接')
     source_topic_id: int | None = Field(None, description='源 topic')
-    target_chat_id: int = Field(description='目标 chat ID')
+    target_chat_id: int | str = Field(description='目标 chat ID 或链接')
     target_topic_id: int | None = Field(None, description='目标 topic')
     filters: dict[str, Any] | None = Field(
         None, description="过滤条件,如 {'sender_user_ids': [123]} 只克隆指定发言人的消息"
@@ -49,12 +54,20 @@ class CloneTargetParam(SchemaBase):
     remark: str | None = Field(None, description='备注')
 
 
-class CreateCloneTargetParam(CloneTargetParam):
-    """创建目标参数(service 内部)"""
+class CreateCloneTargetParam(SchemaBase):
+    """创建目标参数(service 内部):chat_id 必须是已解析的数字 ID"""
 
     rule_id: int
     tenant_id: int
     project_id: int
+    source_chat_id: int = Field(description='源 chat ID')
+    source_chat_ref: str | None = Field(None, description='源群原始标识(链接等,供重新进群)')
+    source_topic_id: int | None = Field(None, description='源 topic')
+    target_chat_id: int = Field(description='目标 chat ID')
+    target_chat_ref: str | None = Field(None, description='目标群原始标识')
+    target_topic_id: int | None = Field(None, description='目标 topic')
+    filters: dict[str, Any] | None = None
+    remark: str | None = Field(None, description='备注')
 
 
 class CreateCloneRuleVersionParam(SchemaBase):

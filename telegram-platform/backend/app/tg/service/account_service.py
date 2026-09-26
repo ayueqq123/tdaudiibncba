@@ -79,8 +79,10 @@ def _purge_pending() -> None:
             _LOGIN_PENDING.pop(lid, None)
 
 
-async def _run_login_cli(mode: str, args: list[str], stdin_payload: dict | None = None) -> dict[str, Any]:
-    """spawn runtime code_login CLI(GPL 边界:不 import)。返回 stdout JSON。"""
+async def _run_runtime_cli(
+    module: str, args: list[str], stdin_payload: dict | None = None
+) -> dict[str, Any]:
+    """spawn telegram-runtime 的 CLI 模块(GPL 边界:不 import)。返回 stdout 尾部首个 JSON。"""
     if not settings.TG_RUNTIME_DIR or not settings.TG_RUNTIME_PYTHON:
         raise errors.ServerError(msg='未配置 TG_RUNTIME_DIR/TG_RUNTIME_PYTHON')
     env = dict(os.environ)
@@ -91,8 +93,7 @@ async def _run_login_cli(mode: str, args: list[str], stdin_payload: dict | None 
     proc = await asyncio.create_subprocess_exec(
         settings.TG_RUNTIME_PYTHON,
         '-m',
-        'runtime.account.code_login',
-        mode,
+        module,
         *args,
         cwd=settings.TG_RUNTIME_DIR,
         env=env,
@@ -114,7 +115,65 @@ async def _run_login_cli(mode: str, args: list[str], stdin_payload: dict | None 
                 return json.loads(line[idx:])
             except json.JSONDecodeError:
                 continue
-    raise errors.ServerError(msg=f'登录子进程无输出 rc={proc.returncode}: {stderr.decode()[:300]}')
+    raise errors.ServerError(msg=f'{module} 子进程无输出 rc={proc.returncode}: {stderr.decode()[:300]}')
+
+
+async def _run_login_cli(mode: str, args: list[str], stdin_payload: dict | None = None) -> dict[str, Any]:
+    """spawn runtime code_login CLI。返回 stdout JSON。"""
+    return await _run_runtime_cli('runtime.account.code_login', [mode, *args], stdin_payload)
+
+
+def account_session_cli_args(account: TgTelegramAccount) -> tuple[str, str, str]:
+    """定位账号 session 文件与其 meta json 里的 API 凭据 → (session, api_id, api_hash)"""
+    if not account.secret_ref:
+        raise errors.RequestError(msg='账号无会话文件,无法执行进群')
+    session_path = Path(settings.TG_IMPORT_STORAGE_DIR) / account.secret_ref
+    meta_path = session_path.with_suffix('.json')
+    meta: dict[str, Any] = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+    api_id, api_hash = meta.get('app_id'), meta.get('app_hash')
+    if not session_path.exists() or not api_id or not api_hash:
+        raise errors.RequestError(msg='账号会话或 API 凭据缺失,无法自动进群(重新导入/登录该账号)')
+    return str(session_path), str(api_id), str(api_hash)
+
+
+async def join_chat_refs(account: TgTelegramAccount, refs: list[str | int]) -> dict[str, dict]:
+    """用账号会话解析/加入一批群标识。返回 {ref_str: result}。未配置 runtime 时仅放行纯数字 ID。"""
+    if not settings.TG_RUNTIME_DIR or not settings.TG_RUNTIME_PYTHON:
+        results: dict[str, dict] = {}
+        for ref in refs:
+            s = str(ref).strip()
+            if s.lstrip('-').isdigit():
+                results[s] = {'ok': True, 'chat_id': int(s), 'status': 'member'}
+            else:
+                raise errors.RequestError(msg='当前环境不支持链接进群,请填写数字群 ID')
+        return results
+    session_path, api_id, api_hash = account_session_cli_args(account)
+    out = await _run_runtime_cli(
+        'runtime.account.join_chats',
+        ['--session', session_path, '--api-id', api_id, '--api-hash', api_hash],
+        {'refs': refs},
+    )
+    if not out.get('ok'):
+        status = (out.get('error') or {}).get('status', 'error')
+        raise errors.RequestError(msg=JOIN_ERR.get(status, '进群失败'))
+    return out['results']
+
+
+JOIN_ERR = {
+    'invite_expired': '邀请链接已过期',
+    'invite_invalid': '邀请链接无效',
+    'join_approval_pending': '该群需要管理员审批才能进群',
+    'not_member': '账号不在该群内,纯数字 ID 无法自动进群——请改用邀请链接(t.me/+xxx)或公开链接(t.me/用户名)',
+    'resolve_failed': '链接无法解析到群',
+    'bad_ref': '群标识无法识别',
+    'unauthorized': '账号会话已失效,请重新登录',
+    'flood_wait': '进群操作过于频繁,请稍后重试',
+}
 
 
 _LOGIN_ERR = {

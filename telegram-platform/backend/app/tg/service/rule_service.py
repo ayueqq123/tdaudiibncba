@@ -17,6 +17,7 @@ from backend.app.tg.schema.clone_rule import (
     CreateCloneTargetParam,
     UpdateCloneRuleParam,
 )
+from backend.app.tg.service.account_service import JOIN_ERR, join_chat_refs
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -101,21 +102,80 @@ class CloneRuleService:
         return await clone_rule_dao.update(db, pk, obj)
 
     @staticmethod
+    def _chat_ref(value: int | str) -> str:
+        return str(value).strip()
+
+    @staticmethod
+    async def _resolve_refs(db: AsyncSession, rule: TgCloneRule, refs: list[str | int]) -> dict[str, dict]:
+        """用规则账号的会话解析/加入群标识,返回 {ref: {ok,chat_id,title,status|error}}"""
+        account = await telegram_account_dao.get(db, rule.account_id)
+        if not account:
+            raise errors.NotFoundError(msg='规则所属账号不存在')
+        return await join_chat_refs(account, refs)
+
+    @staticmethod
+    def _resolve_or_raise(results: dict[str, dict], ref: str, label: str) -> int:
+        r = results.get(ref)
+        if not r or not r.get('ok'):
+            status = ((r or {}).get('error') or {}).get('status', 'resolve_failed')
+            raise errors.RequestError(msg=f'{label} {ref}: {JOIN_ERR.get(status, "进群/解析失败")}')
+        return int(r['chat_id'])
+
+    @staticmethod
     async def add_target(*, db: AsyncSession, request: Request, rule_id: int, obj: CloneTargetParam) -> TgCloneTarget:
         rule = await CloneRuleService.get(db=db, request=request, pk=rule_id)
         if rule.status == 'disabled':
             raise errors.RequestError(msg='规则已停用')
-        if obj.source_chat_id == obj.target_chat_id and obj.source_topic_id == obj.target_topic_id:
+        src_ref, dst_ref = (
+            CloneRuleService._chat_ref(obj.source_chat_id),
+            CloneRuleService._chat_ref(obj.target_chat_id),
+        )
+        if not src_ref or not dst_ref:
+            raise errors.RequestError(msg='源群/目标群必填')
+        results = await CloneRuleService._resolve_refs(db, rule, [src_ref, dst_ref])
+        src_id = CloneRuleService._resolve_or_raise(results, src_ref, '源群')
+        dst_id = CloneRuleService._resolve_or_raise(results, dst_ref, '目标群')
+        if src_id == dst_id and obj.source_topic_id == obj.target_topic_id:
             raise errors.RequestError(msg='禁止源=目标的自环')
         return await clone_target_dao.create(
             db,
             CreateCloneTargetParam(
-                **obj.model_dump(),
                 rule_id=rule_id,
                 tenant_id=rule.tenant_id,
                 project_id=rule.project_id,
+                source_chat_id=src_id,
+                source_chat_ref=src_ref,
+                source_topic_id=obj.source_topic_id,
+                target_chat_id=dst_id,
+                target_chat_ref=dst_ref,
+                target_topic_id=obj.target_topic_id,
+                filters=obj.filters,
+                remark=obj.remark,
             ),
         )
+
+    @staticmethod
+    async def _auto_join(db: AsyncSession, rule: TgCloneRule, targets: list[TgCloneTarget]) -> None:
+        """发布前让规则账号自动加入/验证每个群(链接可进群,纯 ID 仅验证)。"""
+        refs: list[str] = []
+        for t in targets:
+            refs.append(t.source_chat_ref or str(t.source_chat_id))
+            refs.append(t.target_chat_ref or str(t.target_chat_id))
+        uniq = list(dict.fromkeys(refs))
+        if not uniq:
+            return
+        results = await CloneRuleService._resolve_refs(db, rule, uniq)
+        for t in targets:
+            for attr_ref, attr_id, label in (
+                ('source_chat_ref', 'source_chat_id', '源群'),
+                ('target_chat_ref', 'target_chat_id', '目标群'),
+            ):
+                ref = getattr(t, attr_ref) or str(getattr(t, attr_id))
+                chat_id = CloneRuleService._resolve_or_raise(results, ref, label)
+                if getattr(t, attr_id) != chat_id:
+                    setattr(t, attr_id, chat_id)
+                    db.add(t)
+        await db.flush()
 
     @staticmethod
     async def retire_target(*, db: AsyncSession, request: Request, rule_id: int, target_id: int) -> int:
@@ -160,6 +220,9 @@ class CloneRuleService:
         targets = list(await clone_target_dao.get_active_by_rule(db, rule.id))
         if not targets:
             raise errors.RequestError(msg='无 active 目标,不能发布')
+        # 运行时自动进群:按目标留存的原始标识(链接/ID)重新加入或验证成员关系,
+        # 解析出的 chat_id 若变化(群迁移等)同步更新目标行
+        await CloneRuleService._auto_join(db, rule, targets)
         new_version = rule.current_version + 1
         ver = await clone_rule_version_dao.create(
             db,
