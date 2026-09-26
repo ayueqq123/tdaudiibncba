@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -19,6 +20,9 @@ class CRUDDeliveryJob(CRUDPlus[TgDeliveryJob]):
         project_uuid: str | None = None,
         account_uuid: str | None = None,
         status: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        allowed_tenants: set[str] | None = None,
     ) -> Sequence[TgDeliveryJob]:
         filters = {
             k: v
@@ -30,7 +34,42 @@ class CRUDDeliveryJob(CRUDPlus[TgDeliveryJob]):
             }.items()
             if v is not None
         }
-        return await self.select_models(db, **filters)
+        whereclause = [getattr(TgDeliveryJob, k) == v for k, v in filters.items()]
+        if allowed_tenants is not None:
+            whereclause.append(TgDeliveryJob.tenant_id.in_(allowed_tenants))
+        stmt = (
+            sa.select(TgDeliveryJob)
+            .where(*whereclause)
+            .order_by(TgDeliveryJob.created_at.desc())
+            .offset(offset or 0)
+            .limit(limit or 500)
+        )
+        return (await db.execute(stmt)).scalars().all()
+
+    async def count_all(
+        self,
+        db: AsyncSession,
+        tenant_uuid: str | None = None,
+        project_uuid: str | None = None,
+        account_uuid: str | None = None,
+        status: str | None = None,
+        allowed_tenants: set[str] | None = None,
+    ) -> int:
+        filters = {
+            k: v
+            for k, v in {
+                'tenant_id': tenant_uuid,
+                'project_id': project_uuid,
+                'account_id': account_uuid,
+                'status': status,
+            }.items()
+            if v is not None
+        }
+        whereclause = [getattr(TgDeliveryJob, k) == v for k, v in filters.items()]
+        if allowed_tenants is not None:
+            whereclause.append(TgDeliveryJob.tenant_id.in_(allowed_tenants))
+        stmt = sa.select(sa.func.count()).select_from(TgDeliveryJob).where(*whereclause)
+        return (await db.execute(stmt)).scalar() or 0
 
     async def get_by_idempotency_key(self, db: AsyncSession, key: str) -> TgDeliveryJob | None:
         return await self.select_model_by_column(db, idempotency_key=key)

@@ -1,3 +1,4 @@
+from typing import Any
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -108,16 +109,45 @@ class DeliveryService:
         project_id: int | None = None,
         account_id: int | None = None,
         status: str | None = None,
-    ) -> list[TgDeliveryJob]:
+        page: int = 1,
+        size: int = 20,
+    ) -> dict[str, Any]:
         allowed, tenant_uuid, project_uuid, account_uuid = await DeliveryService._scope_uuids(
             db, request, tenant_id, project_id, account_id
         )
         if allowed is not None and not allowed:
-            return []
-        jobs = list(await delivery_job_dao.get_all(db, tenant_uuid, project_uuid, account_uuid, status))
-        if allowed is not None:
-            jobs = [j for j in jobs if j.tenant_id in allowed]
-        return jobs
+            return {'total': 0, 'page': page, 'size': size, 'items': []}
+        page = max(page, 1)
+        size = min(max(size, 1), 200)
+        total = await delivery_job_dao.count_all(
+            db, tenant_uuid, project_uuid, account_uuid, status, allowed_tenants=allowed
+        )
+        jobs = list(
+            await delivery_job_dao.get_all(
+                db,
+                tenant_uuid,
+                project_uuid,
+                account_uuid,
+                status,
+                limit=size,
+                offset=(page - 1) * size,
+                allowed_tenants=allowed,
+            )
+        )
+        # 账号 uuid → 展示标签(优先 username,其次手机号/uid)
+        account_uuids = {j.account_id for j in jobs if j.account_id}
+        accounts = list(await telegram_account_dao.get_all(db, None, None, None)) if account_uuids else []
+        labels = {
+            a.uuid: (f'@{a.username}' if a.username else a.phone or str(a.telegram_user_id or a.id))
+            for a in accounts
+            if a.uuid in account_uuids
+        }
+        items = []
+        for j in jobs:
+            d = {c.name: getattr(j, c.name) for c in TgDeliveryJob.__table__.columns}
+            d['account_label'] = labels.get(j.account_id, j.account_id[:8])
+            items.append(d)
+        return {'total': total, 'page': page, 'size': size, 'items': items}
 
     @staticmethod
     async def retry(*, db: AsyncSession, request: Request, pk: str) -> int:

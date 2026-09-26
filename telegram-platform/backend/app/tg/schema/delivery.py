@@ -34,6 +34,16 @@ class GetDeliveryJobDetail(SchemaBase):
     last_error_class: str | None
     created_at: Any | None
     updated_at: Any | None
+    account_label: str | None = Field(default=None, description='账号展示标签')
+
+
+class GetDeliveryJobPage(SchemaBase):
+    """投递任务分页"""
+
+    total: int
+    page: int
+    size: int
+    items: list[GetDeliveryJobDetail]
 
 
 class GetDeliveryAttemptDetail(SchemaBase):

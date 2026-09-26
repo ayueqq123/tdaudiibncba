@@ -101,7 +101,7 @@ def test_delivery_query_retry_cancel(client: TestClient, token_headers: dict[str
     # list:每目标状态可见
     resp = client.get('/tg/deliveries', headers=token_headers, params={'project_id': pid})
     assert resp.json()['code'] == 200
-    ids = {d['id'] for d in resp.json()['data']}
+    ids = {d['id'] for d in resp.json()['data']['items']}
     assert {jid_ready, jid_uncertain, jid_failed} <= ids
 
     # detail(尝试记录为空数组)
@@ -213,7 +213,7 @@ def test_approval_flow(client: TestClient, token_headers: dict[str, str]) -> Non
     assert _run(_job_count()) == 1
     jobs = client.get(
         '/tg/deliveries', headers=token_headers, params={'project_id': pid, 'status': 'ready'}
-    ).json()['data']
+    ).json()['data']['items']
     assert any(j['idempotency_key'] == f'approval:{appr["uuid"]}' for j in jobs)
 
     # 过期审批不可通过

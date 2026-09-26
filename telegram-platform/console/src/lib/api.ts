@@ -152,14 +152,32 @@ export interface DeliveryJob {
   kind: string
   mode: string
   status: string
+  source_scope: string
   source_chat_id: number
   source_message_id: number
+  revision: number
   target_chat_id: number
+  target_topic_id: number | null
   attempt_count: number
   last_error_class: string | null
   rule_id: string
   rule_version: number
-  attempts?: { attempt_no: number; result_status: string | null; error_class: string | null; started_at: string | null }[]
+  account_id: string
+  account_label: string | null
+  idempotency_key: string
+  payload_ref: string | null
+  requires_approval: boolean
+  next_attempt_at: string | null
+  flood_wait_until: string | null
+  created_at: string | null
+  updated_at: string | null
+  attempts?: { attempt_no: number; result_status: string | null; error_class: string | null; started_at: string | null; finished_at: string | null }[]
+}
+export interface DeliveryPage {
+  total: number
+  page: number
+  size: number
+  items: DeliveryJob[]
 }
 export interface ReplyCandidate {
   id: number
@@ -214,7 +232,7 @@ export const tgApi = {
   publishRule: (id: number, expectedVersion: number) =>
     api.post(`${TG}/clone-rules/${id}/publish`, { expected_version: expectedVersion }),
   ruleVersions: (id: number) => api.get<any[]>(`${TG}/clone-rules/${id}/versions`),
-  deliveries: (params?: any) => api.get<DeliveryJob[]>(`${TG}/deliveries`, params),
+  deliveries: (params?: any) => api.get<DeliveryPage>(`${TG}/deliveries`, params),
   delivery: (id: string) => api.get<DeliveryJob>(`${TG}/deliveries/${id}`),
   retryDelivery: (id: string) => api.post(`${TG}/deliveries/${id}/retry`, {}),
   cancelDelivery: (id: string) => api.post(`${TG}/deliveries/${id}/cancel`, {}),

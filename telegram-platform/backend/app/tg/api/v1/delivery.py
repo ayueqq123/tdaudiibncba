@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, Path, Query, Request
 
 from backend.app.tg.schema.delivery import (
     CancelDeliveryParam,
-    GetDeliveryJobDetail,
     GetDeliveryJobFull,
+    GetDeliveryJobPage,
     RetryDeliveryParam,
 )
 from backend.app.tg.service.delivery_service import delivery_service
@@ -38,7 +38,9 @@ async def get_deliveries(
     project_id: Annotated[int | None, Query(description='项目 ID')] = None,
     account_id: Annotated[int | None, Query(description='账号 ID')] = None,
     status: Annotated[str | None, Query(description='投递状态')] = None,
-) -> ResponseSchemaModel[list[GetDeliveryJobDetail]]:
+    page: Annotated[int, Query(description='页码', ge=1)] = 1,
+    size: Annotated[int, Query(description='每页条数', ge=1, le=200)] = 20,
+) -> ResponseSchemaModel[GetDeliveryJobPage]:
     data = await delivery_service.get_all(
         db=db,
         request=request,
@@ -46,6 +48,8 @@ async def get_deliveries(
         project_id=project_id,
         account_id=account_id,
         status=status,
+        page=page,
+        size=size,
     )
     return response_base.success(data=data)
 
