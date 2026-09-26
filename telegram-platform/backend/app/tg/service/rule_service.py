@@ -189,6 +189,34 @@ class CloneRuleService:
         await db.flush()
 
     @staticmethod
+    async def update_target(
+        *, db: AsyncSession, request: Request, rule_id: int, target_id: int, obj: CloneTargetParam
+    ) -> TgCloneTarget:
+        """改过滤/备注原地更新;源群或目标群变了则退役旧路线、新建路线(路由 ID 不跨群复用)。"""
+        rule = await CloneRuleService.get(db=db, request=request, pk=rule_id)
+        target = await clone_target_dao.get(db, target_id)
+        if not target or target.rule_id != rule.id or target.status != 'active':
+            raise errors.NotFoundError(msg='目标不存在')
+        src_ref = CloneRuleService._chat_ref(obj.source_chat_id)
+        dst_ref = CloneRuleService._chat_ref(obj.target_chat_id)
+        same_src = src_ref in {target.source_chat_ref, str(target.source_chat_id)}
+        same_dst = dst_ref in {target.target_chat_ref, str(target.target_chat_id)}
+        if (
+            same_src
+            and same_dst
+            and obj.source_topic_id == target.source_topic_id
+            and obj.target_topic_id == target.target_topic_id
+        ):
+            target.filters = obj.filters
+            target.remark = obj.remark
+            db.add(target)
+            await db.flush()
+            return target
+        await clone_target_dao.retire(db, target_id)
+        await db.flush()
+        return await CloneRuleService.add_target(db=db, request=request, rule_id=rule_id, obj=obj)
+
+    @staticmethod
     async def retire_target(*, db: AsyncSession, request: Request, rule_id: int, target_id: int) -> int:
         rule = await CloneRuleService.get(db=db, request=request, pk=rule_id)
         target = await clone_target_dao.get(db, target_id)

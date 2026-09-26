@@ -22,14 +22,22 @@ const EMPTY_FORM = {
   account_id: '', name: '', mode: 'copy',
   sync_edit: true, sync_delete: true,
   source_chat_id: '', target_chat_id: '',
-  sender_user_ids: '', media_kinds: [] as string[], remark: '',
+  sender_user_ids: '', blocked_sender_ids: '', exclude_bots: false,
+  media_kinds: [] as string[], remark: '',
 }
+
+const parseIds = (s: string) =>
+  s.split(/[,\s，]+/).map((x) => x.trim()).filter(Boolean).map(Number)
+
+const activeTarget = (r: CloneRule) => (r.targets || []).find((t) => t.status === 'active' || !t.status)
 
 function filterSummary(t: CloneTarget): string {
   const f = t.filters
   if (!f) return '全群全部消息'
   const parts: string[] = []
+  if (f.exclude_bots) parts.push('不搬机器人')
   if (f.sender_user_ids?.length) parts.push(`只搬 ${f.sender_user_ids.length} 个发言人`)
+  if (f.blocked_sender_ids?.length) parts.push(`屏蔽 ${f.blocked_sender_ids.length} 个发言人`)
   if (f.media_kinds?.length) parts.push(`只搬 ${f.media_kinds.map((k: string) => KIND_LABEL[k] || k).join('/')}`)
   return parts.join(' · ') || '全群全部消息'
 }
@@ -79,13 +87,21 @@ export default function RulesPage() {
     const acc = accounts.find((a) => a.id === +form.account_id)
     if (!form.name) return toast.warning('名称必填')
     if (!editRule && !acc) return toast.warning('请选择执行账号')
-    if (!editRule && (!form.source_chat_id || !form.target_chat_id)) return toast.warning('源群/目标群 ID 必填')
-    const senders = form.sender_user_ids
-      .split(/[,\s]+/)
-      .map((s: string) => s.trim())
-      .filter(Boolean)
-      .map(Number)
-    if (senders.some((n: number) => !Number.isInteger(n) || n <= 0)) return toast.warning('发言人 ID 必须是正整数')
+    if (!form.source_chat_id || !form.target_chat_id) return toast.warning('源群/目标群必填')
+    const senders = parseIds(form.sender_user_ids)
+    const blocked = parseIds(form.blocked_sender_ids)
+    if ([...senders, ...blocked].some((n: number) => !Number.isInteger(n) || n <= 0)) return toast.warning('发言人 ID 必须是正整数')
+    const filters: any = {}
+    if (form.exclude_bots) filters.exclude_bots = true
+    if (senders.length) filters.sender_user_ids = senders
+    if (blocked.length) filters.blocked_sender_ids = blocked
+    if (form.media_kinds.length) filters.media_kinds = form.media_kinds
+    const toRef = (s: string) => (/^-?\d+$/.test(s.trim()) ? Number(s.trim()) : s.trim())
+    const targetBody = {
+      source_chat_id: toRef(String(form.source_chat_id)),
+      target_chat_id: toRef(String(form.target_chat_id)),
+      filters: Object.keys(filters).length ? filters : null,
+    }
 
     setBusy(true)
     try {
@@ -98,7 +114,10 @@ export default function RulesPage() {
           enabled: editRule.enabled,
           remark: form.remark || null,
         })
-        if (editRule.current_version > 0) {
+        const t = activeTarget(editRule)
+        if (t) await tgApi.updateTarget(editRule.id, t.id, targetBody)
+        else await tgApi.addTarget(editRule.id, targetBody)
+        if (isRunning(editRule)) {
           await applyToWorker(editRule.id, editRule.current_version, editRule.account_id)
           toast.success('已保存并生效')
         } else {
@@ -118,15 +137,7 @@ export default function RulesPage() {
         })
         const list = await tgApi.rules()
         const created = list.filter((x) => x.name === form.name).sort((a, b) => b.id - a.id)[0]
-        const filters: any = {}
-        if (senders.length) filters.sender_user_ids = senders
-        if (form.media_kinds.length) filters.media_kinds = form.media_kinds
-        const toRef = (s: string) => (/^-?\d+$/.test(s.trim()) ? Number(s.trim()) : s.trim())
-        await tgApi.addTarget(created.id, {
-          source_chat_id: toRef(form.source_chat_id),
-          target_chat_id: toRef(form.target_chat_id),
-          filters: Object.keys(filters).length ? filters : null,
-        })
+        await tgApi.addTarget(created.id, targetBody)
         toast.success('规则已建好,点"运行"开始搬运')
       }
       setOpen(false)
@@ -138,6 +149,28 @@ export default function RulesPage() {
     } finally {
       setBusy(false)
     }
+  }
+
+  function openEdit(r: CloneRule) {
+    const t = activeTarget(r)
+    const f = t?.filters || {}
+    setEditRule(r)
+    setForm({
+      ...EMPTY_FORM,
+      account_id: String(r.account_id),
+      name: r.name,
+      mode: r.mode,
+      sync_edit: r.sync_edit ?? true,
+      sync_delete: r.sync_delete ?? true,
+      remark: r.remark || '',
+      source_chat_id: t ? t.source_chat_ref || String(t.source_chat_id) : '',
+      target_chat_id: t ? t.target_chat_ref || String(t.target_chat_id) : '',
+      sender_user_ids: (f.sender_user_ids || []).join(','),
+      blocked_sender_ids: (f.blocked_sender_ids || []).join(','),
+      exclude_bots: !!f.exclude_bots,
+      media_kinds: f.media_kinds || [],
+    })
+    setOpen(true)
   }
 
   // 点运行/停止立即在界面上切换状态,后台下发失败再回滚
@@ -221,104 +254,130 @@ export default function RulesPage() {
                 <Plus className="h-4 w-4" /> 新建规则
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-h-[90vh] overflow-y-auto">
+            <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
               <DialogHeader>
                 <DialogTitle>{editRule ? `编辑「${editRule.name}」` : '新建搬运规则'}</DialogTitle>
               </DialogHeader>
-              <div className="flex flex-col gap-3">
-                {!editRule && (
-                  <>
+              <div className="flex flex-col gap-4">
+                <section className="flex flex-col gap-3">
+                  <h3 className="text-sm font-semibold">基本信息</h3>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="flex flex-col gap-1.5">
-                      <Label>用哪个号搬运</Label>
-                      <Select value={form.account_id} onValueChange={(v) => setForm({ ...form, account_id: v })}>
+                      <Label>规则名称</Label>
+                      <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="如:资源群搬运" />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>用哪个号搬运{editRule ? '(建好后不可改)' : ''}</Label>
+                      <Select value={form.account_id} onValueChange={(v) => setForm({ ...form, account_id: v })} disabled={!!editRule}>
                         <SelectTrigger>
                           <SelectValue placeholder="选择账号" />
                         </SelectTrigger>
                         <SelectContent>
                           {accounts.map((a) => (
                             <SelectItem key={a.id} value={String(a.id)}>
-                              {a.phone || String(a.telegram_user_id || a.id)}
+                              {a.username ? '@' + a.username : a.phone || String(a.telegram_user_id || a.id)}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                     </div>
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <div className="flex flex-col gap-1.5">
-                        <Label>源群(ID 或链接)</Label>
-                        <Input
-                          value={form.source_chat_id}
-                          onChange={(e) => setForm({ ...form, source_chat_id: e.target.value })}
-                          placeholder="-100 开头 ID 或 t.me/xx 链接"
-                        />
-                      </div>
-                      <div className="flex flex-col gap-1.5">
-                        <Label>目标群(ID 或链接)</Label>
-                        <Input
-                          value={form.target_chat_id}
-                          onChange={(e) => setForm({ ...form, target_chat_id: e.target.value })}
-                          placeholder="-100 开头 ID 或 t.me/xx、t.me/+邀请链接"
-                        />
-                      </div>
-                    </div>
+                  </div>
+                </section>
+
+                <section className="flex flex-col gap-3">
+                  <h3 className="text-sm font-semibold">搬运路线</h3>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="flex flex-col gap-1.5">
-                      <Label>只搬这些人的消息(可选)</Label>
+                      <Label>源群(ID 或链接)</Label>
                       <Input
-                        value={form.sender_user_ids}
-                        onChange={(e) => setForm({ ...form, sender_user_ids: e.target.value })}
-                        placeholder="发言人 ID 逗号分隔;留空=搬全群"
+                        value={form.source_chat_id}
+                        onChange={(e) => setForm({ ...form, source_chat_id: e.target.value })}
+                        placeholder="-100 开头 ID 或 t.me/xx 链接"
                       />
                     </div>
                     <div className="flex flex-col gap-1.5">
-                      <Label>只搬这些类型(不勾=全部)</Label>
-                      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-                        {MEDIA_KINDS.map(([k, label]) => (
-                          <label key={k} className="flex items-center gap-1.5 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={form.media_kinds.includes(k)}
-                              onChange={(e) =>
-                                setForm({
-                                  ...form,
-                                  media_kinds: e.target.checked
-                                    ? [...form.media_kinds, k]
-                                    : form.media_kinds.filter((x: string) => x !== k),
-                                })
-                              }
-                            />
-                            {label}
-                          </label>
-                        ))}
-                      </div>
+                      <Label>目标群(ID 或链接)</Label>
+                      <Input
+                        value={form.target_chat_id}
+                        onChange={(e) => setForm({ ...form, target_chat_id: e.target.value })}
+                        placeholder="-100 开头 ID 或 t.me/xx、t.me/+邀请链接"
+                      />
                     </div>
-                  </>
-                )}
-                <div className="flex flex-col gap-1.5">
-                  <Label>规则名称</Label>
-                  <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="如:资源群搬运" />
-                </div>
-                <div className="flex items-center gap-2">
-                  <Label>搬运方式</Label>
-                  <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v })}>
-                    <SelectTrigger className="w-44">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="copy">复制重发(看不出搬运)</SelectItem>
-                      <SelectItem value="forward">官方转发(带来源)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex items-center gap-6">
-                  <div className="flex items-center gap-2">
-                    <Label>源群编辑→跟着改</Label>
-                    <Switch checked={form.sync_edit} onCheckedChange={(v) => setForm({ ...form, sync_edit: v })} />
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Label>源群删除→跟着删</Label>
-                    <Switch checked={form.sync_delete} onCheckedChange={(v) => setForm({ ...form, sync_delete: v })} />
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="flex flex-col gap-1.5">
+                      <Label>搬运方式</Label>
+                      <Select value={form.mode} onValueChange={(v) => setForm({ ...form, mode: v })}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="copy">复制重发(看不出搬运)</SelectItem>
+                          <SelectItem value="forward">官方转发(带来源)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col justify-end gap-2">
+                      <label className="flex items-center justify-between gap-2 text-sm">
+                        源群编辑 → 跟着改
+                        <Switch checked={form.sync_edit} onCheckedChange={(v) => setForm({ ...form, sync_edit: v })} />
+                      </label>
+                      <label className="flex items-center justify-between gap-2 text-sm">
+                        源群删除 → 跟着删
+                        <Switch checked={form.sync_delete} onCheckedChange={(v) => setForm({ ...form, sync_delete: v })} />
+                      </label>
+                    </div>
                   </div>
-                </div>
+                </section>
+
+                <section className="flex flex-col gap-3 rounded-md border p-3">
+                  <h3 className="text-sm font-semibold">过滤条件(都不填 = 全部照搬)</h3>
+                  <label className="flex items-center justify-between gap-2 text-sm">
+                    不搬机器人发的消息
+                    <Switch checked={form.exclude_bots} onCheckedChange={(v) => setForm({ ...form, exclude_bots: v })} />
+                  </label>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>消息类型(不勾 = 全部类型)</Label>
+                    <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+                      {MEDIA_KINDS.map(([k, label]) => (
+                        <label key={k} className="flex items-center gap-1.5 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={form.media_kinds.includes(k)}
+                            onChange={(e) =>
+                              setForm({
+                                ...form,
+                                media_kinds: e.target.checked
+                                  ? [...form.media_kinds, k]
+                                  : form.media_kinds.filter((x: string) => x !== k),
+                              })
+                            }
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="flex flex-col gap-1.5">
+                      <Label>只搬这些人(发言人 ID)</Label>
+                      <Input
+                        value={form.sender_user_ids}
+                        onChange={(e) => setForm({ ...form, sender_user_ids: e.target.value })}
+                        placeholder="逗号分隔;留空 = 所有人"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>不搬这些人(发言人 ID)</Label>
+                      <Input
+                        value={form.blocked_sender_ids}
+                        onChange={(e) => setForm({ ...form, blocked_sender_ids: e.target.value })}
+                        placeholder="逗号分隔,如广告号/机器人 ID"
+                      />
+                    </div>
+                  </div>
+                </section>
+
                 <div className="flex flex-col gap-1.5">
                   <Label>备注(可选)</Label>
                   <Input value={form.remark} onChange={(e) => setForm({ ...form, remark: e.target.value })} />
@@ -376,19 +435,7 @@ export default function RulesPage() {
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => {
-                      setEditRule(r)
-                      setForm({
-                        ...EMPTY_FORM,
-                        account_id: String(r.account_id),
-                        name: r.name,
-                        mode: r.mode,
-                        sync_edit: r.sync_edit ?? true,
-                        sync_delete: r.sync_delete ?? true,
-                        remark: r.remark || '',
-                      })
-                      setOpen(true)
-                    }}
+                    onClick={() => openEdit(r)}
                   >
                     <Pencil className="h-4 w-4" /> 编辑
                   </Button>

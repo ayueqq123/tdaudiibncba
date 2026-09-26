@@ -111,11 +111,14 @@ export default function AiBindingsPage() {
   }
 
   const doToggle = async (b: AiBinding) => {
+    const status = b.status === 'active' ? 'paused' : 'active'
+    setRows((prev) => prev.map((x) => (x.id === b.id ? { ...x, status } : x)))
     try {
-      await tgApi.updateAiBinding(b.id, { status: b.status === 'active' ? 'paused' : 'active' })
-      void load()
+      await tgApi.updateAiBinding(b.id, { status })
     } catch {
       toast.error('操作失败')
+    } finally {
+      void load()
     }
   }
 

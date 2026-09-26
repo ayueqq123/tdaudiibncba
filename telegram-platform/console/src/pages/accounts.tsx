@@ -64,6 +64,7 @@ export default function AccountsPage() {
   }, [])
 
   async function setDesired(r: TgAccount, status: string) {
+    setRows((prev) => prev.map((x) => (x.id === r.id ? { ...x, desired_status: status } : x)))
     try {
       await tgApi.updateAccount(r.id, {
         tenant_id: r.tenant_id,
@@ -72,9 +73,10 @@ export default function AccountsPage() {
         observed_status: r.observed_status,
       })
       toast.success(status === 'running' ? '已下发启动' : '已下发停止')
-      load()
     } catch (e: any) {
       toast.error(e?.detail || '操作失败')
+    } finally {
+      load()
     }
   }
 
@@ -287,7 +289,7 @@ export default function AccountsPage() {
                 <TableCell>{r.phone || '-'}</TableCell>
                 <TableCell>{r.username ? `@${r.username}` : '-'}</TableCell>
                 <TableCell>
-                  <Badge variant={r.desired_status === 'running' ? 'success' : 'secondary'}>{r.desired_status}</Badge>
+                  <Badge variant={r.desired_status === 'running' ? 'success' : 'secondary'}>{r.desired_status === 'running' ? '运行' : '停止'}</Badge>
                 </TableCell>
                 <TableCell>
                   <Badge variant={statusVariant[r.observed_status] || 'secondary'}>{statusLabel[r.observed_status] || r.observed_status}</Badge>

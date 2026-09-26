@@ -85,6 +85,22 @@ async def add_target(
     return response_base.success()
 
 
+@router.put(
+    '/{pk}/targets/{target_id}',
+    summary='修改规则目标',
+    dependencies=[Depends(RequestPermission('tg:rule:edit')), DependsRBAC],
+)
+async def update_target(
+    db: CurrentSessionTransaction,
+    request: Request,
+    pk: Annotated[int, Path(description='规则 ID')],
+    target_id: Annotated[int, Path(description='目标 ID')],
+    obj: CloneTargetParam,
+) -> ResponseModel:
+    await clone_rule_service.update_target(db=db, request=request, rule_id=pk, target_id=target_id, obj=obj)
+    return response_base.success()
+
+
 @router.delete(
     '/{pk}/targets/{target_id}',
     summary='退役规则目标',
