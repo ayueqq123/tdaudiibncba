@@ -26,8 +26,9 @@ const EMPTY_FORM = {
   media_kinds: [] as string[], remark: '',
 }
 
-const parseIds = (s: string) =>
-  s.split(/[,\s，]+/).map((x) => x.trim()).filter(Boolean).map(Number)
+const parseSenders = (s: string) => s.split(/[,\s，]+/).map((x) => x.trim()).filter(Boolean)
+const senderText = (f: any, key: string) => (f[`${key}_refs`] || f[key] || []).join(',')
+const chatLabel = (ref: string | null | undefined, id: number) => (ref && ref !== String(id) ? `${ref}(${id})` : String(id))
 
 const activeTarget = (r: CloneRule) => (r.targets || []).find((t) => t.status === 'active' || !t.status)
 
@@ -88,9 +89,10 @@ export default function RulesPage() {
     if (!form.name) return toast.warning('名称必填')
     if (!editRule && !acc) return toast.warning('请选择执行账号')
     if (!form.source_chat_id || !form.target_chat_id) return toast.warning('源群/目标群必填')
-    const senders = parseIds(form.sender_user_ids)
-    const blocked = parseIds(form.blocked_sender_ids)
-    if ([...senders, ...blocked].some((n: number) => !Number.isInteger(n) || n <= 0)) return toast.warning('发言人 ID 必须是正整数')
+    const senders = parseSenders(form.sender_user_ids)
+    const blocked = parseSenders(form.blocked_sender_ids)
+    if ([...senders, ...blocked].some((x) => !/^\d+$/.test(x) && !/^@?[A-Za-z][A-Za-z0-9_]{3,}$/.test(x)))
+      return toast.warning('发言人填数字 ID 或 @用户名')
     const filters: any = {}
     if (form.exclude_bots) filters.exclude_bots = true
     if (senders.length) filters.sender_user_ids = senders
@@ -165,8 +167,8 @@ export default function RulesPage() {
       remark: r.remark || '',
       source_chat_id: t ? t.source_chat_ref || String(t.source_chat_id) : '',
       target_chat_id: t ? t.target_chat_ref || String(t.target_chat_id) : '',
-      sender_user_ids: (f.sender_user_ids || []).join(','),
-      blocked_sender_ids: (f.blocked_sender_ids || []).join(','),
+      sender_user_ids: senderText(f, 'sender_user_ids'),
+      blocked_sender_ids: senderText(f, 'blocked_sender_ids'),
       exclude_bots: !!f.exclude_bots,
       media_kinds: f.media_kinds || [],
     })
@@ -360,19 +362,19 @@ export default function RulesPage() {
                   </div>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="flex flex-col gap-1.5">
-                      <Label>只搬这些人(发言人 ID)</Label>
+                      <Label>只搬这些人(ID 或 @用户名)</Label>
                       <Input
                         value={form.sender_user_ids}
                         onChange={(e) => setForm({ ...form, sender_user_ids: e.target.value })}
-                        placeholder="逗号分隔;留空 = 所有人"
+                        placeholder="如 @GGTS000,123456;留空 = 所有人"
                       />
                     </div>
                     <div className="flex flex-col gap-1.5">
-                      <Label>不搬这些人(发言人 ID)</Label>
+                      <Label>不搬这些人(ID 或 @用户名)</Label>
                       <Input
                         value={form.blocked_sender_ids}
                         onChange={(e) => setForm({ ...form, blocked_sender_ids: e.target.value })}
-                        placeholder="逗号分隔,如广告号/机器人 ID"
+                        placeholder="逗号分隔,如 @adbot,123456"
                       />
                     </div>
                   </div>
@@ -452,9 +454,9 @@ export default function RulesPage() {
                   .filter((t) => t.status === 'active' || !t.status)
                   .map((t) => (
                     <div key={t.id} className="flex flex-wrap items-center gap-2 rounded-md bg-muted/50 px-3 py-1.5 text-sm">
-                      <span className="break-all font-mono text-xs">{t.source_chat_id}</span>
+                      <span className="break-all font-mono text-xs">{chatLabel(t.source_chat_ref, t.source_chat_id)}</span>
                       <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                      <span className="break-all font-mono text-xs">{t.target_chat_id}</span>
+                      <span className="break-all font-mono text-xs">{chatLabel(t.target_chat_ref, t.target_chat_id)}</span>
                       <span className="text-xs text-muted-foreground">{filterSummary(t)}</span>
                       {(r.targets || []).length > 1 && (
                         <Button size="sm" variant="ghost" className="ml-auto h-6 px-2" onClick={() => doRetireTarget(r, t)}>

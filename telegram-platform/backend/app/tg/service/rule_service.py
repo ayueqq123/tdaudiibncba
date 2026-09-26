@@ -17,7 +17,7 @@ from backend.app.tg.schema.clone_rule import (
     CreateCloneTargetParam,
     UpdateCloneRuleParam,
 )
-from backend.app.tg.service.account_service import JOIN_ERR, join_chat_refs
+from backend.app.tg.service.account_service import JOIN_ERR, join_chat_refs, resolve_user_refs
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 
@@ -46,6 +46,9 @@ def _snapshot(rule: TgCloneRule, targets: list) -> dict:
             for t in targets
         ],
     }
+
+
+_SENDER_KEYS = ('sender_user_ids', 'blocked_sender_ids')
 
 
 def _route_key(t: TgCloneTarget) -> tuple:
@@ -126,6 +129,42 @@ class CloneRuleService:
         return int(r['chat_id'])
 
     @staticmethod
+    async def _normalize_filters(db: AsyncSession, rule: TgCloneRule, filters: dict | None) -> dict | None:
+        """发言人过滤里的 @username 解析为用户 ID;原始写法存到 `<key>_refs` 供编辑回显。"""
+        if not filters:
+            return filters
+        out = dict(filters)
+        pending: dict[str, list[str]] = {}
+        for key in _SENDER_KEYS:
+            tokens = [str(x).strip() for x in (filters.get(key) or []) if str(x).strip()]
+            out.pop(f'{key}_refs', None)
+            if not tokens:
+                out.pop(key, None)
+                continue
+            pending[key] = tokens
+        names = [t for tokens in pending.values() for t in tokens if not t.isdigit()]
+        resolved: dict[str, dict] = {}
+        if names:
+            account = await telegram_account_dao.get(db, rule.account_id)
+            if not account:
+                raise errors.NotFoundError(msg='规则所属账号不存在')
+            resolved = await resolve_user_refs(account, list(dict.fromkeys(names)))
+        for key, tokens in pending.items():
+            ids: list[int] = []
+            for tok in tokens:
+                if tok.isdigit():
+                    ids.append(int(tok))
+                    continue
+                r = resolved.get(tok) or {}
+                if not r.get('ok'):
+                    raise errors.RequestError(msg=f'发言人 {tok} 找不到,请检查用户名')
+                ids.append(int(r['user_id']))
+            out[key] = list(dict.fromkeys(ids))
+            if any(not t.isdigit() for t in tokens):
+                out[f'{key}_refs'] = tokens
+        return out
+
+    @staticmethod
     async def add_target(*, db: AsyncSession, request: Request, rule_id: int, obj: CloneTargetParam) -> TgCloneTarget:
         rule = await CloneRuleService.get(db=db, request=request, pk=rule_id)
         if rule.status == 'disabled':
@@ -141,6 +180,7 @@ class CloneRuleService:
         dst_id = CloneRuleService._resolve_or_raise(results, dst_ref, '目标群')
         if src_id == dst_id and obj.source_topic_id == obj.target_topic_id:
             raise errors.RequestError(msg='禁止源=目标的自环')
+        filters = await CloneRuleService._normalize_filters(db, rule, obj.filters)
         route = (src_id, obj.source_topic_id, dst_id, obj.target_topic_id)
         for t in await clone_target_dao.get_active_by_rule(db, rule.id):
             if _route_key(t) == route:
@@ -158,7 +198,7 @@ class CloneRuleService:
                 target_chat_ref=dst_ref,
                 target_topic_id=obj.target_topic_id,
                 joined_account_id=rule.account_id,
-                filters=obj.filters,
+                filters=filters,
                 remark=obj.remark,
             ),
         )
@@ -207,7 +247,7 @@ class CloneRuleService:
             and obj.source_topic_id == target.source_topic_id
             and obj.target_topic_id == target.target_topic_id
         ):
-            target.filters = obj.filters
+            target.filters = await CloneRuleService._normalize_filters(db, rule, obj.filters)
             target.remark = obj.remark
             db.add(target)
             await db.flush()

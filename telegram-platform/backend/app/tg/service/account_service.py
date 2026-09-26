@@ -164,6 +164,22 @@ async def join_chat_refs(account: TgTelegramAccount, refs: list[str | int]) -> d
     return out['results']
 
 
+async def resolve_user_refs(account: TgTelegramAccount, users: list[str]) -> dict[str, dict]:
+    """用账号会话把 @username 解析成 Telegram 用户 ID。返回 {ref: {ok,user_id,is_bot}|{ok:false,error}}。"""
+    if not settings.TG_RUNTIME_DIR or not settings.TG_RUNTIME_PYTHON:
+        raise errors.RequestError(msg='当前环境不支持 @用户名,请填写数字发言人 ID')
+    session_path, api_id, api_hash = account_session_cli_args(account)
+    out = await _run_runtime_cli(
+        'runtime.account.join_chats',
+        ['--session', session_path, '--api-id', api_id, '--api-hash', api_hash],
+        {'refs': [], 'users': users},
+    )
+    if not out.get('ok'):
+        status = (out.get('error') or {}).get('status', 'error')
+        raise errors.RequestError(msg=JOIN_ERR.get(status, '解析用户名失败'))
+    return out.get('users') or {}
+
+
 JOIN_ERR = {
     'invite_expired': '邀请链接已过期',
     'invite_invalid': '邀请链接无效',
