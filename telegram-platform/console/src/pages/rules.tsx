@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowRight, History, Pencil, Play, Plus, RefreshCw, Square, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowRight, History, Pencil, Play, Plus, RefreshCw, ShieldCheck, Square, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { tgApi, type CloneRule, type CloneTarget, type TgAccount } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -56,6 +56,8 @@ export default function RulesPage() {
   const [verOpen, setVerOpen] = useState(false)
   const [versions, setVersions] = useState<any[]>([])
   const [verRule, setVerRule] = useState<CloneRule | null>(null)
+
+  const [checking, setChecking] = useState<number | null>(null)
 
   async function load() {
     setLoading(true)
@@ -194,6 +196,21 @@ export default function RulesPage() {
   }
   const doRun = (r: CloneRule) => toggleRun(r, true)
   const doStop = (r: CloneRule) => toggleRun(r, false)
+
+  async function doCheck(r: CloneRule) {
+    setChecking(r.id)
+    try {
+      const res = await tgApi.checkRule(r.id)
+      const bad = res.filter((x) => !x.ok)
+      if (bad.length) toast.error(`${bad.length} 条路线失效:${bad[0].reason}。点运行会用链接重新进群`)
+      else toast.success('账号都在群里,路线正常')
+      load()
+    } catch (e: any) {
+      toast.error(e?.detail || '检测失败')
+    } finally {
+      setChecking(null)
+    }
+  }
 
   async function doDeleteRule(r: CloneRule) {
     if (!confirm(`确定删除规则「${r.name}」?`)) return
@@ -441,6 +458,9 @@ export default function RulesPage() {
                   >
                     <Pencil className="h-4 w-4" /> 编辑
                   </Button>
+                  <Button size="sm" variant="outline" disabled={checking === r.id} onClick={() => doCheck(r)} title="检测账号是否还在群里">
+                    <ShieldCheck className="h-4 w-4" /> {checking === r.id ? '检测中…' : '检测'}
+                  </Button>
                   <Button size="sm" variant="outline" onClick={() => openVersions(r)} title="历史版本">
                     <History className="h-4 w-4" />
                   </Button>
@@ -458,6 +478,11 @@ export default function RulesPage() {
                       <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       <span className="break-all font-mono text-xs">{chatLabel(t.target_chat_ref, t.target_chat_id)}</span>
                       <span className="text-xs text-muted-foreground">{filterSummary(t)}</span>
+                      {t.health && (
+                        <span className="flex items-center gap-1 text-xs text-destructive">
+                          <AlertTriangle className="h-3.5 w-3.5" /> 失效:{t.health}(点运行重新进群)
+                        </span>
+                      )}
                       {(r.targets || []).length > 1 && (
                         <Button size="sm" variant="ghost" className="ml-auto h-6 px-2" onClick={() => doRetireTarget(r, t)}>
                           <Trash2 className="h-3.5 w-3.5" />

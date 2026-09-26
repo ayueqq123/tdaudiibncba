@@ -98,6 +98,7 @@ class GetCloneTargetDetail(CloneTargetParam):
     route_id: str = Field(description='稳定路由 ID')
     source_chat_ref: str | None = Field(None, description='源群原始标识')
     target_chat_ref: str | None = Field(None, description='目标群原始标识')
+    health: str | None = Field(None, description='路线失效原因(NULL=正常)')
     rule_id: int = Field(description='规则 ID')
     status: str = Field(description='状态')
     created_time: datetime = Field(description='创建时间')

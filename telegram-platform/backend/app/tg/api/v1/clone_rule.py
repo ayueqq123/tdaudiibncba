@@ -85,6 +85,20 @@ async def add_target(
     return response_base.success()
 
 
+@router.post(
+    '/{pk}/check',
+    summary='检测规则账号是否仍在各路线群内',
+    dependencies=[Depends(RequestPermission('tg:rule:edit')), DependsRBAC],
+)
+async def check_routes(
+    db: CurrentSessionTransaction,
+    request: Request,
+    pk: Annotated[int, Path(description='规则 ID')],
+) -> ResponseModel:
+    data = await clone_rule_service.check_routes(db=db, request=request, pk=pk)
+    return response_base.success(data=data)
+
+
 @router.put(
     '/{pk}/targets/{target_id}',
     summary='修改规则目标',

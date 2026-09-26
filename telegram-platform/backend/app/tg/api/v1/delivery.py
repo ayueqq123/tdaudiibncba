@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query, Request
@@ -37,7 +38,11 @@ async def get_deliveries(
     tenant_id: Annotated[int | None, Query(description='租户 ID')] = None,
     project_id: Annotated[int | None, Query(description='项目 ID')] = None,
     account_id: Annotated[int | None, Query(description='账号 ID')] = None,
-    status: Annotated[str | None, Query(description='投递状态')] = None,
+    status: Annotated[
+        str | None, Query(description='状态分组 waiting/sending/succeeded/failed/uncertain 或原始状态')
+    ] = None,
+    since: Annotated[datetime | None, Query(description='创建时间起(含)')] = None,
+    until: Annotated[datetime | None, Query(description='创建时间止(不含)')] = None,
     page: Annotated[int, Query(description='页码', ge=1)] = 1,
     size: Annotated[int, Query(description='每页条数', ge=1, le=200)] = 20,
 ) -> ResponseSchemaModel[GetDeliveryJobPage]:
@@ -48,6 +53,8 @@ async def get_deliveries(
         project_id=project_id,
         account_id=account_id,
         status=status,
+        since=since,
+        until=until,
         page=page,
         size=size,
     )

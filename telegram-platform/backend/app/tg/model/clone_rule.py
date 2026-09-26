@@ -79,6 +79,10 @@ class TgCloneTarget(Base):
     filters: Mapped[dict | None] = mapped_column(sa.JSON, default=None, comment='过滤条件{keywords,media,...}')
     status: Mapped[str] = mapped_column(sa.String(16), default='active', index=True, comment='状态(active/retired)')
     remark: Mapped[str | None] = mapped_column(sa.String(512), default=None, comment='备注')
+    joined_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近完成进群时间')
+    health_reason: Mapped[str | None] = mapped_column(
+        sa.String(255), default=None, comment='路线失效原因(NULL=正常)'
+    )
 
     __table_args__ = (
         sa.UniqueConstraint('rule_id', 'source_chat_id', 'source_topic_id', 'deleted', name='uk_tg_target_src_deleted'),

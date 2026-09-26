@@ -123,6 +123,17 @@ export interface ImportBatch {
   created_time: string
   results?: { phone?: string; telegram_user_id?: number; grade: string; reason?: string }[]
 }
+export interface TgAlert {
+  key: string
+  level: 'error' | 'warning'
+  category: 'account' | 'heartbeat' | 'route' | 'delivery' | 'uncertain' | 'ai'
+  title: string
+  detail: string
+  account_label: string
+  count: number
+  last_at: string | null
+  link: string
+}
 export interface CloneTarget {
   id: number
   source_chat_id: number
@@ -131,6 +142,7 @@ export interface CloneTarget {
   target_topic_id: number | null
   source_chat_ref?: string | null
   target_chat_ref?: string | null
+  health?: string | null
   status: string
   filters?: Record<string, any> | null
   remark: string | null
@@ -231,10 +243,13 @@ export const tgApi = {
   deleteRule: (id: number) => api.del(`${TG}/clone-rules/${id}`),
   addTarget: (id: number, b: any) => api.post(`${TG}/clone-rules/${id}/targets`, b),
   updateTarget: (id: number, targetId: number, b: any) => api.put(`${TG}/clone-rules/${id}/targets/${targetId}`, b),
+  checkRule: (id: number) =>
+    api.post<{ target_id: number; ok: boolean; reason: string | null }[]>(`${TG}/clone-rules/${id}/check`, {}),
   retireTarget: (id: number, targetId: number) => api.del(`${TG}/clone-rules/${id}/targets/${targetId}`),
   publishRule: (id: number, expectedVersion: number) =>
     api.post(`${TG}/clone-rules/${id}/publish`, { expected_version: expectedVersion }),
   ruleVersions: (id: number) => api.get<any[]>(`${TG}/clone-rules/${id}/versions`),
+  alerts: () => api.get<TgAlert[]>(`${TG}/alerts`),
   deliveries: (params?: any) => api.get<DeliveryPage>(`${TG}/deliveries`, params),
   delivery: (id: string) => api.get<DeliveryJob>(`${TG}/deliveries/${id}`),
   retryDelivery: (id: string) => api.post(`${TG}/deliveries/${id}/retry`, {}),

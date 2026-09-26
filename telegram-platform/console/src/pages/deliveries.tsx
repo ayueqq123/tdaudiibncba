@@ -1,41 +1,45 @@
 import { useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
-import { tgApi, type DeliveryJob } from '@/lib/api'
+import { tgApi, type DeliveryJob, type TgAccount } from '@/lib/api'
+import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
-const statusVariant: Record<string, 'success' | 'warning' | 'destructive' | 'default' | 'secondary'> = {
-  succeeded: 'success',
-  ready: 'default',
-  in_flight: 'warning',
-  retry_scheduled: 'warning',
-  gated_approval: 'warning',
-  failed_permanent: 'destructive',
-  dead_letter: 'destructive',
-  cancelled: 'secondary',
+const GROUPS: [string, string, 'success' | 'warning' | 'destructive' | 'default' | 'secondary', string[]][] = [
+  ['waiting', '等待中', 'default', ['pending', 'waiting_approval', 'ready', 'leased', 'retry_wait']],
+  ['sending', '发送中', 'warning', ['sending']],
+  ['succeeded', '成功', 'success', ['succeeded', 'reconciled_succeeded']],
+  ['failed', '失败/取消', 'destructive', ['blocked', 'failed_permanent', 'dead_letter', 'confirmed_not_sent', 'cancelled', 'expired']],
+  ['uncertain', '待确认', 'warning', ['uncertain', 'manual_review']],
+]
+const RAW_LABELS: Record<string, string> = {
+  pending: '排队', waiting_approval: '等待审批', ready: '待发送', leased: '已领取', retry_wait: '等待重试',
+  sending: '发送中', succeeded: '已送达', reconciled_succeeded: '核验已送达',
+  blocked: '无权限', failed_permanent: '发送失败', dead_letter: '已放弃', confirmed_not_sent: '确认未发出',
+  cancelled: '已取消', expired: '已过期', uncertain: '结果不确定', manual_review: '待人工核查',
 }
-const STATUS_OPTS = ['ready', 'in_flight', 'retry_scheduled', 'gated_approval', 'succeeded', 'failed_permanent', 'dead_letter', 'cancelled']
-const STATUS_LABELS: Record<string, string> = {
-  ready: '待发送',
-  in_flight: '发送中',
-  retry_scheduled: '等待重试',
-  gated_approval: '等待审批',
-  succeeded: '已送达',
-  failed_permanent: '发送失败',
-  dead_letter: '已放弃',
-  cancelled: '已取消',
+const groupOf = (s: string) => GROUPS.find((g) => g[3].includes(s))
+const statusLabel = (s: string) => groupOf(s)?.[1] || s
+const rawLabel = (s: string) => RAW_LABELS[s] || s
+const statusBadge = (s: string) => groupOf(s)?.[2] || 'secondary'
+const ERR_LABELS: Record<string, string> = {
+  flood_wait: '限流等待', transient: '临时错误', result_unknown: '结果未知', auth_dead: '账号登录失效',
+  permission: '无权限/被移出', content_invalid: '内容不支持', storage_down: '数据库不可用', cache_down: '缓存不可用',
 }
+const errLabel = (s?: string | null) => (s ? ERR_LABELS[s] || s : '-')
+/** 北京时间 datetime-local 值 → UTC ISO */
+const bjToIso = (v: string) => (v ? new Date(v + ':00+08:00').toISOString() : '')
+
 const KIND_LABELS: Record<string, string> = {
   create: '新消息搬运',
   edit: '编辑同步',
   delete: '删除同步',
   send_reply: 'AI 回复',
 }
-const statusLabel = (s: string) => STATUS_LABELS[s] || s
 const kindLabel = (s: string) => KIND_LABELS[s] || s
 
 const PAGE_SIZE = 20
@@ -55,6 +59,10 @@ export default function DeliveriesPage() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState('')
+  const [accountId, setAccountId] = useState('')
+  const [since, setSince] = useState('')
+  const [until, setUntil] = useState('')
+  const [accounts, setAccounts] = useState<TgAccount[]>([])
   const [loading, setLoading] = useState(false)
   const [detail, setDetail] = useState<DeliveryJob | null>(null)
   const [open, setOpen] = useState(false)
@@ -63,7 +71,14 @@ export default function DeliveriesPage() {
   async function load() {
     setLoading(true)
     try {
-      const res = await tgApi.deliveries({ ...(status ? { status } : {}), page, size: PAGE_SIZE })
+      const res = await tgApi.deliveries({
+        ...(status ? { status } : {}),
+        ...(accountId ? { account_id: accountId } : {}),
+        ...(since ? { since: bjToIso(since) } : {}),
+        ...(until ? { until: bjToIso(until) } : {}),
+        page,
+        size: PAGE_SIZE,
+      })
       setRows(res.items)
       setTotal(res.total)
     } catch (e: any) {
@@ -74,7 +89,10 @@ export default function DeliveriesPage() {
   }
   useEffect(() => {
     load()
-  }, [status, page])
+  }, [status, accountId, since, until, page])
+  useEffect(() => {
+    tgApi.accounts().then(setAccounts).catch(() => {})
+  }, [])
 
   async function act(r: DeliveryJob, kind: 'retry' | 'cancel') {
     try {
@@ -97,41 +115,48 @@ export default function DeliveriesPage() {
 
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold">投递任务</h2>
-        <div className="flex gap-2">
-          <Select
-            value={status}
-            onValueChange={(v) => {
-              setStatus(v)
-              setPage(1)
-            }}
-          >
-            <SelectTrigger className="w-44">
-              <SelectValue placeholder="按状态筛选" />
+      <div className="mb-4 flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">投递任务</h2>
+          <Button variant="outline" onClick={load} disabled={loading}>
+            <RefreshCw className="h-4 w-4" /> 刷新
+          </Button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Select value={status || 'all'} onValueChange={(v) => { setStatus(v === 'all' ? '' : v); setPage(1) }}>
+            <SelectTrigger className="w-32">
+              <SelectValue placeholder="全部状态" />
             </SelectTrigger>
             <SelectContent>
-              {STATUS_OPTS.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {statusLabel(s)}
+              <SelectItem value="all">全部状态</SelectItem>
+              {GROUPS.map(([k, label]) => (
+                <SelectItem key={k} value={k}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={accountId || 'all'} onValueChange={(v) => { setAccountId(v === 'all' ? '' : v); setPage(1) }}>
+            <SelectTrigger className="w-44">
+              <SelectValue placeholder="全部账号" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部账号</SelectItem>
+              {accounts.map((a) => (
+                <SelectItem key={a.id} value={String(a.id)}>
+                  {a.username ? '@' + a.username : a.phone || String(a.telegram_user_id || a.id)}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-          {status && (
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setStatus('')
-                setPage(1)
-              }}
-            >
-              清除
+          <div className="flex items-center gap-1 text-sm text-muted-foreground">
+            <Input type="datetime-local" className="w-48" value={since} onChange={(e) => { setSince(e.target.value); setPage(1) }} />
+            至
+            <Input type="datetime-local" className="w-48" value={until} onChange={(e) => { setUntil(e.target.value); setPage(1) }} />
+          </div>
+          {(status || accountId || since || until) && (
+            <Button variant="ghost" onClick={() => { setStatus(''); setAccountId(''); setSince(''); setUntil(''); setPage(1) }}>
+              清除筛选
             </Button>
           )}
-          <Button variant="outline" onClick={load} disabled={loading}>
-            <RefreshCw className="h-4 w-4" /> 刷新
-          </Button>
         </div>
       </div>
       <div className="overflow-x-auto rounded-md border">
@@ -161,11 +186,11 @@ export default function DeliveriesPage() {
                 </TableCell>
                 <TableCell className="font-mono text-xs">{r.target_chat_id}</TableCell>
                 <TableCell>
-                  <Badge variant={statusVariant[r.status] || 'secondary'}>{statusLabel(r.status)}</Badge>
+                  <Badge variant={statusBadge(r.status)} title={rawLabel(r.status)}>{statusLabel(r.status)}</Badge>
                 </TableCell>
                 <TableCell>{r.attempt_count}</TableCell>
                 <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{fmtTs(r.created_at)}</TableCell>
-                <TableCell className="text-xs text-muted-foreground">{r.last_error_class || '-'}</TableCell>
+                <TableCell className="text-xs text-muted-foreground">{errLabel(r.last_error_class)}</TableCell>
                 <TableCell>
                   <div className="flex gap-1.5">
                     <Button size="sm" variant="outline" onClick={() => openDetail(r.id)}>
@@ -174,7 +199,7 @@ export default function DeliveriesPage() {
                     <Button
                       size="sm"
                       variant="outline"
-                      disabled={!['failed_permanent', 'dead_letter', 'cancelled'].includes(r.status)}
+                      disabled={!['failed_permanent', 'dead_letter'].includes(r.status)}
                       onClick={() => act(r, 'retry')}
                     >
                       重试
@@ -182,7 +207,7 @@ export default function DeliveriesPage() {
                     <Button
                       size="sm"
                       variant="outline"
-                      disabled={['succeeded', 'cancelled', 'dead_letter'].includes(r.status)}
+                      disabled={!['pending', 'waiting_approval', 'ready', 'retry_wait', 'blocked', 'uncertain'].includes(r.status)}
                       onClick={() => act(r, 'cancel')}
                     >
                       取消
@@ -251,10 +276,10 @@ export default function DeliveriesPage() {
                 </span>
               </div>
               <div>
-                <span className="text-muted-foreground">状态:</span> {statusLabel(detail.status)} · 尝试 {detail.attempt_count} 次
+                <span className="text-muted-foreground">状态:</span> {statusLabel(detail.status)}({rawLabel(detail.status)})· 尝试 {detail.attempt_count} 次
               </div>
               <div>
-                <span className="text-muted-foreground">最近错误:</span> {detail.last_error_class || '-'}
+                <span className="text-muted-foreground">最近错误:</span> {errLabel(detail.last_error_class)}
               </div>
               <div>
                 <span className="text-muted-foreground">创建:</span> {fmtTs(detail.created_at)}
@@ -300,7 +325,7 @@ export default function DeliveriesPage() {
                         {a.result_status === 'success' ? '成功' : a.result_status || '进行中'}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-muted-foreground">{a.error_class || '-'}</TableCell>
+                    <TableCell className="text-muted-foreground">{errLabel(a.error_class)}</TableCell>
                   </TableRow>
                 ))}
                 {!(detail?.attempts || []).length && (

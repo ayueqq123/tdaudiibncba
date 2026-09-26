@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,16 @@ from backend.common.exception import errors
 # §8.2:retry 只放行可重试终态;uncertain 必须走单独人工决策
 _RETRYABLE = {'failed_permanent', 'dead_letter'}
 _CANCELLABLE = {'pending', 'waiting_approval', 'ready', 'retry_wait', 'blocked', 'uncertain'}
+
+
+# 界面上的 5 类状态 → 状态机原始状态
+STATUS_GROUPS: dict[str, list[str]] = {
+    'waiting': ['pending', 'waiting_approval', 'ready', 'leased', 'retry_wait'],
+    'sending': ['sending'],
+    'succeeded': ['succeeded', 'reconciled_succeeded'],
+    'failed': ['blocked', 'failed_permanent', 'dead_letter', 'confirmed_not_sent', 'cancelled', 'expired'],
+    'uncertain': ['uncertain', 'manual_review'],
+}
 
 
 class DeliveryService:
@@ -109,6 +120,8 @@ class DeliveryService:
         project_id: int | None = None,
         account_id: int | None = None,
         status: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
         page: int = 1,
         size: int = 20,
     ) -> dict[str, Any]:
@@ -119,8 +132,9 @@ class DeliveryService:
             return {'total': 0, 'page': page, 'size': size, 'items': []}
         page = max(page, 1)
         size = min(max(size, 1), 200)
+        statuses = STATUS_GROUPS.get(status, [status]) if status else None
         total = await delivery_job_dao.count_all(
-            db, tenant_uuid, project_uuid, account_uuid, status, allowed_tenants=allowed
+            db, tenant_uuid, project_uuid, account_uuid, statuses, since, until, allowed_tenants=allowed
         )
         jobs = list(
             await delivery_job_dao.get_all(
@@ -128,7 +142,9 @@ class DeliveryService:
                 tenant_uuid,
                 project_uuid,
                 account_uuid,
-                status,
+                statuses,
+                since,
+                until,
                 limit=size,
                 offset=(page - 1) * size,
                 allowed_tenants=allowed,

@@ -269,3 +269,33 @@ def test_approval_flow(client: TestClient, token_headers: dict[str, str]) -> Non
     assert resp.json()['code'] == 200
     assert resp.json()['data']['status'] == 'rejected'
     assert resp.json()['data']['reason'] == '内容不合适'
+
+
+def test_delivery_filters_and_alerts(client: TestClient, token_headers: dict[str, str]) -> None:
+    tid, pid, aid = _mk_scope(client, token_headers, 'D2')
+    tu = _run(_fetch_uuid('tg_tenant', tid))
+    pu = _run(_fetch_uuid('tg_project', pid))
+    au = _run(_fetch_uuid('tg_telegram_account', aid))
+    jid_ready = _run(_insert_job(tu, pu, au, 'ready'))
+    jid_uncertain = _run(_insert_job(tu, pu, au, 'uncertain'))
+    jid_ok = _run(_insert_job(tu, pu, au, 'succeeded'))
+
+    def ids(**params: Any) -> set[str]:
+        resp = client.get('/tg/deliveries', headers=token_headers, params={'account_id': aid, **params})
+        assert resp.json()['code'] == 200
+        return {d['id'] for d in resp.json()['data']['items']}
+
+    assert ids() == {jid_ready, jid_uncertain, jid_ok}
+    assert ids(status='waiting') == {jid_ready}
+    assert ids(status='uncertain') == {jid_uncertain}
+    assert ids(status='succeeded') == {jid_ok}
+    assert ids(status='failed') == set()
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    assert ids(since=future) == set()
+    assert ids(since=past, until=future) == {jid_ready, jid_uncertain, jid_ok}
+
+    resp = client.get('/tg/alerts', headers=token_headers)
+    assert resp.json()['code'] == 200
+    keys = {a['key'] for a in resp.json()['data']}
+    assert f'delivery:{au}:uncertain:None' in keys

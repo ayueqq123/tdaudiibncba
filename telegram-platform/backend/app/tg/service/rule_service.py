@@ -1,3 +1,5 @@
+import sqlalchemy as sa
+
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,7 +11,7 @@ from backend.app.tg.crud.crud_clone_rule import (
 from backend.app.tg.crud.crud_membership import membership_dao
 from backend.app.tg.crud.crud_project import project_dao
 from backend.app.tg.crud.crud_telegram_account import telegram_account_dao
-from backend.app.tg.model import TgCloneRule, TgCloneRuleVersion, TgCloneTarget
+from backend.app.tg.model import TgCloneRule, TgCloneRuleVersion, TgCloneTarget, TgDeliveryJob
 from backend.app.tg.schema.clone_rule import (
     CloneTargetParam,
     CreateCloneRuleParam,
@@ -49,6 +51,41 @@ def _snapshot(rule: TgCloneRule, targets: list) -> dict:
 
 
 _SENDER_KEYS = ('sender_user_ids', 'blocked_sender_ids')
+_TERMINAL = ('succeeded', 'reconciled_succeeded', 'blocked', 'failed_permanent')
+TARGET_LOST = '目标群发不了消息(账号可能被移出/禁言/群已解散)'
+SOURCE_LOST = '账号已不在源群,收不到消息'
+DEST_LOST = '账号已不在目标群'
+
+
+async def route_health(db: AsyncSession, targets: list[TgCloneTarget]) -> dict[int, str | None]:
+    """路线健康:检测记录的失效原因优先;否则看该路线最近一次投递结果是否为无权限(进群之后的)。"""
+    health: dict[int, str | None] = {t.id: t.health_reason for t in targets}
+    route_ids = [t.route_id for t in targets if not t.health_reason]
+    if not route_ids:
+        return health
+    ranked = (
+        sa.select(
+            TgDeliveryJob.route_id,
+            TgDeliveryJob.status,
+            TgDeliveryJob.last_error_class,
+            TgDeliveryJob.updated_at,
+            sa.func.row_number()
+            .over(partition_by=TgDeliveryJob.route_id, order_by=TgDeliveryJob.updated_at.desc())
+            .label('rn'),
+        )
+        .where(TgDeliveryJob.route_id.in_(route_ids), TgDeliveryJob.status.in_(_TERMINAL))
+        .subquery()
+    )
+    rows = (await db.execute(sa.select(ranked).where(ranked.c.rn == 1))).all()
+    latest = {r.route_id: r for r in rows}
+    for t in targets:
+        r = latest.get(t.route_id)
+        if not r or t.health_reason:
+            continue
+        lost = r.status == 'blocked' or r.last_error_class == 'permission'
+        if lost and (t.joined_at is None or r.updated_at is None or r.updated_at > t.joined_at):
+            health[t.id] = TARGET_LOST
+    return health
 
 
 def _route_key(t: TgCloneTarget) -> tuple:
@@ -76,8 +113,11 @@ class CloneRuleService:
     @staticmethod
     async def get_with_targets(db: AsyncSession, request: Request, pk: int) -> TgCloneRule:
         rule = await CloneRuleService.get(db=db, request=request, pk=pk)
-        targets = await clone_target_dao.get_all_by_rule(db, rule.id)
-        rule.targets = list(targets)
+        targets = list(await clone_target_dao.get_all_by_rule(db, rule.id))
+        health = await route_health(db, [t for t in targets if t.status == 'active'])
+        for t in targets:
+            t.health = health.get(t.id)
+        rule.targets = targets
         return rule
 
     @staticmethod
@@ -206,7 +246,8 @@ class CloneRuleService:
     @staticmethod
     async def _auto_join(db: AsyncSession, rule: TgCloneRule, targets: list[TgCloneTarget]) -> None:
         """运行前让规则账号自动加入/验证尚未由该账号进过的群(链接可进群,纯 ID 仅验证)。"""
-        targets = [t for t in targets if t.joined_account_id != rule.account_id]
+        health = await route_health(db, targets)
+        targets = [t for t in targets if t.joined_account_id != rule.account_id or health.get(t.id)]
         refs: list[str] = []
         for t in targets:
             refs.append(t.source_chat_ref or str(t.source_chat_id))
@@ -225,8 +266,32 @@ class CloneRuleService:
                 if getattr(t, attr_id) != chat_id:
                     setattr(t, attr_id, chat_id)
             t.joined_account_id = rule.account_id
+            t.joined_at = timezone.now()
+            t.health_reason = None
             db.add(t)
         await db.flush()
+
+    @staticmethod
+    async def check_routes(*, db: AsyncSession, request: Request, pk: int) -> list[dict]:
+        """实时检测规则账号是否仍在每条路线的源群/目标群里(只验证不进群);不在则标失效并清进群记录。"""
+        rule = await CloneRuleService.get(db=db, request=request, pk=pk)
+        targets = list(await clone_target_dao.get_active_by_rule(db, rule.id))
+        if not targets:
+            return []
+        ids = list(dict.fromkeys(str(x) for t in targets for x in (t.source_chat_id, t.target_chat_id)))
+        results = await CloneRuleService._resolve_refs(db, rule, ids)
+        out = []
+        for t in targets:
+            src_ok = (results.get(str(t.source_chat_id)) or {}).get('ok', False)
+            dst_ok = (results.get(str(t.target_chat_id)) or {}).get('ok', False)
+            reason = None if src_ok and dst_ok else (SOURCE_LOST if not src_ok else DEST_LOST)
+            t.health_reason = reason
+            if reason:
+                t.joined_account_id = None
+            db.add(t)
+            out.append({'target_id': t.id, 'ok': reason is None, 'reason': reason})
+        await db.flush()
+        return out
 
     @staticmethod
     async def update_target(
