@@ -27,6 +27,28 @@ interface ReqOpts {
   body?: any
   form?: FormData
   params?: Record<string, any>
+  _retried?: boolean
+}
+
+// access_token 过期后走 refresh cookie 静默续期;并发请求共享同一个刷新
+let refreshing: Promise<boolean> | null = null
+export function tryRefreshToken(): Promise<boolean> {
+  if (!refreshing) {
+    refreshing = fetch(new URL(`${BASE}/auth/refresh`, window.location.origin).toString(), { method: 'POST' })
+      .then(async (r) => {
+        if (!r.ok) return false
+        const j = await r.json().catch(() => null)
+        const t = j?.data?.access_token
+        if (!t) return false
+        setToken(t)
+        return true
+      })
+      .catch(() => false)
+      .finally(() => {
+        refreshing = null
+      })
+  }
+  return refreshing
 }
 
 async function req<T>(path: string, opts: ReqOpts = {}): Promise<T> {
@@ -46,6 +68,9 @@ async function req<T>(path: string, opts: ReqOpts = {}): Promise<T> {
   }
   const res = await fetch(url.toString(), { method: opts.method || 'GET', headers, body })
   if (res.status === 401) {
+    if (!opts._retried && (await tryRefreshToken())) {
+      return req<T>(path, { ...opts, _retried: true })
+    }
     clearToken()
     window.location.hash = '#/login'
     throw new ApiError(401, '登录过期')

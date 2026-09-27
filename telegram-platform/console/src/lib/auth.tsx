@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import { fetchMe, getToken, clearToken } from './api'
+import { fetchMe, getToken, clearToken, tryRefreshToken } from './api'
 
 interface User {
   id: number
@@ -30,7 +30,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     fetchMe()
       .then((u) => setUser(u))
-      .catch(() => setUser(null))
+      .catch(async () => {
+        // access_token 过期先试静默续期,续不上才算登出
+        if (await tryRefreshToken()) {
+          await fetchMe()
+            .then((u) => setUser(u))
+            .catch(() => setUser(null))
+        } else {
+          setUser(null)
+        }
+      })
       .finally(() => setReady(true))
   }, [])
 
