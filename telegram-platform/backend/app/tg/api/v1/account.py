@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, Path, Query, Request, Upload
 
 from backend.app.tg.schema.import_batch import GetImportBatchDetail
 from backend.app.tg.schema.telegram_account import (
+    GetApiCredentialDetail,
     GetTgAccountDetail,
     LoginCompleteParam,
     LoginStartParam,
@@ -17,6 +18,14 @@ from backend.common.security.rbac import DependsRBAC
 from backend.database.db import CurrentSession, CurrentSessionTransaction
 
 router = APIRouter()
+
+
+@router.get('/api-credentials', summary='列出账号曾用过的 API 凭据(验证码登录下拉复用)', dependencies=[DependsJwtAuth])
+async def get_api_credentials(
+    db: CurrentSession, request: Request
+) -> ResponseSchemaModel[list[GetApiCredentialDetail]]:
+    data = await account_service.list_api_credentials(db=db, request=request)
+    return response_base.success(data=data)
 
 
 @router.get('/{pk}', summary='获取 Telegram 账号详情', dependencies=[DependsJwtAuth])

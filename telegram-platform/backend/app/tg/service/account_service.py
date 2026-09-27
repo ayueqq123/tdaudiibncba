@@ -238,6 +238,32 @@ class AccountService:
         return [a for a in accounts if (a.tenant_id, a.project_id) in scopes]
 
     @staticmethod
+    async def list_api_credentials(*, db: AsyncSession, request: Request) -> list[dict]:
+        """聚合可见账号会话 meta 里的 app_id/app_hash,供验证码登录下拉复用(不落库明文)。"""
+        accounts = await AccountService.get_all(db=db, request=request)
+        base = Path(settings.TG_IMPORT_STORAGE_DIR)
+        seen: dict[tuple[str, str], dict] = {}
+        for account in accounts:
+            if not account.secret_ref:
+                continue
+            meta_path = (base / account.secret_ref).with_suffix('.json')
+            try:
+                meta = json.loads(meta_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            api_id, api_hash = meta.get('app_id'), meta.get('app_hash')
+            if not api_id or not api_hash:
+                continue
+            key = (str(api_id), str(api_hash))
+            item = seen.setdefault(
+                key, {'api_id': int(api_id), 'api_hash': str(api_hash), 'account_count': 0, 'phones': []}
+            )
+            item['account_count'] += 1
+            if account.phone and account.phone not in item['phones']:
+                item['phones'].append(account.phone)
+        return sorted(seen.values(), key=lambda x: -x['account_count'])
+
+    @staticmethod
     async def update(*, db: AsyncSession, request: Request, pk: int, obj: UpdateTgAccountParam) -> int:
         account = await telegram_account_dao.get(db, pk)
         if not account:
@@ -252,7 +278,6 @@ class AccountService:
             raise errors.NotFoundError(msg='账号不存在')
         await AccountService._check_scope(db, request, account.tenant_id, account.project_id)
         return await telegram_account_dao.delete(db, pk)
-
 
     @staticmethod
     async def login_start(*, db: AsyncSession, request: Request, obj) -> dict[str, Any]:

@@ -114,6 +114,12 @@ export interface TgAccount {
   observed_status: string
   remark: string | null
 }
+export interface ApiCredential {
+  api_id: number
+  api_hash: string
+  account_count: number
+  phones: string[]
+}
 export interface ImportBatch {
   id: number
   tenant_id: number
@@ -264,6 +270,7 @@ export const tgApi = {
   reject: (id: number, b: any) => api.post(`${TG}/approvals/${id}/reject`, b),
   commands: () => api.get<RuntimeCommand[]>(`${TG}/runtime/commands`),
   issueCommand: (accountId: number, b: any) => api.post(`${TG}/runtime/accounts/${accountId}/commands`, b),
+  apiCredentials: () => api.get<ApiCredential[]>(`${TG}/accounts/api-credentials`),
   loginStart: (b: { tenant_id: number; project_id: number; phone: string; api_id: number; api_hash: string; device?: string; app_version?: string }) =>
     api.post<{ login_id: string; ttl: number }>(`${TG}/accounts/login/start`, b),
   loginComplete: (b: { login_id: string; code: string; password?: string }) =>

@@ -63,6 +63,15 @@ class LoginCompleteParam(SchemaBase):
     password: str | None = Field(None, description='两步验证密码(如需)')
 
 
+class GetApiCredentialDetail(SchemaBase):
+    """账号曾使用的 API 凭据(从会话 meta 聚合,供验证码登录下拉复用)"""
+
+    api_id: int = Field(description='api_id')
+    api_hash: str = Field(description='api_hash')
+    account_count: int = Field(description='使用该凭据的账号数')
+    phones: list[str] = Field(default_factory=list, description='使用该凭据的手机号')
+
+
 class GetTgAccountDetail(TgTelegramAccountSchemaBase):
     """Telegram 账号详情"""
 
