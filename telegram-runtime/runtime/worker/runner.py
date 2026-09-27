@@ -88,6 +88,7 @@ def event_from_inbox(row: EventInbox) -> SourceEvent:
         reply_to_source_id=row.reply_to_source_id, topic_id=row.topic_id,
         protected=row.protected, sender_id=row.source_sender_id,
         media_kind=row.source_media_kind,
+        sender_is_bot=bool(row.source_sender_bot),
     )
 
 

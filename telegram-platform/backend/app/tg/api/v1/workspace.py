@@ -58,9 +58,11 @@ async def ensure_workspace(
     tenant = await tenant_dao.create_model(
         db, CreateTenantParam(name=f'{user.username} 的空间', status=StatusType.enable)
     )
+    await db.flush()
     project = await project_dao.create_model(
         db, CreateProjectParam(tenant_id=tenant.id, name='默认', status=StatusType.enable)
     )
+    await db.flush()
     await membership_dao.create(
         db,
         CreateMembershipParam(

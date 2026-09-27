@@ -5,6 +5,20 @@ from pydantic import ConfigDict, Field
 
 from backend.common.schema import SchemaBase
 
+class ReportAccountStatusParam(SchemaBase):
+    """Worker 上报账号观测状态(连接成功/断开/失败)"""
+
+    observed_status: str = Field(description='active|stopped|error|reauth_required|revoked')
+    last_error: str | None = Field(default=None, description='失败原因')
+
+
+class ReportChatLostParam(SchemaBase):
+    """Worker 上报账号已不在某个规则群(被踢/退群)"""
+
+    chat_id: int = Field(description='群数字 ID')
+    reason: str = Field(default='kicked', max_length=32, description='kicked|not_member')
+
+
 RuntimeCommandType = Literal[
     'StartAccount',
     'StopAccount',

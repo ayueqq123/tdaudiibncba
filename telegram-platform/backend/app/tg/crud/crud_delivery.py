@@ -1,9 +1,39 @@
 from collections.abc import Sequence
+from datetime import datetime
 
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
 from backend.app.tg.model.delivery import TgDeliveryAttempt, TgDeliveryJob, TgMessageMap
+
+
+def _where(
+    tenant_uuid: str | None,
+    project_uuid: str | None,
+    account_uuid: str | None,
+    statuses: list[str] | None,
+    since: datetime | None,
+    until: datetime | None,
+    allowed_tenants: set[str] | None,
+) -> list:
+    clauses: list = []
+    for col, v in (
+        (TgDeliveryJob.tenant_id, tenant_uuid),
+        (TgDeliveryJob.project_id, project_uuid),
+        (TgDeliveryJob.account_id, account_uuid),
+    ):
+        if v is not None:
+            clauses.append(col == v)
+    if statuses:
+        clauses.append(TgDeliveryJob.status.in_(statuses))
+    if since is not None:
+        clauses.append(TgDeliveryJob.created_at >= since)
+    if until is not None:
+        clauses.append(TgDeliveryJob.created_at < until)
+    if allowed_tenants is not None:
+        clauses.append(TgDeliveryJob.tenant_id.in_(allowed_tenants))
+    return clauses
 
 
 class CRUDDeliveryJob(CRUDPlus[TgDeliveryJob]):
@@ -18,19 +48,37 @@ class CRUDDeliveryJob(CRUDPlus[TgDeliveryJob]):
         tenant_uuid: str | None = None,
         project_uuid: str | None = None,
         account_uuid: str | None = None,
-        status: str | None = None,
+        statuses: list[str] | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        allowed_tenants: set[str] | None = None,
     ) -> Sequence[TgDeliveryJob]:
-        filters = {
-            k: v
-            for k, v in {
-                'tenant_id': tenant_uuid,
-                'project_id': project_uuid,
-                'account_id': account_uuid,
-                'status': status,
-            }.items()
-            if v is not None
-        }
-        return await self.select_models(db, **filters)
+        whereclause = _where(tenant_uuid, project_uuid, account_uuid, statuses, since, until, allowed_tenants)
+        stmt = (
+            sa.select(TgDeliveryJob)
+            .where(*whereclause)
+            .order_by(TgDeliveryJob.created_at.desc())
+            .offset(offset or 0)
+            .limit(limit or 500)
+        )
+        return (await db.execute(stmt)).scalars().all()
+
+    async def count_all(
+        self,
+        db: AsyncSession,
+        tenant_uuid: str | None = None,
+        project_uuid: str | None = None,
+        account_uuid: str | None = None,
+        statuses: list[str] | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        allowed_tenants: set[str] | None = None,
+    ) -> int:
+        whereclause = _where(tenant_uuid, project_uuid, account_uuid, statuses, since, until, allowed_tenants)
+        stmt = sa.select(sa.func.count()).select_from(TgDeliveryJob).where(*whereclause)
+        return (await db.execute(stmt)).scalar() or 0
 
     async def get_by_idempotency_key(self, db: AsyncSession, key: str) -> TgDeliveryJob | None:
         return await self.select_model_by_column(db, idempotency_key=key)

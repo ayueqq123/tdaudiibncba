@@ -42,8 +42,10 @@ from runtime.worker.live import (
     PayloadResolver,
     TelethonTransport,
     TransportRouter,
+    check_membership,
     make_ingest_handler,
     register_live_events,
+    register_membership_watch,
 )
 from runtime.worker.runner import RunnerDeps, WorkerHost
 
@@ -134,6 +136,7 @@ class WorkerHostMain:
         self._rules_cache: dict[str, list[RuleSnapshot]] = {}
         self._hosted: dict[str, _Hosted] = {}
         self._lost: set[str] = set()
+        self._bg: set[asyncio.Task] = set()
         self._seen_cmds: set[int] = set()
         self._policy = policy or PolicySnapshot()
         self._stopping = asyncio.Event()
@@ -187,12 +190,14 @@ class WorkerHostMain:
             session = await self._session_connector(bundle)
         except Exception as exc:  # noqa: BLE001 — connect failure must not take the host down
             log.error("connect failed account=%s: %s", a.account_id, exc)
+            await self._report_status(a.api_row_id, "error", str(exc))
             return
         try:
             register_live_events(
                 session,
                 make_ingest_handler(self._session_factory, a.account_id,
-                                    a.tenant_id, a.project_id),
+                                    a.tenant_id, a.project_id,
+                                    control=self.control, api_row_id=a.api_row_id),
             )
             self.registry.register(a.account_id, generation)
             self.router.add(
@@ -200,6 +205,11 @@ class WorkerHostMain:
                 TelethonTransport(session.client, a.account_id,
                                   self.registry, self.resolver))
             await self._refresh_rules(a)
+            register_membership_watch(
+                session,
+                lambda aid=a.account_id: self._rule_chats(aid),
+                lambda chat_id, reason, a=a: self._report_chat_lost(a, chat_id, reason),
+            )
             await self._runner_host.assign(a.account_id, generation)
             hb = LeaseHeartbeat(
                 self._make_renew(a.account_id, generation),
@@ -208,11 +218,49 @@ class WorkerHostMain:
             self._hosted[a.account_id] = _Hosted(
                 assignment=a, session=session, heartbeat=hb,
                 heartbeat_task=asyncio.create_task(hb.run()))
+            await self._report_status(a.api_row_id, "active")
+            task = asyncio.create_task(self._check_rule_chats(a, session))
+            self._bg.add(task)
+            task.add_done_callback(self._bg.discard)
             log.info("assigned account=%s generation=%d", a.account_id,
                      generation)
         except Exception:
             await session.close()
             raise
+
+    def _rule_chats(self, account_id: str) -> set[int]:
+        chats: set[int] = set()
+        for r in self._rules_cache.get(account_id, []):
+            chats.add(r.source_chat_id)
+            chats.update(t.target_chat_id for t in r.targets)
+        return chats
+
+    async def _check_rule_chats(self, a: Assignment, session: AccountSession) -> None:
+        """On connect: catch kicks that happened while the account was offline."""
+        for chat_id in sorted(self._rule_chats(a.account_id)):
+            try:
+                reason = await check_membership(session.client, chat_id)
+            except Exception:  # best-effort probe
+                log.warning("membership probe failed account=%s chat=%s",
+                            a.account_id, chat_id, exc_info=True)
+                continue
+            if reason:
+                await self._report_chat_lost(a, chat_id, reason)
+
+    async def _report_chat_lost(self, a: Assignment, chat_id: int, reason: str) -> None:
+        log.warning("account=%s lost chat=%s reason=%s", a.account_id, chat_id, reason)
+        try:
+            await self.control.report_chat_lost(a.api_row_id, chat_id, reason)
+        except Exception as exc:  # noqa: BLE001 — report must never break the loop
+            log.warning("chat-lost report failed account=%s: %s", a.api_row_id, exc)
+
+    async def _report_status(self, api_row_id: int, status: str,
+                             error: str = "") -> None:
+        """Best-effort observed-status report to control-api (§5.3)."""
+        try:
+            await self.control.report_status(api_row_id, status, error)
+        except Exception as exc:  # noqa: BLE001 — status report must never break the loop
+            log.warning("status report failed account=%s: %s", api_row_id, exc)
 
     def _make_renew(self, account_id: str, generation: int):
         async def renew() -> bool:
@@ -237,6 +285,8 @@ class WorkerHostMain:
         except Exception:  # noqa: BLE001 — best-effort cleanup on release
             log.warning("session close failed account=%s", account_id)
         log.info("released account=%s reason=%s", account_id, reason)
+        if reason != "lease_lost":
+            await self._report_status(hosted.assignment.api_row_id, "stopped")
         # lease row left to expire by TTL — no release mutation (§5.3)
 
     # ---------- rules / commands ----------

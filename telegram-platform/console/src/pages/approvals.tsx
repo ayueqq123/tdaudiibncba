@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
-import { tgApi, type Approval, type ReplyCandidate } from '@/lib/api'
+import { tgApi, type Approval, type ReplyCandidate, type AiBinding } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
+import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
@@ -17,6 +18,13 @@ const statusVariant: Record<string, 'success' | 'warning' | 'destructive' | 'def
   expired: 'secondary',
 }
 
+const statusLabel: Record<string, string> = {
+  pending: '待审批',
+  approved: '已通过',
+  rejected: '已拒绝',
+  expired: '已过期',
+}
+
 export default function ApprovalsPage() {
   const [rows, setRows] = useState<Approval[]>([])
   const [cands, setCands] = useState<Record<number, ReplyCandidate>>({})
@@ -26,15 +34,34 @@ export default function ApprovalsPage() {
   const [reason, setReason] = useState('')
   const [open, setOpen] = useState(false)
   const [acting, setActing] = useState(false)
+  const [bindings, setBindings] = useState<AiBinding[]>([])
+  const [toggling, setToggling] = useState(false)
+
+  const autoOn = bindings.length > 0 && bindings.every((b) => b.auto_approve)
+
+  async function toggleAuto(v: boolean) {
+    setToggling(true)
+    try {
+      const ws = await tgApi.ensureWorkspace()
+      await tgApi.setAutoApprove(ws.tenant_id, ws.project_id, v)
+      setBindings(await tgApi.aiBindings())
+      toast.success(v ? '自动审批已开:新候选直通发送' : '自动审批已关:候选需人工通过')
+    } catch {
+      toast.error('操作失败')
+    } finally {
+      setToggling(false)
+    }
+  }
 
   async function load() {
     setLoading(true)
     try {
-      const [list, candList] = await Promise.all([tgApi.approvals(status ? { status } : {}), tgApi.candidates()])
+      const [list, candList, bs] = await Promise.all([tgApi.approvals(status ? { status } : {}), tgApi.candidates(), tgApi.aiBindings()])
       setRows(list)
       const map: Record<number, ReplyCandidate> = {}
       for (const c of candList) map[c.id] = c
       setCands(map)
+      setBindings(bs.filter((b) => b.engine === 'openai'))
     } catch (e: any) {
       toast.error(e?.detail || '加载失败')
     } finally {
@@ -86,11 +113,21 @@ export default function ApprovalsPage() {
             <SelectContent>
               {['pending', 'approved', 'rejected', 'expired'].map((s) => (
                 <SelectItem key={s} value={s}>
-                  {s}
+                  {statusLabel[s] || s}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
+          <button
+            type="button"
+            className="flex items-center gap-2 rounded-md border px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={toggling || bindings.length === 0}
+            title={bindings.length === 0 ? '先在炒群配置里建绑定' : ''}
+            onClick={() => void toggleAuto(!autoOn)}
+          >
+            <Switch checked={autoOn} disabled className="pointer-events-none" />
+            <span className="text-sm">自动通过</span>
+          </button>
           <Button variant="outline" onClick={load} disabled={loading}>
             <RefreshCw className="h-4 w-4" /> 刷新
           </Button>
@@ -115,7 +152,7 @@ export default function ApprovalsPage() {
                   <TableCell>{r.id}</TableCell>
                   <TableCell className="max-w-md truncate">{c?.content || `#${r.candidate_id}`}</TableCell>
                   <TableCell>
-                    <Badge variant={statusVariant[r.status] || 'secondary'}>{r.status}</Badge>
+                    <Badge variant={statusVariant[r.status] || 'secondary'}>{statusLabel[r.status] || r.status}</Badge>
                   </TableCell>
                   <TableCell className="text-muted-foreground">{r.expires_at?.slice(0, 19).replace('T', ' ')}</TableCell>
                   <TableCell>

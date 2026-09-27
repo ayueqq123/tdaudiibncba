@@ -64,10 +64,29 @@ def _media_whitelist(rule: RuleSnapshot) -> set[str] | None:
     return allowed or None
 
 
+def _sender_blacklist(rule: RuleSnapshot) -> set[int]:
+    """Union of `blocked_sender_ids` across the route's filter dicts."""
+    blocked: set[int] = set()
+    for f in rule.filters:
+        ids = f.get("blocked_sender_ids") if isinstance(f, dict) else None
+        if ids:
+            blocked.update(int(i) for i in ids)
+    return blocked
+
+
+def _excludes_bots(rule: RuleSnapshot) -> bool:
+    return any(isinstance(f, dict) and f.get("exclude_bots") for f in rule.filters)
+
+
 def _passes_filters(event: SourceEvent, rule: RuleSnapshot) -> bool:
-    """Config-filter gate for CREATEs. `sender_user_ids` whitelists the TG author;
+    """Config-filter gate for CREATEs. `sender_user_ids` whitelists the TG author,
+    `blocked_sender_ids` blacklists it, `exclude_bots` drops bot-authored posts,
     `media_kinds` whitelists coarse message types (photo/video/text/...).
     Edits/deletes bypass this gate so previously-cloned messages still sync."""
+    if _excludes_bots(rule) and event.sender_is_bot:
+        return False
+    if event.sender_id is not None and event.sender_id in _sender_blacklist(rule):
+        return False
     senders = _sender_whitelist(rule)
     if senders is not None and event.sender_id not in senders:
         return False

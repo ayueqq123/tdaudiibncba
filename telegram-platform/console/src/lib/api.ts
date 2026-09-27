@@ -123,12 +123,29 @@ export interface ImportBatch {
   created_time: string
   results?: { phone?: string; telegram_user_id?: number; grade: string; reason?: string }[]
 }
+export interface TgAlert {
+  key: string
+  level: 'error' | 'warning'
+  category: 'account' | 'heartbeat' | 'route' | 'delivery' | 'uncertain' | 'ai'
+  title: string
+  detail: string
+  account_label: string
+  count: number
+  last_at: string | null
+  link: string
+  handled: boolean
+  handled_at: string | null
+  handled_by: string | null
+}
 export interface CloneTarget {
   id: number
   source_chat_id: number
   source_topic_id: number | null
   target_chat_id: number
   target_topic_id: number | null
+  source_chat_ref?: string | null
+  target_chat_ref?: string | null
+  health?: string | null
   status: string
   filters?: Record<string, any> | null
   remark: string | null
@@ -152,14 +169,32 @@ export interface DeliveryJob {
   kind: string
   mode: string
   status: string
+  source_scope: string
   source_chat_id: number
   source_message_id: number
+  revision: number
   target_chat_id: number
+  target_topic_id: number | null
   attempt_count: number
   last_error_class: string | null
   rule_id: string
   rule_version: number
-  attempts?: { attempt_no: number; result_status: string | null; error_class: string | null; started_at: string | null }[]
+  account_id: string
+  account_label: string | null
+  idempotency_key: string
+  payload_ref: string | null
+  requires_approval: boolean
+  next_attempt_at: string | null
+  flood_wait_until: string | null
+  created_at: string | null
+  updated_at: string | null
+  attempts?: { attempt_no: number; result_status: string | null; error_class: string | null; started_at: string | null; finished_at: string | null }[]
+}
+export interface DeliveryPage {
+  total: number
+  page: number
+  size: number
+  items: DeliveryJob[]
 }
 export interface ReplyCandidate {
   id: number
@@ -210,11 +245,16 @@ export const tgApi = {
   updateRule: (id: number, b: any) => api.put(`${TG}/clone-rules/${id}`, b),
   deleteRule: (id: number) => api.del(`${TG}/clone-rules/${id}`),
   addTarget: (id: number, b: any) => api.post(`${TG}/clone-rules/${id}/targets`, b),
+  updateTarget: (id: number, targetId: number, b: any) => api.put(`${TG}/clone-rules/${id}/targets/${targetId}`, b),
+  checkRule: (id: number) =>
+    api.post<{ target_id: number; ok: boolean; reason: string | null }[]>(`${TG}/clone-rules/${id}/check`, {}),
   retireTarget: (id: number, targetId: number) => api.del(`${TG}/clone-rules/${id}/targets/${targetId}`),
   publishRule: (id: number, expectedVersion: number) =>
     api.post(`${TG}/clone-rules/${id}/publish`, { expected_version: expectedVersion }),
   ruleVersions: (id: number) => api.get<any[]>(`${TG}/clone-rules/${id}/versions`),
-  deliveries: (params?: any) => api.get<DeliveryJob[]>(`${TG}/deliveries`, params),
+  alerts: () => api.get<TgAlert[]>(`${TG}/alerts`),
+  ackAlerts: (keys: string[]) => api.post<{ count: number }>(`${TG}/alerts/ack`, { keys }),
+  deliveries: (params?: any) => api.get<DeliveryPage>(`${TG}/deliveries`, params),
   delivery: (id: string) => api.get<DeliveryJob>(`${TG}/deliveries/${id}`),
   retryDelivery: (id: string) => api.post(`${TG}/deliveries/${id}/retry`, {}),
   cancelDelivery: (id: string) => api.post(`${TG}/deliveries/${id}/cancel`, {}),
@@ -224,8 +264,55 @@ export const tgApi = {
   reject: (id: number, b: any) => api.post(`${TG}/approvals/${id}/reject`, b),
   commands: () => api.get<RuntimeCommand[]>(`${TG}/runtime/commands`),
   issueCommand: (accountId: number, b: any) => api.post(`${TG}/runtime/accounts/${accountId}/commands`, b),
+  loginStart: (b: { tenant_id: number; project_id: number; phone: string; api_id: number; api_hash: string; device?: string; app_version?: string }) =>
+    api.post<{ login_id: string; ttl: number }>(`${TG}/accounts/login/start`, b),
+  loginComplete: (b: { login_id: string; code: string; password?: string }) =>
+    api.post<{ account_id?: number; need_password?: boolean; username?: string }>(`${TG}/accounts/login/complete`, b),
   ensureWorkspace: (userId?: number) =>
     api.post<{ tenant_id: number; project_id: number }>(`${TG}/workspaces/ensure`, userId ? { user_id: userId } : {}),
+  aiBindings: () => api.get<AiBinding[]>(`${TG}/ai/bindings`),
+  createAiBinding: (b: any) => api.post<AiBinding>(`${TG}/ai/bindings`, b),
+  updateAiBinding: (id: number, b: any) => api.put<AiBinding>(`${TG}/ai/bindings/${id}`, b),
+  deleteAiBinding: (id: number) => api.del(`${TG}/ai/bindings/${id}`),
+  aiGroupPolicies: () => api.get<AiGroupPolicy[]>(`${TG}/ai/group-policies`),
+  saveAiGroupPolicy: (b: Omit<AiGroupPolicy, 'id'>) => api.put<AiGroupPolicy>(`${TG}/ai/group-policies`, b),
+  setAutoApprove: (tenant_id: number, project_id: number, enabled: boolean) =>
+    api.put<{ updated: number; enabled: boolean }>(`${TG}/ai/auto-approve`, { tenant_id, project_id, enabled }),
+}
+
+export interface AiGroupPolicy {
+  id: number
+  tenant_id: number
+  project_id: number
+  chat_id: number
+  topic_id: number | null
+  reply_min: number
+  reply_max: number
+  account_cooldown_s: number
+  account_hourly_max: number
+  stale_max_messages: number
+}
+
+export interface AiBinding {
+  id: number
+  uuid: string
+  tenant_id: number
+  project_id: number
+  account_id: number
+  engine: string
+  base_url: string
+  chat_id: number | null
+  topic_id: number | null
+  persona: string | null
+  provider_model: string | null
+  has_provider_key: boolean
+  speak_policy: string
+  reply_delay_s?: number
+  random_prob?: number
+  context_max_messages?: number
+  auto_approve?: boolean
+  status: string
+  remark: string | null
 }
 
 // ---------- sys 登录账号 ----------

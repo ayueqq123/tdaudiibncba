@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import shutil
+import uuid
 
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,140 @@ async def _run_import_cli(package_path: str) -> dict[str, Any]:
     return json.loads(stdout.decode())
 
 
+_LOGIN_PENDING: dict[str, dict[str, Any]] = {}
+_LOGIN_TTL_S = 600
+
+
+def _purge_pending() -> None:
+    now = timezone.now().timestamp()
+    for lid, st in list(_LOGIN_PENDING.items()):
+        if st['expires'] < now:
+            Path(st['session_path']).unlink(missing_ok=True)
+            _LOGIN_PENDING.pop(lid, None)
+
+
+async def _run_runtime_cli(
+    module: str, args: list[str], stdin_payload: dict | None = None
+) -> dict[str, Any]:
+    """spawn telegram-runtime 的 CLI 模块(GPL 边界:不 import)。返回 stdout 尾部首个 JSON。"""
+    if not settings.TG_RUNTIME_DIR or not settings.TG_RUNTIME_PYTHON:
+        raise errors.ServerError(msg='未配置 TG_RUNTIME_DIR/TG_RUNTIME_PYTHON')
+    env = dict(os.environ)
+    existing = env.get('PYTHONPATH')
+    env['PYTHONPATH'] = (
+        f'{settings.TG_RUNTIME_DIR}{os.pathsep}{existing}' if existing else settings.TG_RUNTIME_DIR
+    )
+    proc = await asyncio.create_subprocess_exec(
+        settings.TG_RUNTIME_PYTHON,
+        '-m',
+        module,
+        *args,
+        cwd=settings.TG_RUNTIME_DIR,
+        env=env,
+        stdin=asyncio.subprocess.PIPE if stdin_payload is not None else None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdin_data = json.dumps(stdin_payload).encode() if stdin_payload is not None else None
+    stdout, stderr = await proc.communicate(input=stdin_data)
+    lines = stdout.decode().strip().splitlines()
+    # stdout 可能被底层库污染(如交互提示),从尾部找第一条 { 开头的行
+    for line in reversed(lines):
+        line = line.strip()
+        if line.startswith('{'):
+            return json.loads(line)
+        idx = line.find('{')
+        if idx >= 0:
+            try:
+                return json.loads(line[idx:])
+            except json.JSONDecodeError:
+                continue
+    raise errors.ServerError(msg=f'{module} 子进程无输出 rc={proc.returncode}: {stderr.decode()[:300]}')
+
+
+async def _run_login_cli(mode: str, args: list[str], stdin_payload: dict | None = None) -> dict[str, Any]:
+    """spawn runtime code_login CLI。返回 stdout JSON。"""
+    return await _run_runtime_cli('runtime.account.code_login', [mode, *args], stdin_payload)
+
+
+def account_session_cli_args(account: TgTelegramAccount) -> tuple[str, str, str]:
+    """定位账号 session 文件与其 meta json 里的 API 凭据 → (session, api_id, api_hash)"""
+    if not account.secret_ref:
+        raise errors.RequestError(msg='账号无会话文件,无法执行进群')
+    session_path = Path(settings.TG_IMPORT_STORAGE_DIR) / account.secret_ref
+    meta_path = session_path.with_suffix('.json')
+    meta: dict[str, Any] = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+    api_id, api_hash = meta.get('app_id'), meta.get('app_hash')
+    if not session_path.exists() or not api_id or not api_hash:
+        raise errors.RequestError(msg='账号会话或 API 凭据缺失,无法自动进群(重新导入/登录该账号)')
+    return str(session_path), str(api_id), str(api_hash)
+
+
+async def join_chat_refs(account: TgTelegramAccount, refs: list[str | int]) -> dict[str, dict]:
+    """用账号会话解析/加入一批群标识。返回 {ref_str: result}。未配置 runtime 时仅放行纯数字 ID。"""
+    if not settings.TG_RUNTIME_DIR or not settings.TG_RUNTIME_PYTHON:
+        results: dict[str, dict] = {}
+        for ref in refs:
+            s = str(ref).strip()
+            if s.lstrip('-').isdigit():
+                results[s] = {'ok': True, 'chat_id': int(s), 'status': 'member'}
+            else:
+                raise errors.RequestError(msg='当前环境不支持链接进群,请填写数字群 ID')
+        return results
+    session_path, api_id, api_hash = account_session_cli_args(account)
+    out = await _run_runtime_cli(
+        'runtime.account.join_chats',
+        ['--session', session_path, '--api-id', api_id, '--api-hash', api_hash],
+        {'refs': refs},
+    )
+    if not out.get('ok'):
+        status = (out.get('error') or {}).get('status', 'error')
+        raise errors.RequestError(msg=JOIN_ERR.get(status, '进群失败'))
+    return out['results']
+
+
+async def resolve_user_refs(account: TgTelegramAccount, users: list[str]) -> dict[str, dict]:
+    """用账号会话把 @username 解析成 Telegram 用户 ID。返回 {ref: {ok,user_id,is_bot}|{ok:false,error}}。"""
+    if not settings.TG_RUNTIME_DIR or not settings.TG_RUNTIME_PYTHON:
+        raise errors.RequestError(msg='当前环境不支持 @用户名,请填写数字发言人 ID')
+    session_path, api_id, api_hash = account_session_cli_args(account)
+    out = await _run_runtime_cli(
+        'runtime.account.join_chats',
+        ['--session', session_path, '--api-id', api_id, '--api-hash', api_hash],
+        {'refs': [], 'users': users},
+    )
+    if not out.get('ok'):
+        status = (out.get('error') or {}).get('status', 'error')
+        raise errors.RequestError(msg=JOIN_ERR.get(status, '解析用户名失败'))
+    return out.get('users') or {}
+
+
+JOIN_ERR = {
+    'invite_expired': '邀请链接已过期',
+    'invite_invalid': '邀请链接无效',
+    'join_approval_pending': '该群需要管理员审批才能进群',
+    'not_member': '账号不在该群内,纯数字 ID 无法自动进群——请改用邀请链接(t.me/+xxx)或公开链接(t.me/用户名)',
+    'resolve_failed': '链接无法解析到群',
+    'bad_ref': '群标识无法识别',
+    'unauthorized': '账号会话已失效,请重新登录',
+    'flood_wait': '进群操作过于频繁,请稍后重试',
+}
+
+
+_LOGIN_ERR = {
+    'code_invalid': '验证码错误',
+    'code_expired': '验证码已过期,请重新发起登录',
+    'phone_invalid': '手机号格式错误',
+    'phone_banned': '该号码已被 Telegram 封禁',
+    'phone_unoccupied': '该号码未注册 Telegram',
+}
+
+
 class AccountService:
     """Telegram 账号服务类"""
 
@@ -117,6 +252,117 @@ class AccountService:
             raise errors.NotFoundError(msg='账号不存在')
         await AccountService._check_scope(db, request, account.tenant_id, account.project_id)
         return await telegram_account_dao.delete(db, pk)
+
+
+    @staticmethod
+    async def login_start(*, db: AsyncSession, request: Request, obj) -> dict[str, Any]:
+        """验证码登录第一步:发送验证码。pending 会话存内存(TTL 10min)。"""
+        await AccountService._check_scope(db, request, obj.tenant_id, obj.project_id)
+        _purge_pending()
+        login_id = uuid.uuid4().hex
+        pending_dir = Path(settings.TG_IMPORT_STORAGE_DIR) / '.pending'
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        session_path = str(pending_dir / f'{login_id}.session')
+        args = [
+            '--session', session_path,
+            '--api-id', str(obj.api_id),
+            '--api-hash', obj.api_hash,
+            '--phone', obj.phone,
+        ]
+        if obj.device:
+            args += ['--device', obj.device]
+        if obj.app_version:
+            args += ['--app-version', obj.app_version]
+        result = await _run_login_cli('send', args)
+        if not result.get('ok'):
+            Path(session_path).unlink(missing_ok=True)
+            err = result.get('error') or {}
+            status = err.get('status')
+            if status == 'flood_wait':
+                raise errors.RequestError(msg=f"操作频繁,请 {err.get('seconds', 60)} 秒后重试")
+            raise errors.RequestError(msg=_LOGIN_ERR.get(status, err.get('detail', '发送验证码失败')))
+        _LOGIN_PENDING[login_id] = {
+            'session_path': session_path,
+            'tenant_id': obj.tenant_id,
+            'project_id': obj.project_id,
+            'user_id': request.user.id,
+            'phone': obj.phone,
+            'api_id': obj.api_id,
+            'api_hash': obj.api_hash,
+            'device': obj.device,
+            'app_version': obj.app_version,
+            'phone_code_hash': result['phone_code_hash'],
+            'expires': timezone.now().timestamp() + _LOGIN_TTL_S,
+        }
+        return {'login_id': login_id, 'ttl': _LOGIN_TTL_S}
+
+    @staticmethod
+    async def login_complete(*, db: AsyncSession, request: Request, obj) -> dict[str, Any]:
+        """验证码登录第二步:提交验证码 → 落 session+meta → 建账号。"""
+        _purge_pending()
+        st = _LOGIN_PENDING.get(obj.login_id)
+        if st is None:
+            raise errors.RequestError(msg='登录会话已过期,请重新发起')
+        if st['user_id'] != request.user.id and not request.user.is_superuser:
+            raise errors.ForbiddenError(msg='无权完成该登录')
+        await AccountService._check_scope(db, request, st['tenant_id'], st['project_id'])
+        args = [
+            '--session', st['session_path'],
+            '--api-id', str(st['api_id']),
+            '--api-hash', st['api_hash'],
+            '--phone', st['phone'],
+            '--code-hash', st['phone_code_hash'],
+        ]
+        if st['device']:
+            args += ['--device', st['device']]
+        if st['app_version']:
+            args += ['--app-version', st['app_version']]
+        result = await _run_login_cli('signin', args, {'code': obj.code, 'password': obj.password})
+        if not result.get('ok'):
+            if result.get('need_password'):
+                return {'need_password': True}
+            err = result.get('error') or {}
+            status = err.get('status')
+            if status == 'flood_wait':
+                raise errors.RequestError(msg=f"操作频繁,请 {err.get('seconds', 60)} 秒后重试")
+            raise errors.RequestError(msg=_LOGIN_ERR.get(status, err.get('detail', '登录失败')))
+        # 登录成功:session 文件 + meta json 移入登录目录,结构同导入批次
+        uid = result.get('user_id')
+        existing = await telegram_account_dao.get_by_tg_user(db, uid) if uid else None
+        if existing is not None:
+            Path(st['session_path']).unlink(missing_ok=True)
+            _LOGIN_PENDING.pop(obj.login_id, None)
+            raise errors.RequestError(msg=f'该 Telegram 身份已存在账号 id={existing.id}')
+        login_dir = Path(settings.TG_IMPORT_STORAGE_DIR) / f'login-{uuid.uuid4().hex}'
+        login_dir.mkdir(parents=True, exist_ok=True)
+        key = (result.get('phone') or st['phone']).lstrip('+') or uuid.uuid4().hex
+        session_dst = login_dir / f'{key}.session'
+        shutil.move(st['session_path'], session_dst)
+        (login_dir / f'{key}.json').write_text(
+            json.dumps(
+                {
+                    'app_id': st['api_id'],
+                    'app_hash': st['api_hash'],
+                    'device': st['device'],
+                    'app_version': st['app_version'],
+                }
+            ),
+            encoding='utf-8',
+        )
+        account = await telegram_account_dao.create(
+            db,
+            CreateTgAccountParam(
+                tenant_id=st['tenant_id'],
+                project_id=st['project_id'],
+                phone=result.get('phone') or st['phone'],
+                telegram_user_id=uid,
+                username=result.get('username'),
+                secret_ref=str(session_dst.relative_to(settings.TG_IMPORT_STORAGE_DIR)),
+                observed_status='imported_quarantine',
+            ),
+        )
+        _LOGIN_PENDING.pop(obj.login_id, None)
+        return {'account_id': account.id, 'username': result.get('username'), 'telegram_user_id': uid}
 
     @staticmethod
     async def import_zip(

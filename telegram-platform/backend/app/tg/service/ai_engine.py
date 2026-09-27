@@ -141,3 +141,30 @@ class LangBotEngineAdapter:
 
 
 langbot_engine_adapter = LangBotEngineAdapter()
+
+OPENAI_TIMEOUT_SECONDS = 45.0
+
+
+async def openai_complete(
+    *, base_url: str, api_key: str, model: str, messages: list[dict]
+) -> tuple[bool, str, str | None]:
+    """OpenAI 兼容 /chat/completions 同步生成(炒群引擎,§9)。
+
+    返回 (ok, text, error)。结果不明不盲重试:HTTPError/超时按失败处理,
+    失败的 run 进 failed 态由人决定补发。
+    """
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {'Authorization': f'Bearer {api_key}'}
+    body = {'model': model, 'messages': messages, 'temperature': 0.8}
+    try:
+        async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT_SECONDS) as client:
+            resp = await client.post(url, json=body, headers=headers)
+    except httpx.HTTPError as exc:
+        return False, '', f'transport: {exc!r}'
+    if resp.status_code != 200:
+        return False, '', f'http_{resp.status_code}: {resp.text[:200]}'
+    try:
+        text = (resp.json()['choices'][0]['message']['content'] or '').strip()
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        return False, '', f'bad_response: {exc!r}'
+    return (bool(text), text, None if text else 'empty_content')

@@ -11,8 +11,8 @@ export default function HomePage() {
         setS({
           accounts: acc.length,
           running: acc.filter((a) => a.desired_status === 'running').length,
-          deliveries: del.length,
-          succeeded: del.filter((d) => d.status === 'succeeded').length,
+          deliveries: del.total,
+          succeeded: del.items.filter((d) => d.status === 'succeeded').length,
           pending: appr.length,
           commands: cmd.length,
         })

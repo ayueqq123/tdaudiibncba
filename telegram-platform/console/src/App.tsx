@@ -9,8 +9,11 @@ import ImportsPage from '@/pages/imports'
 import RulesPage from '@/pages/rules'
 import DeliveriesPage from '@/pages/deliveries'
 import ApprovalsPage from '@/pages/approvals'
+import AiBindingsPage from '@/pages/ai-bindings'
+import GuidePage from '@/pages/guide'
 import LoginUsersPage from '@/pages/login-users'
 import CommandsPage from '@/pages/commands'
+import AlertsPage from '@/pages/alerts'
 
 function Guard() {
   const { user, ready } = useAuth()
@@ -31,9 +34,12 @@ export default function App() {
             <Route path="/imports" element={<ImportsPage />} />
             <Route path="/rules" element={<RulesPage />} />
             <Route path="/deliveries" element={<DeliveriesPage />} />
+            <Route path="/alerts" element={<AlertsPage />} />
+            <Route path="/ai-bindings" element={<AiBindingsPage />} />
             <Route path="/approvals" element={<ApprovalsPage />} />
             <Route path="/users" element={<LoginUsersPage />} />
             <Route path="/commands" element={<CommandsPage />} />
+            <Route path="/guide" element={<GuidePage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

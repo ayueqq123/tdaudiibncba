@@ -32,6 +32,7 @@ class CreateApprovalParam(SchemaBase):
     content_hash: str
     expires_at: datetime
     status: str = 'pending'
+    decided_at: datetime | None = None
 
 
 class ApproveCandidateParam(SchemaBase):

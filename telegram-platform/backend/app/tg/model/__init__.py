@@ -1,4 +1,5 @@
-from backend.app.tg.model.ai import TgAiBinding, TgAiCallback, TgAiConversation, TgAiRun
+from backend.app.tg.model.alert import TgAlertAck
+from backend.app.tg.model.ai import TgAiBinding, TgAiCallback, TgAiConversation, TgAiGroupPolicy, TgAiRun
 from backend.app.tg.model.approval import TgApproval, TgReplyCandidate
 from backend.app.tg.model.clone_rule import TgCloneRule, TgCloneRuleVersion, TgCloneTarget
 from backend.app.tg.model.delivery import TgDeliveryAttempt, TgDeliveryJob, TgMessageMap
@@ -14,8 +15,10 @@ __all__ = [
     'Project',
     'Tenant',
     'TgAiBinding',
+    'TgAlertAck',
     'TgAiCallback',
     'TgAiConversation',
+    'TgAiGroupPolicy',
     'TgAiRun',
     'TgApproval',
     'TgCloneRule',

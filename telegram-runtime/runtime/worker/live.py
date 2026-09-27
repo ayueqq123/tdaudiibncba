@@ -17,9 +17,10 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from telethon import TelegramClient, events, utils
+from telethon import TelegramClient, events, functions, utils
 from telethon.errors import (
     AuthKeyUnregisteredError,
+    ChannelInvalidError,
     ChannelPrivateError,
     ChatWriteForbiddenError,
     FloodWaitError,
@@ -29,6 +30,7 @@ from telethon.errors import (
     SlowModeWaitError,
     UnauthorizedError,
     UserBannedInChannelError,
+    UserNotParticipantError,
 )
 from telethon.sessions import SQLiteSession
 from telethon.tl import types as tl
@@ -309,8 +311,12 @@ class AccountSession:
 
 
 def make_ingest_handler(session_factory, account_id: str, tenant_id: str,
-                        project_id: str):
-    """Telethon event handler -> EventInbox.ingest (§6.4 boundary 1)."""
+                        project_id: str, *, control=None, api_row_id: int | None = None):
+    """Telethon event handler -> EventInbox.ingest (§6.4 boundary 1).
+
+    control/api_row_id set → also reports new text messages to the control
+    plane's AI trigger endpoint (fire-and-forget; failures never break ingest).
+    """
     normalizer = EventNormalizer()
 
     async def on_update(event) -> None:
@@ -320,10 +326,35 @@ def make_ingest_handler(session_factory, account_id: str, tenant_id: str,
                 async with session_factory() as s:
                     await EventInboxRepository(s).ingest(
                         src_event, tenant_id=tenant_id, project_id=project_id)
+                if control is not None and api_row_id is not None and raw.kind is EventKind.CREATE:
+                    await _report_ai_event(event, raw, control, api_row_id)
         except Exception:
             log.exception("ingest failed account=%s", account_id)
 
     return on_update
+
+
+async def _report_ai_event(event, raw, control, api_row_id: int) -> None:
+    """Best-effort group-message report for AI 炒群 (worker -> control plane)."""
+    msg = getattr(event, "message", None)
+    text = ((getattr(msg, "message", None) or "")).strip()
+    if not text:
+        return
+    sender = getattr(msg, "sender", None)
+    name = (
+        getattr(sender, "username", None)
+        or getattr(sender, "first_name", None)
+        or str(raw.sender_id or "User")
+    )
+    try:
+        await control.notify_ai_event({
+            "api_row_id": api_row_id, "chat_id": raw.chat_id,
+            "message_id": raw.message_id, "text": text[:2000],
+            "sender_id": raw.sender_id, "sender_name": name,
+            "topic_id": raw.topic_id,
+        })
+    except Exception:
+        log.warning("ai event notify failed", exc_info=True)
 
 
 def _sender_id(msg) -> int | None:
@@ -334,6 +365,20 @@ def _sender_id(msg) -> int | None:
         return sid
     from_id = getattr(msg, "from_id", None)
     return utils.get_peer_id(from_id) if from_id is not None else None
+
+
+def _sender_is_bot(msg) -> bool:
+    """True when the author is a bot account (cached sender entity, or a
+    `...bot` username as fallback) or the message was sent via an inline bot."""
+    if getattr(msg, "via_bot_id", None):
+        return True
+    sender = getattr(msg, "sender", None)
+    if sender is None:
+        return False
+    if getattr(sender, "bot", False):
+        return True
+    username = getattr(sender, "username", None) or ""
+    return username.lower().endswith("bot")
 
 
 _MEDIA_ATTRS: tuple[tuple[str, str], ...] = (
@@ -387,6 +432,7 @@ def _to_raws(event) -> list[RawUpdate]:
             protected=bool(getattr(msg, "noforwards", False)),
             sender_id=_sender_id(msg),
             media_kind=_media_kind(msg),
+            sender_is_bot=_sender_is_bot(msg),
         )]
     if isinstance(event, events.MessageDeleted.Event):
         chat_id = event.chat_id or 0
@@ -402,3 +448,46 @@ def register_live_events(session: AccountSession, handler) -> None:
     session.client.add_event_handler(handler, events.NewMessage)
     session.client.add_event_handler(handler, events.MessageEdited)
     session.client.add_event_handler(handler, events.MessageDeleted)
+
+
+async def check_membership(client: TelegramClient, chat_id: int) -> str | None:
+    """Return a lost-reason when the account is verifiably no longer in a
+    supergroup/channel ("kicked" | "not_member"); None when still a member or
+    undeterminable (basic groups, uncached peers, transient errors)."""
+    if not str(chat_id).startswith("-100"):
+        return None
+    try:
+        peer = await client.get_input_entity(chat_id)
+    except (ValueError, TypeError):
+        return None
+    try:
+        await client(functions.channels.GetParticipantRequest(peer, tl.InputUserSelf()))
+    except (ChannelPrivateError, ChannelInvalidError):
+        return "kicked"
+    except UserNotParticipantError:
+        return "not_member"
+    except Exception:  # unknown ≠ lost; never flag on transient errors
+        log.warning("membership check failed chat=%s", chat_id, exc_info=True)
+    return None
+
+
+def register_membership_watch(
+    session: AccountSession,
+    watched: Callable[[], set[int]],
+    on_lost: Callable[[int, str], Awaitable[None]],
+) -> None:
+    """Kicked accounts only receive a bare UpdateChannel (no service message),
+    so every UpdateChannel for a watched chat triggers a membership probe."""
+    client = session.client
+
+    async def on_raw(update) -> None:
+        if not isinstance(update, tl.UpdateChannel):
+            return
+        chat_id = utils.get_peer_id(tl.PeerChannel(update.channel_id))
+        if chat_id not in watched():
+            return
+        reason = await check_membership(client, chat_id)
+        if reason:
+            await on_lost(chat_id, reason)
+
+    client.add_event_handler(on_raw, events.Raw)

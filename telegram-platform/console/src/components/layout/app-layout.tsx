@@ -11,11 +11,15 @@ import {
   GitBranch,
   Truck,
   ShieldCheck,
+  Bot,
   Terminal,
   KeyRound,
   Menu,
   X,
+  BookOpen,
+  Siren,
 } from 'lucide-react'
+import { useUnhandledAlertCount } from '@/lib/alerts'
 import { fetchLogout, sysApi } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/lib/auth'
@@ -41,16 +45,21 @@ const GROUPS: { label: string; items: NavItem[] }[] = [
       { to: '/imports', icon: Layers, label: 'Session 导入' },
       { to: '/rules', icon: GitBranch, label: 'Clone 规则' },
       { to: '/deliveries', icon: Truck, label: '投递任务' },
+      { to: '/alerts', icon: Siren, label: '异常告警' },
     ],
   },
   {
     label: '炒群 AI',
-    items: [{ to: '/approvals', icon: ShieldCheck, label: 'AI 回复审批' }],
+    items: [
+      { to: '/ai-bindings', icon: Bot, label: '炒群配置' },
+      { to: '/approvals', icon: ShieldCheck, label: 'AI 回复审批' },
+    ],
   },
   {
     label: '设置',
     items: [
       { to: '/users', icon: Users, label: '用户', admin: true },
+      { to: '/guide', icon: BookOpen, label: '新手教程' },
       { to: '/commands', icon: Terminal, label: '命令记录' },
     ],
   },
@@ -60,6 +69,7 @@ export default function AppLayout() {
   const { user, logout } = useAuth()
   const nav = useNavigate()
   const [navOpen, setNavOpen] = useState(false)
+  const alertCount = useUnhandledAlertCount()
   const [pwdOpen, setPwdOpen] = useState(false)
   const [pwdForm, setPwdForm] = useState({ old: '', next: '' })
   async function doLogout() {
@@ -121,6 +131,11 @@ export default function AppLayout() {
                 >
                   <it.icon className="h-4 w-4" />
                   {it.label}
+                  {it.to === '/alerts' && alertCount > 0 && (
+                    <span className="ml-auto rounded-full bg-destructive px-1.5 text-xs leading-5 text-white">
+                      {alertCount > 99 ? '99+' : alertCount}
+                    </span>
+                  )}
                 </NavLink>
               ))}
             </div>

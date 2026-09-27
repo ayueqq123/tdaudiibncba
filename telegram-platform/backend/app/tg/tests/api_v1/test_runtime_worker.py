@@ -116,3 +116,30 @@ def test_pull_rules_under_worker_token(
     au = client.get('/tg/accounts', headers=token_headers, params={'project_id': pid}
                     ).json()['data'][0]['uuid']
     assert rows[0]['account_uuid'] == au
+
+
+def test_chat_lost_marks_routes(
+    client: TestClient, token_headers: dict[str, str], worker_token: str
+) -> None:
+    """Worker 上报账号不在源群 → 该账号规则里匹配的路线标失效,其他路线不受影响。"""
+    tid, pid, aid = _mk_scope(client, token_headers, 'W5')
+    client.post('/tg/clone-rules', headers=token_headers, json={
+        'tenant_id': tid, 'project_id': pid, 'account_id': aid, 'name': 'lost', 'mode': 'copy'})
+    rid = client.get('/tg/clone-rules', headers=token_headers,
+                     params={'project_id': pid}).json()['data'][0]['id']
+    for src in (3001, 3002):
+        assert client.post(f'/tg/clone-rules/{rid}/targets', headers=token_headers,
+                           json={'source_chat_id': src, 'target_chat_id': 4004}).json()['code'] == 200
+
+    resp = client.post(f'/tg/runtime/accounts/{aid}/chat-lost', headers=_wheaders(worker_token),
+                       json={'chat_id': 3001, 'reason': 'kicked'})
+    assert resp.json()['code'] == 200, resp.text
+    assert resp.json()['data']['routes'] == 1
+
+    targets = client.get(f'/tg/clone-rules/{rid}', headers=token_headers).json()['data']['targets']
+    health = {t['source_chat_id']: t['health'] for t in targets}
+    assert health[3001] and '源群' in health[3001]
+    assert health[3002] is None
+
+    assert client.post(f'/tg/runtime/accounts/{aid}/chat-lost', headers=_wheaders('bad'),
+                       json={'chat_id': 3001}).status_code in (401, 403)

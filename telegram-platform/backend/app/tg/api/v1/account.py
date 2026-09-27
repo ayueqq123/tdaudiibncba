@@ -3,7 +3,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, Path, Query, Request, UploadFile
 
 from backend.app.tg.schema.import_batch import GetImportBatchDetail
-from backend.app.tg.schema.telegram_account import GetTgAccountDetail, UpdateTgAccountParam
+from backend.app.tg.schema.telegram_account import (
+    GetTgAccountDetail,
+    LoginCompleteParam,
+    LoginStartParam,
+    UpdateTgAccountParam,
+)
 from backend.app.tg.service.account_service import account_service
 from backend.common.response.response_schema import ResponseModel, ResponseSchemaModel, response_base
 from backend.common.security.jwt import DependsJwtAuth
@@ -67,6 +72,30 @@ async def delete_account(
     if count > 0:
         return response_base.success()
     return response_base.fail()
+
+
+@router.post(
+    '/login/start',
+    summary='验证码登录:发送验证码',
+    dependencies=[Depends(RequestPermission('tg:account:import')), DependsRBAC],
+)
+async def login_start(
+    db: CurrentSession, request: Request, obj: LoginStartParam
+) -> ResponseSchemaModel[dict]:
+    data = await account_service.login_start(db=db, request=request, obj=obj)
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/login/complete',
+    summary='验证码登录:提交验证码并创建账号',
+    dependencies=[Depends(RequestPermission('tg:account:import')), DependsRBAC],
+)
+async def login_complete(
+    db: CurrentSessionTransaction, request: Request, obj: LoginCompleteParam
+) -> ResponseSchemaModel[dict]:
+    data = await account_service.login_complete(db=db, request=request, obj=obj)
+    return response_base.success(data=data)
 
 
 @router.post(

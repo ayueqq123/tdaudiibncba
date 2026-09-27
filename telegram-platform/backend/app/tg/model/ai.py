@@ -28,8 +28,27 @@ class TgAiBinding(Base):
     outbound_secret_ref: Mapped[str] = mapped_column(sa.String(128), comment='回调验签密钥引用 env:NAME')
     status: Mapped[str] = mapped_column(sa.String(20), default='active', index=True)
     remark: Mapped[str | None] = mapped_column(sa.String(255), default=None)
+    # ---- 炒群配置(engine='openai' 时生效)----
+    engine: Mapped[str] = mapped_column(sa.String(20), default='langbot', index=True, comment='引擎 langbot|openai')
+    chat_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, index=True, comment='绑定群 chat_id')
+    topic_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, comment='绑定话题')
+    persona: Mapped[str | None] = mapped_column(sa.Text, default=None, comment='人设/系统提示词')
+    provider_model: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='OpenAI 兼容模型名')
+    provider_key_enc: Mapped[str | None] = mapped_column(sa.String(1024), default=None, comment='模型 API key 密文(ItsDCipher)')
+    speak_policy: Mapped[str] = mapped_column(sa.String(20), default='all', comment='发言策略 all|mention|random')
+    reply_delay_s: Mapped[int] = mapped_column(sa.Integer, default=0, comment='发言延迟秒数 0-300,随机 ±30%')
+    random_prob: Mapped[int] = mapped_column(sa.Integer, default=30, comment='随机发言概率 1-100(speak_policy=random)')
+    context_max_messages: Mapped[int] = mapped_column(sa.Integer, default=12, comment='发给 AI 的上下文条数 0-100')
+    auto_approve: Mapped[bool] = mapped_column(sa.Boolean, default=False, comment='自动审批:候选直通发送队列')
+    recent_messages: Mapped[list] = mapped_column(
+        sa.JSON, default_factory=list, comment='群最新消息缓存(ring buffer,最多 100 条)'
+    )
 
     __table_args__ = ({'comment': 'TG AI LangBot 绑定表'},)
+
+    @property
+    def has_provider_key(self) -> bool:
+        return bool(self.provider_key_enc)
 
 
 class TgAiConversation(Base):
@@ -145,4 +164,28 @@ class TgAiCallback(Base):
             name='uq_tg_ai_callback_seq',
         ),
         {'comment': 'TG AI 回调表'},
+    )
+
+
+class TgAiGroupPolicy(Base):
+    """炒群群策略:同一条群消息由几个号接话(并发区间)+ 每号冷却/小时上限 + 过期作废。"""
+
+    __tablename__ = 'tg_ai_group_policy'
+
+    id: Mapped[id_key] = mapped_column(init=False)
+    tenant_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='租户ID')
+    project_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='项目ID')
+    chat_id: Mapped[int] = mapped_column(sa.BigInteger, comment='群 chat_id')
+    topic_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, comment='话题')
+    reply_min: Mapped[int] = mapped_column(sa.Integer, default=1, comment='每条消息最少接话号数')
+    reply_max: Mapped[int] = mapped_column(sa.Integer, default=1, comment='每条消息最多接话号数')
+    account_cooldown_s: Mapped[int] = mapped_column(sa.Integer, default=60, comment='同一号两次发言最短间隔秒')
+    account_hourly_max: Mapped[int] = mapped_column(sa.Integer, default=20, comment='同一号每小时最多发言数,0=不限')
+    stale_max_messages: Mapped[int] = mapped_column(
+        sa.Integer, default=10, comment='到点时群里已新增≥N条则作废,0=不检查'
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint('tenant_id', 'project_id', 'chat_id', 'topic_id', name='uq_tg_ai_group_policy_scope'),
+        {'comment': 'TG AI 炒群群策略表'},
     )

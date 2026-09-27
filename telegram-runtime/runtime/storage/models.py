@@ -101,6 +101,7 @@ class EventInbox(Base):
     protected: Mapped[bool] = mapped_column(default=False)
     source_sender_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     source_media_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_sender_bot: Mapped[bool | None] = mapped_column(nullable=True)
     ingest_seq: Mapped[int] = mapped_column(Integer, default=0)
     processed: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
