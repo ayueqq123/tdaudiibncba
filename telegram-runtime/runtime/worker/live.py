@@ -148,11 +148,16 @@ class TelethonTransport(SendTransport):
         # Telegram rejects PeerUser(self) in send/edit/delete — Saved
         # Messages must go through PeerSelf ('me').
         if self._self_id is None:
-            self._self_id = (await self.client.get_me()).id
+            self._self_id = (await self._call(self.client.get_me)).id
         return 'me' if target_id == self._self_id else target_id
 
     async def _call(self, fn: Callable[[], Awaitable]):
         try:
+            # 长连 MTProto 连接可能静默断开:已断连的 send_message 会立即抛
+            # ConnectionError。发请求前先确认连接存活,断了就重建——这不是
+            # "不确定结果重发",此时请求尚未离手。
+            if not self.client.is_connected():
+                await self.client.connect()
             return await fn()
         except TransportError:
             raise

@@ -3,6 +3,7 @@
 Telethon stays out of the loop — sessions and transports are faked at the
 connector/router seam; sqlite exercises the real repos."""
 
+import asyncio
 import hashlib
 
 import pytest
@@ -50,6 +51,7 @@ class FakeControl:
         self.commands: dict[int, list[PendingCommand]] = {}
         self.acks: list[tuple[int, str, str]] = []
         self.candidates: dict[str, CandidatePayload] = {}
+        self.pull_rules_result: list | None = None
 
     async def list_accounts(self):
         return self.accounts
@@ -58,6 +60,8 @@ class FakeControl:
         return self.sessions[uuid]
 
     async def pull_rules(self, api_row_id):
+        if self.pull_rules_result is not None:
+            return self.pull_rules_result
         return [{
             'rule_id': 7, 'version': 3,
             'snapshot': {
@@ -197,3 +201,68 @@ def test_plan_from_job_send_message_alias():
         source_scope="s", source_chat_id=1, source_message_id=2,
         revision=1, target_chat_id=3, mode="copy", status="ready")
     assert plan_from_job(job).kind.value == "send"
+
+
+async def test_vanished_rule_id_blocks_queued_jobs(factory):
+    """停用的规则在 pull_rules 里消失 -> 其已入队 job 被发送门拦下。"""
+    control = FakeControl()
+    control.accounts.append(_assignment())
+    control.sessions["acct-1"] = _bundle()
+    host = WorkerHostMain(
+        "w1", factory, control,  # type: ignore[arg-type]
+        session_connector=_connect)  # type: ignore[arg-type]
+    await host.tick()
+    assert host._runner_host.deps.policy().rule_disabled == frozenset()
+
+    # 规则被停用 -> 下一次拉取不再包含它 -> rule_id 进入禁用集合
+    control.pull_rules_result = []
+    await host._refresh_rules(host._hosted["acct-1"].assignment)
+    assert host._disabled_rule_ids == {"7"}
+    assert host._runner_host.deps.policy().rule_disabled == frozenset({"7"})
+
+    # 规则重新启用 -> 从禁用集合移除
+    control.pull_rules_result = None
+    await host._refresh_rules(host._hosted["acct-1"].assignment)
+    assert "7" not in host._disabled_rule_ids
+
+
+class _FakeTgClient:
+    def __init__(self, *, dead_forever=False):
+        self._connected = False
+        self._dead_forever = dead_forever
+        self.connect_calls = 0
+
+    def is_connected(self):
+        return self._connected
+
+    async def connect(self):
+        self.connect_calls += 1
+        if self._dead_forever:
+            raise ConnectionError("connect failed")
+        self._connected = True
+
+
+async def test_transport_reconnects_before_rpc():
+    """断开的 client 先 connect 再发请求;连接恢复后不再重连。"""
+    from runtime.worker.live import LiveRegistry, TelethonTransport
+
+    client = _FakeTgClient()
+    transport = TelethonTransport(  # type: ignore[arg-type]
+        client, "a", LiveRegistry(), PayloadResolver(None))  # type: ignore[arg-type]
+    assert await transport._call(lambda: asyncio.sleep(0, result="ok")) == "ok"
+    assert client.connect_calls == 1
+    await transport._call(lambda: asyncio.sleep(0, result="ok"))
+    assert client.connect_calls == 1  # 已连接不重复 connect
+
+
+async def test_transport_dead_connect_is_uncertain():
+    """connect 失败归为 RESULT_UNKNOWN -> uncertain,不是崩溃也不是盲重试。"""
+    from runtime.delivery.executor import TransportError, TransportErrorKind
+    from runtime.worker.live import LiveRegistry, TelethonTransport
+
+    transport = TelethonTransport(  # type: ignore[arg-type]
+        _FakeTgClient(dead_forever=True), "a", LiveRegistry(),
+        PayloadResolver(None))  # type: ignore[arg-type]
+    with pytest.raises(TransportError) as ei:
+        await transport._call(lambda: asyncio.sleep(0))
+    assert ei.value.kind is TransportErrorKind.RESULT_UNKNOWN

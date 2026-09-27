@@ -19,8 +19,11 @@ from backend.app.tg.schema.clone_rule import (
     CreateCloneTargetParam,
     UpdateCloneRuleParam,
 )
+from backend.app.tg.schema.runtime_command import CreateRuntimeCommandParam
 from backend.app.tg.service.account_service import JOIN_ERR, join_chat_refs, resolve_user_refs
+from backend.app.tg.service.command_service import runtime_command_service
 from backend.common.exception import errors
+from backend.database.db import uuid4_str
 from backend.utils.timezone import timezone
 
 
@@ -143,10 +146,26 @@ class CloneRuleService:
         await clone_rule_dao.create(db, obj)
 
     @staticmethod
+    async def _notify_reload(
+        db: AsyncSession, request: Request, rule: TgCloneRule
+    ) -> None:
+        """规则停用/发布/删除后让 worker 重拉快照,并拦截已停用规则的残留队列。"""
+        await runtime_command_service.issue(
+            db=db,
+            request=request,
+            account_id=rule.account_id,
+            obj=CreateRuntimeCommandParam(
+                type='ReloadConfig', dedup_key=f'reloadcfg-{uuid4_str()}'
+            ),
+        )
+
+    @staticmethod
     async def update(*, db: AsyncSession, request: Request, pk: int, obj: UpdateCloneRuleParam) -> int:
-        await CloneRuleService.get(db=db, request=request, pk=pk)
+        rule = await CloneRuleService.get(db=db, request=request, pk=pk)
         # 停用优先于快照:enabled=False 立即生效,不依赖下次发布
-        return await clone_rule_dao.update(db, pk, obj)
+        updated = await clone_rule_dao.update(db, pk, obj)
+        await CloneRuleService._notify_reload(db, request, rule)
+        return updated
 
     @staticmethod
     def _chat_ref(value: int | str) -> str:
@@ -421,6 +440,7 @@ class CloneRuleService:
                 'status': 'published',
             },
         )
+        await CloneRuleService._notify_reload(db, request, rule)
         return ver
 
     @staticmethod
@@ -430,8 +450,10 @@ class CloneRuleService:
 
     @staticmethod
     async def delete(*, db: AsyncSession, request: Request, pk: int) -> int:
-        await CloneRuleService.get(db=db, request=request, pk=pk)
-        return await clone_rule_dao.delete(db, pk)
+        rule = await CloneRuleService.get(db=db, request=request, pk=pk)
+        deleted = await clone_rule_dao.delete(db, pk)
+        await CloneRuleService._notify_reload(db, request, rule)
+        return deleted
 
 
 clone_rule_service: CloneRuleService = CloneRuleService()
