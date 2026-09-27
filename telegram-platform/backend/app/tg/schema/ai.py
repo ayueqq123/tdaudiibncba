@@ -16,7 +16,9 @@ class CreateAiBindingParam(SchemaBase):
     base_url: str = Field(default='', description='LangBot 内部地址或 OpenAI 兼容 base_url')
     inbound_secret_ref: str = Field(default='', description='入站签名密钥引用,形如 env:NAME')
     outbound_secret_ref: str = Field(default='', description='回调验签密钥引用,形如 env:NAME')
-    chat_id: int | None = Field(default=None, description='绑定群 chat_id(openai 自动触发)')
+    chat_id: int | str | None = Field(
+        default=None, description='绑定群:chat_id 或 t.me 链接/用户名(openai 自动触发)'
+    )
     topic_id: int | None = Field(default=None, description='绑定话题')
     persona: str | None = Field(default=None, description='人设/系统提示词')
     provider_model: str | None = Field(default=None, description='OpenAI 兼容模型名')
@@ -38,7 +40,7 @@ class UpdateAiBindingParam(SchemaBase):
     bot_uuid: str | None = None
     inbound_secret_ref: str | None = None
     outbound_secret_ref: str | None = None
-    chat_id: int | None = None
+    chat_id: int | str | None = None
     topic_id: int | None = None
     persona: str | None = None
     provider_model: str | None = None

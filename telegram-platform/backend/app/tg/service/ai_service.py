@@ -20,6 +20,7 @@ from backend.app.tg.crud.crud_ai import (
     ai_run_dao,
 )
 from backend.app.tg.crud.crud_approval import approval_dao, reply_candidate_dao
+from backend.app.tg.crud.crud_telegram_account import telegram_account_dao
 from backend.app.tg.metrics import tg_ai_callback_total, tg_ai_run_active, tg_ai_run_total
 from backend.app.tg.model import TgReplyCandidate, TgTelegramAccount
 from backend.app.tg.model.ai import TgAiBinding, TgAiCallback, TgAiConversation, TgAiGroupPolicy, TgAiRun
@@ -34,6 +35,7 @@ from backend.app.tg.schema.ai import (
     UpsertAiGroupPolicyParam,
 )
 from backend.app.tg.schema.approval import CreateApprovalParam, CreateReplyCandidateParam
+from backend.app.tg.service.account_service import JOIN_ERR, join_chat_refs
 from backend.app.tg.service.ai_engine import (
     langbot_engine_adapter,
     openai_complete,
@@ -200,9 +202,30 @@ class AiService:
         return await ai_run_dao.get(db, run.id)
 
     @staticmethod
+    async def _resolve_chat_id(db: AsyncSession, account_id: int, value: int | str | None) -> int | None:
+        """chat_id 兼容群链接/用户名(同 clone 规则):非纯数字时用绑定账号会话解析。"""
+        if value is None:
+            return None
+        s = str(value).strip()
+        if not s:
+            return None
+        if s.lstrip('-').isdigit():
+            return int(s)
+        account = await telegram_account_dao.get(db, account_id)
+        if not account:
+            raise errors.NotFoundError(msg='绑定账号不存在')
+        results = await join_chat_refs(account, [s])
+        r = results.get(s)
+        if not r or not r.get('ok'):
+            status = ((r or {}).get('error') or {}).get('status', 'resolve_failed')
+            raise errors.RequestError(msg=f'群 {s}: {JOIN_ERR.get(status, "进群/解析失败")}')
+        return int(r['chat_id'])
+
+    @staticmethod
     async def create_binding(*, db: AsyncSession, obj: CreateAiBindingParam):
         """provider_key 明文只进不出:加密进 provider_key_enc,API 永不回显。"""
         fields = obj.model_dump(exclude={'provider_key'})
+        fields['chat_id'] = await AiService._resolve_chat_id(db, obj.account_id, obj.chat_id)
         if obj.provider_key:
             fields['provider_key_enc'] = _provider_cipher().encrypt(obj.provider_key)
         binding = TgAiBinding(**fields)
@@ -216,6 +239,10 @@ class AiService:
         if not binding:
             raise errors.NotFoundError(msg='绑定不存在')
         fields = obj.model_dump(exclude_unset=True, exclude={'provider_key'})
+        if 'chat_id' in fields:
+            fields['chat_id'] = await AiService._resolve_chat_id(
+                db, obj.account_id or binding.account_id, fields['chat_id']
+            )
         if obj.provider_key:
             fields['provider_key_enc'] = _provider_cipher().encrypt(obj.provider_key)
         if fields:

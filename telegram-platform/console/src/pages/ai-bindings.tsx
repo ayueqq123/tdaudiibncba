@@ -113,7 +113,7 @@ export default function AiBindingsPage() {
         project_id: ws.project_id,
         account_id: Number(form.account_id),
         engine: 'openai',
-        chat_id: Number(form.chat_id.trim()),
+        chat_id: form.chat_id.trim(),
         persona: form.persona.trim() || null,
         base_url: form.base_url.trim(),
         provider_model: form.provider_model.trim(),
@@ -430,11 +430,11 @@ export default function AiBindingsPage() {
               </Select>
             </div>
             <div>
-              <Label>群 ID(填 -100 开头的 chat_id)</Label>
+              <Label>群(填 chat_id 或 t.me 群链接)</Label>
               <Input
                 value={form.chat_id}
                 onChange={(e) => setForm({ ...form, chat_id: e.target.value })}
-                placeholder="-1002822138285"
+                placeholder="-1002822138285 或 https://t.me/xxx"
               />
             </div>
             <div>
