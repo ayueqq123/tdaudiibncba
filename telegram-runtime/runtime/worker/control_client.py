@@ -146,6 +146,11 @@ class ControlClient:
                          {"observed_status": status,
                           "last_error": error[:500] or None})
 
+    async def report_chat_lost(self, api_row_id: int, chat_id: int, reason: str) -> None:
+        """Account verifiably left/kicked from a rule chat → control marks routes lost."""
+        await self._post(f"/accounts/{api_row_id}/chat-lost",
+                         {"chat_id": chat_id, "reason": reason})
+
     async def notify_ai_event(self, payload: dict[str, Any]) -> None:
         """Best-effort group-message report for AI 炒群 triggers (fire-and-forget)."""
         await self._post("/ai/event", payload)

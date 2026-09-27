@@ -338,3 +338,122 @@ def test_openai_binding_update_and_delete(
 
     resp = client.delete(f'/tg/ai/bindings/{bid}', headers=token_headers)
     assert resp.json()['code'] == 200
+
+
+def _add_account(tid: int, pid: int, tg_user_id: int) -> int:
+    async def _ins() -> int:
+        conn = await _conn()
+        try:
+            return await conn.fetchval(
+                """INSERT INTO tg_telegram_account(uuid, tenant_id, project_id,
+                   phone, telegram_user_id, secret_ref, desired_status,
+                   observed_status, created_time, deleted)
+                   VALUES($1,$2,$3,'254700000001',$4,'local:test','stopped','imported_quarantine',$5,0)
+                   RETURNING id""",
+                str(uuid.uuid4()), tid, pid, tg_user_id, datetime.now(UTC),
+            )
+        finally:
+            await conn.close()
+
+    return _run(_ins())
+
+
+def _run_deferred(run_id: int) -> str:
+    from backend.app.tg.service.ai_service import AiService
+    from backend.database.db import create_database_async_engine, create_database_async_session, get_database_url
+
+    async def _go() -> str:
+        engine = create_database_async_engine(get_database_url(unittest=True))
+        try:
+            async with create_database_async_session(engine).begin() as db:
+                return await AiService.run_deferred_openai(db=db, run_id=run_id)
+        finally:
+            await engine.dispose()
+
+    return _run(_go())
+
+
+def _set_running(*ids: int) -> None:
+    async def _go() -> None:
+        conn = await _conn()
+        try:
+            await conn.execute("UPDATE tg_telegram_account SET desired_status='running' WHERE id = ANY($1)", list(ids))
+        finally:
+            await conn.close()
+
+    _run(_go())
+
+
+def test_group_event_multi_account_deferred(
+    client: TestClient, token_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同群多号:每条消息只决策一次、按并发区间挑号;托管号发言不触发;生成中不重复;冷却生效;延迟生成由任务执行。"""
+    from backend.core.conf import settings
+
+    monkeypatch.setattr(settings, 'RUNTIME_WORKER_TOKEN', 'wt-ai-1')
+    wh = {'X-Worker-Token': 'wt-ai-1'}
+    dispatched: list[int] = []
+    monkeypatch.setattr(
+        'backend.app.tg.service.ai_service.AiService._dispatch_openai',
+        staticmethod(lambda run_id, countdown: dispatched.append(run_id)),
+    )
+    monkeypatch.setattr('backend.app.tg.service.ai_service.openai_complete', _fake_openai)
+
+    tid, pid, aid = _mk_scope(client, token_headers, 'AI11')
+    other_tg = 700000000 + uuid.uuid4().int % 10**8
+    other = _add_account(tid, pid, other_tg)
+    _set_running(aid, other)
+    bid = _mk_openai_binding(client, token_headers, tid, pid, aid)
+    bid2 = _mk_openai_binding(client, token_headers, tid, pid, other)
+    chat = -1002822138285
+
+    def policy(**kw: int) -> None:
+        resp = client.put('/tg/ai/group-policies', headers=token_headers, json={
+            'tenant_id': tid, 'project_id': pid, 'chat_id': chat, **kw})
+        assert resp.json()['code'] == 200, resp.text
+
+    def event(api_row_id: int, mid: int, sender_id: int) -> int:
+        resp = client.post('/tg/runtime/ai/event', headers=wh, json={
+            'api_row_id': api_row_id, 'chat_id': chat, 'message_id': mid,
+            'text': f'消息{mid}', 'sender_id': sender_id, 'sender_name': f'u{sender_id}'})
+        assert resp.json()['code'] == 200, resp.text
+        return resp.json()['data']['triggered']
+
+    policy(reply_min=2, reply_max=2, account_cooldown_s=0, stale_max_messages=0)
+    assert event(other, 1, 42) == 2  # 先到的上报做决策:两个号同时接话
+    assert event(aid, 1, 42) == 0  # 同一条消息另一号上报 → 已决策
+    assert event(aid, 2, 42) == 0  # 两个号都在生成中
+    assert event(aid, 3, other_tg) == 0  # 托管号发言只进缓存
+    assert len(dispatched) == 2
+    assert sorted(_run_deferred(r) for r in dispatched) == ['completed', 'completed']
+    assert _run_deferred(dispatched[0]) == 'skipped:completed'
+
+    async def _recent(binding_id: int) -> list:
+        conn = await _conn()
+        try:
+            return json.loads(await conn.fetchval('SELECT recent_messages FROM tg_ai_binding WHERE id=$1', binding_id))
+        finally:
+            await conn.close()
+
+    assert [m['text'] for m in _run(_recent(bid))] == ['消息1', '消息2', '消息3']
+    assert [m['text'] for m in _run(_recent(bid2))] == ['消息1']
+    appr = client.get('/tg/approvals', headers=token_headers,
+                      params={'project_id': pid, 'status': 'pending'}).json()['data']
+    assert len(appr) == 2
+
+    policy(reply_min=1, reply_max=2, account_cooldown_s=3600)
+    assert event(aid, 4, 42) == 0  # 两个号都在冷却
+
+    client.put(f'/tg/ai/bindings/{bid2}', headers=token_headers, json={'status': 'paused'})
+    policy(reply_min=1, reply_max=1, account_cooldown_s=0, stale_max_messages=2)
+    assert event(aid, 5, 42) == 1
+    event(aid, 6, 43)
+    event(aid, 7, 44)
+    assert _run_deferred(dispatched[-1]) == 'stale'  # 到点时群里已刷过 2 条 → 作废
+
+
+def test_group_policy_range_validation(client: TestClient, token_headers: dict[str, str]) -> None:
+    tid, pid, _ = _mk_scope(client, token_headers, 'AI12')
+    resp = client.put('/tg/ai/group-policies', headers=token_headers, json={
+        'tenant_id': tid, 'project_id': pid, 'chat_id': -100123, 'reply_min': 3, 'reply_max': 1})
+    assert resp.json()['code'] != 200

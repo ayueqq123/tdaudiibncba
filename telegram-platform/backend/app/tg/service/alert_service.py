@@ -11,6 +11,7 @@ from backend.app.tg.model import (
     TgAiBinding,
     TgAiConversation,
     TgAiRun,
+    TgAlertAck,
     TgCloneRule,
     TgCloneTarget,
     TgDeliveryJob,
@@ -73,7 +74,7 @@ def _ai_reason(err: str | None) -> str:
 
 
 class AlertService:
-    """异常告警:从账号、路线、投递、AI、租约实时汇总(不单独落表,处理状态由前端按 key+时间记住)。"""
+    """异常告警:从账号、路线、投递、AI、租约实时汇总;处理状态按 key+最近发生时间记在 tg_alert_ack。"""
 
     @staticmethod
     async def _tenants(db: AsyncSession, request: Request) -> set[int] | None:
@@ -238,7 +239,49 @@ class AlertService:
             })
 
         alerts.sort(key=lambda x: x['last_at'] or now - timedelta(days=3650), reverse=True)
+        acks: dict[str, TgAlertAck] = {}
+        if alerts:
+            acks = {
+                k.alert_key: k
+                for k in (
+                    await db.execute(
+                        sa.select(TgAlertAck).where(TgAlertAck.alert_key.in_([a['key'] for a in alerts]))
+                    )
+                ).scalars()
+            }
+        for a in alerts:
+            ack = acks.get(a['key'])
+            handled = ack is not None and (
+                a['last_at'] is None or (ack.handled_last_at is not None and ack.handled_last_at >= a['last_at'])
+            )
+            a['handled'] = handled
+            a['handled_at'] = ack.handled_at if handled and ack else None
+            a['handled_by'] = ack.handled_by if handled and ack else None
         return alerts
+
+    @staticmethod
+    async def ack(*, db: AsyncSession, request: Request, keys: list[str]) -> int:
+        visible = {a['key']: a for a in await AlertService.get_all(db=db, request=request)}
+        wanted = [k for k in dict.fromkeys(keys) if k in visible]
+        if not wanted:
+            return 0
+        existing = {
+            k.alert_key: k
+            for k in (await db.execute(sa.select(TgAlertAck).where(TgAlertAck.alert_key.in_(wanted)))).scalars()
+        }
+        now = timezone.now()
+        who = request.user.nickname or request.user.username
+        for k in wanted:
+            last_at = visible[k]['last_at']
+            ack = existing.get(k)
+            if ack is None:
+                db.add(TgAlertAck(alert_key=k, handled_last_at=last_at, handled_at=now, handled_by=who))
+            else:
+                ack.handled_last_at = last_at
+                ack.handled_at = now
+                ack.handled_by = who
+        await db.flush()
+        return len(wanted)
 
 
 alert_service: AlertService = AlertService()

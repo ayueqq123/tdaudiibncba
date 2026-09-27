@@ -133,6 +133,9 @@ export interface TgAlert {
   count: number
   last_at: string | null
   link: string
+  handled: boolean
+  handled_at: string | null
+  handled_by: string | null
 }
 export interface CloneTarget {
   id: number
@@ -250,6 +253,7 @@ export const tgApi = {
     api.post(`${TG}/clone-rules/${id}/publish`, { expected_version: expectedVersion }),
   ruleVersions: (id: number) => api.get<any[]>(`${TG}/clone-rules/${id}/versions`),
   alerts: () => api.get<TgAlert[]>(`${TG}/alerts`),
+  ackAlerts: (keys: string[]) => api.post<{ count: number }>(`${TG}/alerts/ack`, { keys }),
   deliveries: (params?: any) => api.get<DeliveryPage>(`${TG}/deliveries`, params),
   delivery: (id: string) => api.get<DeliveryJob>(`${TG}/deliveries/${id}`),
   retryDelivery: (id: string) => api.post(`${TG}/deliveries/${id}/retry`, {}),
@@ -270,8 +274,23 @@ export const tgApi = {
   createAiBinding: (b: any) => api.post<AiBinding>(`${TG}/ai/bindings`, b),
   updateAiBinding: (id: number, b: any) => api.put<AiBinding>(`${TG}/ai/bindings/${id}`, b),
   deleteAiBinding: (id: number) => api.del(`${TG}/ai/bindings/${id}`),
+  aiGroupPolicies: () => api.get<AiGroupPolicy[]>(`${TG}/ai/group-policies`),
+  saveAiGroupPolicy: (b: Omit<AiGroupPolicy, 'id'>) => api.put<AiGroupPolicy>(`${TG}/ai/group-policies`, b),
   setAutoApprove: (tenant_id: number, project_id: number, enabled: boolean) =>
     api.put<{ updated: number; enabled: boolean }>(`${TG}/ai/auto-approve`, { tenant_id, project_id, enabled }),
+}
+
+export interface AiGroupPolicy {
+  id: number
+  tenant_id: number
+  project_id: number
+  chat_id: number
+  topic_id: number | null
+  reply_min: number
+  reply_max: number
+  account_cooldown_s: number
+  account_hourly_max: number
+  stale_max_messages: number
 }
 
 export interface AiBinding {

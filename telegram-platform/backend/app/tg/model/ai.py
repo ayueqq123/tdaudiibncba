@@ -165,3 +165,27 @@ class TgAiCallback(Base):
         ),
         {'comment': 'TG AI 回调表'},
     )
+
+
+class TgAiGroupPolicy(Base):
+    """炒群群策略:同一条群消息由几个号接话(并发区间)+ 每号冷却/小时上限 + 过期作废。"""
+
+    __tablename__ = 'tg_ai_group_policy'
+
+    id: Mapped[id_key] = mapped_column(init=False)
+    tenant_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='租户ID')
+    project_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='项目ID')
+    chat_id: Mapped[int] = mapped_column(sa.BigInteger, comment='群 chat_id')
+    topic_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, comment='话题')
+    reply_min: Mapped[int] = mapped_column(sa.Integer, default=1, comment='每条消息最少接话号数')
+    reply_max: Mapped[int] = mapped_column(sa.Integer, default=1, comment='每条消息最多接话号数')
+    account_cooldown_s: Mapped[int] = mapped_column(sa.Integer, default=60, comment='同一号两次发言最短间隔秒')
+    account_hourly_max: Mapped[int] = mapped_column(sa.Integer, default=20, comment='同一号每小时最多发言数,0=不限')
+    stale_max_messages: Mapped[int] = mapped_column(
+        sa.Integer, default=10, comment='到点时群里已新增≥N条则作废,0=不检查'
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint('tenant_id', 'project_id', 'chat_id', 'topic_id', name='uq_tg_ai_group_policy_scope'),
+        {'comment': 'TG AI 炒群群策略表'},
+    )

@@ -17,9 +17,10 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from telethon import TelegramClient, events, utils
+from telethon import TelegramClient, events, functions, utils
 from telethon.errors import (
     AuthKeyUnregisteredError,
+    ChannelInvalidError,
     ChannelPrivateError,
     ChatWriteForbiddenError,
     FloodWaitError,
@@ -29,6 +30,7 @@ from telethon.errors import (
     SlowModeWaitError,
     UnauthorizedError,
     UserBannedInChannelError,
+    UserNotParticipantError,
 )
 from telethon.sessions import SQLiteSession
 from telethon.tl import types as tl
@@ -446,3 +448,46 @@ def register_live_events(session: AccountSession, handler) -> None:
     session.client.add_event_handler(handler, events.NewMessage)
     session.client.add_event_handler(handler, events.MessageEdited)
     session.client.add_event_handler(handler, events.MessageDeleted)
+
+
+async def check_membership(client: TelegramClient, chat_id: int) -> str | None:
+    """Return a lost-reason when the account is verifiably no longer in a
+    supergroup/channel ("kicked" | "not_member"); None when still a member or
+    undeterminable (basic groups, uncached peers, transient errors)."""
+    if not str(chat_id).startswith("-100"):
+        return None
+    try:
+        peer = await client.get_input_entity(chat_id)
+    except (ValueError, TypeError):
+        return None
+    try:
+        await client(functions.channels.GetParticipantRequest(peer, tl.InputUserSelf()))
+    except (ChannelPrivateError, ChannelInvalidError):
+        return "kicked"
+    except UserNotParticipantError:
+        return "not_member"
+    except Exception:  # unknown ≠ lost; never flag on transient errors
+        log.warning("membership check failed chat=%s", chat_id, exc_info=True)
+    return None
+
+
+def register_membership_watch(
+    session: AccountSession,
+    watched: Callable[[], set[int]],
+    on_lost: Callable[[int, str], Awaitable[None]],
+) -> None:
+    """Kicked accounts only receive a bare UpdateChannel (no service message),
+    so every UpdateChannel for a watched chat triggers a membership probe."""
+    client = session.client
+
+    async def on_raw(update) -> None:
+        if not isinstance(update, tl.UpdateChannel):
+            return
+        chat_id = utils.get_peer_id(tl.PeerChannel(update.channel_id))
+        if chat_id not in watched():
+            return
+        reason = await check_membership(client, chat_id)
+        if reason:
+            await on_lost(chat_id, reason)
+
+    client.add_event_handler(on_raw, events.Raw)

@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
-from backend.app.tg.model.ai import TgAiBinding, TgAiCallback, TgAiConversation, TgAiRun
+from backend.app.tg.model.ai import TgAiBinding, TgAiCallback, TgAiConversation, TgAiGroupPolicy, TgAiRun
 from backend.app.tg.schema.ai import (
     CreateAiBindingParam,
     CreateAiCallbackParam,
@@ -137,3 +137,20 @@ ai_binding_dao: CRUDAiBinding = CRUDAiBinding(TgAiBinding)
 ai_conversation_dao: CRUDAiConversation = CRUDAiConversation(TgAiConversation)
 ai_run_dao: CRUDAiRun = CRUDAiRun(TgAiRun)
 ai_callback_dao: CRUDAiCallback = CRUDAiCallback(TgAiCallback)
+
+
+class CRUDAiGroupPolicy(CRUDPlus[TgAiGroupPolicy]):
+    """炒群群策略"""
+
+    async def get_all(
+        self, db: AsyncSession, tenant_id: int | None = None, project_id: int | None = None
+    ) -> Sequence[TgAiGroupPolicy]:
+        filters: dict = {'deleted': 0}
+        if tenant_id is not None:
+            filters['tenant_id'] = tenant_id
+        if project_id is not None:
+            filters['project_id'] = project_id
+        return await self.select_models(db, **filters)
+
+
+ai_group_policy_dao: CRUDAiGroupPolicy = CRUDAiGroupPolicy(TgAiGroupPolicy)

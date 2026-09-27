@@ -2,15 +2,17 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 
-from backend.app.tg.crud.crud_ai import ai_binding_dao, ai_conversation_dao, ai_run_dao
+from backend.app.tg.crud.crud_ai import ai_binding_dao, ai_conversation_dao, ai_group_policy_dao, ai_run_dao
 from backend.app.tg.schema.ai import (
     AiTriggerParam,
     CreateAiBindingParam,
     GetAiBindingDetail,
     GetAiConversationDetail,
+    GetAiGroupPolicyDetail,
     GetAiRunDetail,
     SetAutoApproveParam,
     UpdateAiBindingParam,
+    UpsertAiGroupPolicyParam,
 )
 from backend.app.tg.service.ai_service import ai_service
 from backend.common.response.response_schema import ResponseSchemaModel, response_base
@@ -56,6 +58,28 @@ async def update_binding(
 ) -> ResponseSchemaModel[GetAiBindingDetail]:
     binding = await ai_service.update_binding(db=db, pk=pk, obj=obj)
     return response_base.success(data=binding)
+
+
+@router.get('/group-policies', summary='炒群群策略列表', dependencies=[DependsJwtAuth])
+async def get_group_policies(
+    db: CurrentSession,
+    tenant_id: Annotated[int | None, Query(description='租户 ID')] = None,
+    project_id: Annotated[int | None, Query(description='项目 ID')] = None,
+) -> ResponseSchemaModel[list[GetAiGroupPolicyDetail]]:
+    data = await ai_group_policy_dao.get_all(db, tenant_id=tenant_id, project_id=project_id)
+    return response_base.success(data=data)
+
+
+@router.put(
+    '/group-policies',
+    summary='保存炒群群策略(并发区间/冷却/上限)',
+    dependencies=[Depends(RequestPermission('tg:ai:binding:edit')), DependsRBAC],
+)
+async def upsert_group_policy(
+    db: CurrentSessionTransaction, obj: UpsertAiGroupPolicyParam
+) -> ResponseSchemaModel[GetAiGroupPolicyDetail]:
+    policy = await ai_service.upsert_group_policy(db=db, obj=obj)
+    return response_base.success(data=policy)
 
 
 @router.put(

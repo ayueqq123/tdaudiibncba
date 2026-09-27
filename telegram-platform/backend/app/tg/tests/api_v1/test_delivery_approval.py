@@ -299,3 +299,16 @@ def test_delivery_filters_and_alerts(client: TestClient, token_headers: dict[str
     assert resp.json()['code'] == 200
     keys = {a['key'] for a in resp.json()['data']}
     assert f'delivery:{au}:uncertain:None' in keys
+    alert = next(a for a in resp.json()['data'] if a['key'] == f'delivery:{au}:uncertain:None')
+    assert alert['handled'] is False
+
+    resp = client.post('/tg/alerts/ack', headers=token_headers, json={'keys': [alert['key'], 'no-such-key']})
+    assert resp.json()['data']['count'] == 1
+    alert = next(a for a in client.get('/tg/alerts', headers=token_headers).json()['data'] if a['key'] == alert['key'])
+    assert alert['handled'] is True
+    assert alert['handled_by']
+
+    _run(_insert_job(tu, pu, au, 'uncertain'))
+    alert = next(a for a in client.get('/tg/alerts', headers=token_headers).json()['data'] if a['key'] == alert['key'])
+    assert alert['handled'] is False
+    assert alert['count'] == 2

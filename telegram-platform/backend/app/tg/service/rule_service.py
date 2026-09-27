@@ -272,6 +272,34 @@ class CloneRuleService:
         await db.flush()
 
     @staticmethod
+    async def mark_chat_lost(*, db: AsyncSession, account_id: int, chat_id: int, reason: str) -> int:
+        """账号已不在该群:相关路线标失效并清进群记录,下次运行用链接重新进群。"""
+        rule_ids = (
+            await db.execute(
+                sa.select(TgCloneRule.id).where(TgCloneRule.account_id == account_id, TgCloneRule.deleted == 0)
+            )
+        ).scalars().all()
+        if not rule_ids:
+            return 0
+        targets = (
+            await db.execute(
+                sa.select(TgCloneTarget).where(
+                    TgCloneTarget.rule_id.in_(rule_ids),
+                    TgCloneTarget.status == 'active',
+                    TgCloneTarget.deleted == 0,
+                    sa.or_(TgCloneTarget.source_chat_id == chat_id, TgCloneTarget.target_chat_id == chat_id),
+                )
+            )
+        ).scalars().all()
+        suffix = '(被移出或群已不可见)' if reason == 'kicked' else ''
+        for t in targets:
+            t.health_reason = (SOURCE_LOST if t.source_chat_id == chat_id else DEST_LOST) + suffix
+            t.joined_account_id = None
+            db.add(t)
+        await db.flush()
+        return len(targets)
+
+    @staticmethod
     async def check_routes(*, db: AsyncSession, request: Request, pk: int) -> list[dict]:
         """实时检测规则账号是否仍在每条路线的源群/目标群里(只验证不进群);不在则标失效并清进群记录。"""
         rule = await CloneRuleService.get(db=db, request=request, pk=pk)

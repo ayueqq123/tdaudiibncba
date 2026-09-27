@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import { CheckCheck, RefreshCw } from 'lucide-react'
 import { tgApi, type TgAlert } from '@/lib/api'
-import { ackAlerts, isAcked, loadAcks } from '@/lib/alerts'
+import { ALERTS_CHANGED } from '@/lib/alerts'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -29,7 +29,6 @@ function fmtTs(s?: string | null) {
 
 export default function AlertsPage() {
   const [rows, setRows] = useState<TgAlert[]>([])
-  const [acks, setAcks] = useState(loadAcks())
   const [loading, setLoading] = useState(false)
   const [state, setState] = useState<'open' | 'done' | 'all'>('open')
   const [cat, setCat] = useState('all')
@@ -38,7 +37,6 @@ export default function AlertsPage() {
     setLoading(true)
     try {
       setRows(await tgApi.alerts())
-      setAcks(loadAcks())
     } catch (e: any) {
       toast.error(e?.detail || '加载失败')
     } finally {
@@ -52,17 +50,23 @@ export default function AlertsPage() {
   const shown = useMemo(
     () =>
       rows.filter((a) => {
-        const done = isAcked(a, acks)
+        const done = a.handled
         if (state === 'open' && done) return false
         if (state === 'done' && !done) return false
         return cat === 'all' || a.category === cat
       }),
-    [rows, acks, state, cat],
+    [rows, state, cat],
   )
 
-  function ack(list: TgAlert[]) {
-    ackAlerts(list)
-    setAcks(loadAcks())
+  async function ack(list: TgAlert[]) {
+    try {
+      await tgApi.ackAlerts(list.filter((a) => !a.handled).map((a) => a.key))
+      toast.success('已标记处理')
+      window.dispatchEvent(new Event(ALERTS_CHANGED))
+      await load()
+    } catch (e: any) {
+      toast.error(e?.detail || '操作失败')
+    }
   }
 
   return (
@@ -99,7 +103,7 @@ export default function AlertsPage() {
               ))}
             </SelectContent>
           </Select>
-          {state !== 'done' && shown.some((a) => !isAcked(a, acks)) && (
+          {state !== 'done' && shown.some((a) => !a.handled) && (
             <Button variant="outline" onClick={() => ack(shown)}>
               <CheckCheck className="h-4 w-4" /> 全部标记已处理
             </Button>
@@ -121,7 +125,7 @@ export default function AlertsPage() {
           </TableHeader>
           <TableBody>
             {shown.map((a) => {
-              const done = isAcked(a, acks)
+              const done = a.handled
               return (
                 <TableRow key={a.key}>
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{fmtTs(a.last_at)}</TableCell>
@@ -136,6 +140,11 @@ export default function AlertsPage() {
                   <TableCell>{a.count}</TableCell>
                   <TableCell>
                     <Badge variant={done ? 'secondary' : 'destructive'}>{done ? '已处理' : '未处理'}</Badge>
+                    {done && (
+                      <div className="mt-1 whitespace-nowrap text-xs text-muted-foreground">
+                        {a.handled_by} · {fmtTs(a.handled_at)}
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-1.5">

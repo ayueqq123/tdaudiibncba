@@ -19,11 +19,13 @@ from backend.app.tg.schema.ai import AiGroupEventParam
 from backend.app.tg.schema.runtime_command import (
     AckRuntimeCommandParam,
     ReportAccountStatusParam,
+    ReportChatLostParam,
     CreateRuntimeCommandParam,
     GetRuntimeCommandDetail,
 )
 from backend.app.tg.service.ai_service import ai_service
 from backend.app.tg.service.command_service import runtime_command_service
+from backend.app.tg.service.rule_service import clone_rule_service
 from backend.common.exception import errors
 from backend.utils.timezone import timezone
 from backend.common.response.response_schema import (
@@ -239,6 +241,23 @@ async def report_account_status(
         },
     )
     return response_base.success(data={'ok': True})
+
+
+@router.post(
+    '/accounts/{api_row_id}/chat-lost',
+    summary='Worker 上报账号已不在规则群(被踢/退群)',
+    dependencies=[DependsWorkerAuth],
+)
+async def report_chat_lost(
+    db: CurrentSessionTransaction,
+    api_row_id: Annotated[int, Path(description='账号 API 行 ID')],
+    obj: ReportChatLostParam,
+) -> ResponseSchemaModel[dict]:
+    account = await telegram_account_dao.get(db, api_row_id)
+    if account is None:
+        raise errors.NotFoundError(msg='账号不存在')
+    n = await clone_rule_service.mark_chat_lost(db=db, account_id=api_row_id, chat_id=obj.chat_id, reason=obj.reason)
+    return response_base.success(data={'routes': n})
 
 
 @router.post(

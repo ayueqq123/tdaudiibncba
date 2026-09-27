@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from backend.common.schema import SchemaBase
 
@@ -193,3 +193,38 @@ class GetAiRunDetail(SchemaBase):
     candidate_id: int | None
     last_error: str | None
     completed_at: datetime | None
+
+
+class UpsertAiGroupPolicyParam(SchemaBase):
+    """保存炒群群策略(按 租户+项目+群+话题 唯一)"""
+
+    tenant_id: int
+    project_id: int
+    chat_id: int
+    topic_id: int | None = None
+    reply_min: int = Field(default=1, ge=1, le=20, description='每条消息最少接话号数')
+    reply_max: int = Field(default=1, ge=1, le=20, description='每条消息最多接话号数')
+    account_cooldown_s: int = Field(default=60, ge=0, le=86400, description='同一号两次发言最短间隔秒')
+    account_hourly_max: int = Field(default=20, ge=0, le=1000, description='同一号每小时最多发言数,0=不限')
+    stale_max_messages: int = Field(default=10, ge=0, le=100, description='到点时群里已新增≥N条则作废,0=不检查')
+
+    @model_validator(mode='after')
+    def _check_range(self) -> 'UpsertAiGroupPolicyParam':
+        if self.reply_max < self.reply_min:
+            raise ValueError('最多接话号数不能小于最少接话号数')
+        return self
+
+
+class GetAiGroupPolicyDetail(SchemaBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tenant_id: int
+    project_id: int
+    chat_id: int
+    topic_id: int | None
+    reply_min: int
+    reply_max: int
+    account_cooldown_s: int
+    account_hourly_max: int
+    stale_max_messages: int
