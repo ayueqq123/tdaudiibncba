@@ -26,3 +26,18 @@ async def tg_ai_openai_generate(run_id: int) -> str:
             return result
         await asyncio.sleep(2)
     return 'missing'
+
+
+@shared_task
+async def tg_ai_warmup_tick() -> str:
+    """冷场暖场巡检(每分钟):到点的炒群任务挑一个号抛话题。"""
+    async with async_db_session.begin() as db:
+        n = await AiService.warmup_tick(db)
+        return f'warmup={n}'
+
+
+@shared_task
+async def tg_ai_script_step(script_id: int, token: str) -> str:
+    """剧本执行一步(令牌不符/已停止即止)。"""
+    async with async_db_session.begin() as db:
+        return await AiService.script_step(db, script_id, token)

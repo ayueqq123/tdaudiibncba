@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, Request
+from fastapi import APIRouter, Body, Request
 from pydantic import BaseModel, Field
 
 from backend.app.admin.crud.crud_user import user_dao

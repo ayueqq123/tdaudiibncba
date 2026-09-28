@@ -35,4 +35,8 @@ def get_local_beat_schedule() -> dict[str, dict[str, Any]]:
             'task': 'backend.app.task.tasks.tg.tasks.tg_ai_sweep_deadlines',
             'schedule': schedule(60),
         },
+        'TG-AI 冷场暖场': {
+            'task': 'backend.app.task.tasks.tg.tasks.tg_ai_warmup_tick',
+            'schedule': schedule(60),
+        },
     }

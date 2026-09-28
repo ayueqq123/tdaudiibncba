@@ -67,12 +67,14 @@ async def route_health(db: AsyncSession, targets: list[TgCloneTarget]) -> dict[i
     if not route_ids:
         return health
     ranked = (
-        sa.select(
+        sa
+        .select(
             TgDeliveryJob.route_id,
             TgDeliveryJob.status,
             TgDeliveryJob.last_error_class,
             TgDeliveryJob.updated_at,
-            sa.func.row_number()
+            sa.func
+            .row_number()
             .over(partition_by=TgDeliveryJob.route_id, order_by=TgDeliveryJob.updated_at.desc())
             .label('rn'),
         )
@@ -269,8 +271,7 @@ class CloneRuleService:
         targets = [t for t in targets if t.joined_account_id != rule.account_id or health.get(t.id)]
         refs: list[str] = []
         for t in targets:
-            refs.append(t.source_chat_ref or str(t.source_chat_id))
-            refs.append(t.target_chat_ref or str(t.target_chat_id))
+            refs.extend((t.source_chat_ref or str(t.source_chat_id), t.target_chat_ref or str(t.target_chat_id)))
         uniq = list(dict.fromkeys(refs))
         if not uniq:
             return
@@ -294,22 +295,30 @@ class CloneRuleService:
     async def mark_chat_lost(*, db: AsyncSession, account_id: int, chat_id: int, reason: str) -> int:
         """账号已不在该群:相关路线标失效并清进群记录,下次运行用链接重新进群。"""
         rule_ids = (
-            await db.execute(
-                sa.select(TgCloneRule.id).where(TgCloneRule.account_id == account_id, TgCloneRule.deleted == 0)
+            (
+                await db.execute(
+                    sa.select(TgCloneRule.id).where(TgCloneRule.account_id == account_id, TgCloneRule.deleted == 0)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if not rule_ids:
             return 0
         targets = (
-            await db.execute(
-                sa.select(TgCloneTarget).where(
-                    TgCloneTarget.rule_id.in_(rule_ids),
-                    TgCloneTarget.status == 'active',
-                    TgCloneTarget.deleted == 0,
-                    sa.or_(TgCloneTarget.source_chat_id == chat_id, TgCloneTarget.target_chat_id == chat_id),
+            (
+                await db.execute(
+                    sa.select(TgCloneTarget).where(
+                        TgCloneTarget.rule_id.in_(rule_ids),
+                        TgCloneTarget.status == 'active',
+                        TgCloneTarget.deleted == 0,
+                        sa.or_(TgCloneTarget.source_chat_id == chat_id, TgCloneTarget.target_chat_id == chat_id),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         suffix = '(被移出或群已不可见)' if reason == 'kicked' else ''
         for t in targets:
             t.health_reason = (SOURCE_LOST if t.source_chat_id == chat_id else DEST_LOST) + suffix

@@ -44,9 +44,7 @@ async def _run_import_cli(package_path: str) -> dict[str, Any]:
     env = dict(os.environ)
     # 追加而非覆盖:容器里 telethon 等依赖已在 PYTHONPATH(如 /app/dependencies)
     existing = env.get('PYTHONPATH')
-    env['PYTHONPATH'] = (
-        f'{settings.TG_RUNTIME_DIR}{os.pathsep}{existing}' if existing else settings.TG_RUNTIME_DIR
-    )
+    env['PYTHONPATH'] = f'{settings.TG_RUNTIME_DIR}{os.pathsep}{existing}' if existing else settings.TG_RUNTIME_DIR
     proc = await asyncio.create_subprocess_exec(
         settings.TG_RUNTIME_PYTHON,
         '-m',
@@ -79,17 +77,13 @@ def _purge_pending() -> None:
             _LOGIN_PENDING.pop(lid, None)
 
 
-async def _run_runtime_cli(
-    module: str, args: list[str], stdin_payload: dict | None = None
-) -> dict[str, Any]:
+async def _run_runtime_cli(module: str, args: list[str], stdin_payload: dict | None = None) -> dict[str, Any]:
     """spawn telegram-runtime 的 CLI 模块(GPL 边界:不 import)。返回 stdout 尾部首个 JSON。"""
     if not settings.TG_RUNTIME_DIR or not settings.TG_RUNTIME_PYTHON:
         raise errors.ServerError(msg='未配置 TG_RUNTIME_DIR/TG_RUNTIME_PYTHON')
     env = dict(os.environ)
     existing = env.get('PYTHONPATH')
-    env['PYTHONPATH'] = (
-        f'{settings.TG_RUNTIME_DIR}{os.pathsep}{existing}' if existing else settings.TG_RUNTIME_DIR
-    )
+    env['PYTHONPATH'] = f'{settings.TG_RUNTIME_DIR}{os.pathsep}{existing}' if existing else settings.TG_RUNTIME_DIR
     proc = await asyncio.create_subprocess_exec(
         settings.TG_RUNTIME_PYTHON,
         '-m',
@@ -289,10 +283,14 @@ class AccountService:
         pending_dir.mkdir(parents=True, exist_ok=True)
         session_path = str(pending_dir / f'{login_id}.session')
         args = [
-            '--session', session_path,
-            '--api-id', str(obj.api_id),
-            '--api-hash', obj.api_hash,
-            '--phone', obj.phone,
+            '--session',
+            session_path,
+            '--api-id',
+            str(obj.api_id),
+            '--api-hash',
+            obj.api_hash,
+            '--phone',
+            obj.phone,
         ]
         if obj.device:
             args += ['--device', obj.device]
@@ -304,7 +302,7 @@ class AccountService:
             err = result.get('error') or {}
             status = err.get('status')
             if status == 'flood_wait':
-                raise errors.RequestError(msg=f"操作频繁,请 {err.get('seconds', 60)} 秒后重试")
+                raise errors.RequestError(msg=f'操作频繁,请 {err.get("seconds", 60)} 秒后重试')
             raise errors.RequestError(msg=_LOGIN_ERR.get(status, err.get('detail', '发送验证码失败')))
         _LOGIN_PENDING[login_id] = {
             'session_path': session_path,
@@ -332,11 +330,16 @@ class AccountService:
             raise errors.ForbiddenError(msg='无权完成该登录')
         await AccountService._check_scope(db, request, st['tenant_id'], st['project_id'])
         args = [
-            '--session', st['session_path'],
-            '--api-id', str(st['api_id']),
-            '--api-hash', st['api_hash'],
-            '--phone', st['phone'],
-            '--code-hash', st['phone_code_hash'],
+            '--session',
+            st['session_path'],
+            '--api-id',
+            str(st['api_id']),
+            '--api-hash',
+            st['api_hash'],
+            '--phone',
+            st['phone'],
+            '--code-hash',
+            st['phone_code_hash'],
         ]
         if st['device']:
             args += ['--device', st['device']]
@@ -349,7 +352,7 @@ class AccountService:
             err = result.get('error') or {}
             status = err.get('status')
             if status == 'flood_wait':
-                raise errors.RequestError(msg=f"操作频繁,请 {err.get('seconds', 60)} 秒后重试")
+                raise errors.RequestError(msg=f'操作频繁,请 {err.get("seconds", 60)} 秒后重试')
             raise errors.RequestError(msg=_LOGIN_ERR.get(status, err.get('detail', '登录失败')))
         # 登录成功:session 文件 + meta json 移入登录目录,结构同导入批次
         uid = result.get('user_id')
@@ -364,14 +367,12 @@ class AccountService:
         session_dst = login_dir / f'{key}.session'
         shutil.move(st['session_path'], session_dst)
         (login_dir / f'{key}.json').write_text(
-            json.dumps(
-                {
-                    'app_id': st['api_id'],
-                    'app_hash': st['api_hash'],
-                    'device': st['device'],
-                    'app_version': st['app_version'],
-                }
-            ),
+            json.dumps({
+                'app_id': st['api_id'],
+                'app_hash': st['api_hash'],
+                'device': st['device'],
+                'app_version': st['app_version'],
+            }),
             encoding='utf-8',
         )
         account = await telegram_account_dao.create(

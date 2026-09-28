@@ -306,23 +306,140 @@ export const tgApi = {
   createAiBinding: (b: any) => api.post<AiBinding>(`${TG}/ai/bindings`, b),
   updateAiBinding: (id: number, b: any) => api.put<AiBinding>(`${TG}/ai/bindings/${id}`, b),
   deleteAiBinding: (id: number) => api.del(`${TG}/ai/bindings/${id}`),
-  aiGroupPolicies: () => api.get<AiGroupPolicy[]>(`${TG}/ai/group-policies`),
-  saveAiGroupPolicy: (b: Omit<AiGroupPolicy, 'id'>) => api.put<AiGroupPolicy>(`${TG}/ai/group-policies`, b),
+  aiGroups: () => api.get<AiGroup[]>(`${TG}/ai/groups`),
+  createAiGroup: (b: any) => api.post<AiGroup>(`${TG}/ai/groups`, b),
+  updateAiGroup: (id: number, b: any) => api.put<AiGroup>(`${TG}/ai/groups/${id}`, b),
+  deleteAiGroup: (id: number) => api.del(`${TG}/ai/groups/${id}`),
+  aiGroupMessages: (id: number) => api.get<AiGroupMessage[]>(`${TG}/ai/groups/${id}/messages`),
+  aiGroupRuns: (id: number) => api.get<AiGroupRun[]>(`${TG}/ai/groups/${id}/runs`),
+  aiGroupWarmup: (id: number) => api.post<{ started: boolean }>(`${TG}/ai/groups/${id}/warmup`, {}),
+  aiMembers: (id: number) => api.get<AiMember[]>(`${TG}/ai/groups/${id}/members`),
+  addAiMember: (id: number, b: any) => api.post(`${TG}/ai/groups/${id}/members`, b),
+  updateAiMember: (id: number, mid: number, b: any) => api.put(`${TG}/ai/groups/${id}/members/${mid}`, b),
+  deleteAiMember: (id: number, mid: number) => api.del(`${TG}/ai/groups/${id}/members/${mid}`),
+  aiScripts: (id: number) => api.get<AiScript[]>(`${TG}/ai/groups/${id}/scripts`),
+  createAiScript: (id: number, b: any) => api.post<AiScript>(`${TG}/ai/groups/${id}/scripts`, b),
+  updateAiScript: (id: number, sid: number, b: any) => api.put<AiScript>(`${TG}/ai/groups/${id}/scripts/${sid}`, b),
+  deleteAiScript: (id: number, sid: number) => api.del(`${TG}/ai/groups/${id}/scripts/${sid}`),
+  startAiScript: (id: number, sid: number) => api.post(`${TG}/ai/groups/${id}/scripts/${sid}/start`, {}),
+  stopAiScript: (id: number, sid: number) => api.post(`${TG}/ai/groups/${id}/scripts/${sid}/stop`, {}),
+  aiPersonas: () => api.get<AiPersona[]>(`${TG}/ai/personas`),
+  createAiPersona: (b: any) => api.post<AiPersona>(`${TG}/ai/personas`, b),
+  deleteAiPersona: (id: number) => api.del(`${TG}/ai/personas/${id}`),
+  aiPrivateReplies: () => api.get<AiPrivateReply[]>(`${TG}/ai/private-replies`),
+  saveAiPrivateReply: (accountId: number, b: any) => api.put<AiPrivateReply>(`${TG}/ai/private-replies/${accountId}`, b),
   setAutoApprove: (tenant_id: number, project_id: number, enabled: boolean) =>
     api.put<{ updated: number; enabled: boolean }>(`${TG}/ai/auto-approve`, { tenant_id, project_id, enabled }),
 }
 
-export interface AiGroupPolicy {
+export interface AiGroup {
   id: number
   tenant_id: number
   project_id: number
+  name: string
   chat_id: number
+  chat_ref: string | null
   topic_id: number | null
+  theme: string | null
+  base_url: string
+  provider_model: string | null
+  has_provider_key: boolean
+  status: string
   reply_min: number
   reply_max: number
   account_cooldown_s: number
   account_hourly_max: number
   stale_max_messages: number
+  context_max_messages: number
+  bot_chain_max: number
+  active_start_hour: number
+  active_end_hour: number
+  mention_bypass_hours: boolean
+  idle_warmup_min: number
+  quote_prob: number
+  blocked_words: string[]
+  max_reply_chars: number
+  auto_approve: boolean
+  last_message_at: string | null
+  last_warmup_at: string | null
+  remark: string | null
+  member_count: number
+  active_member_count: number
+  today_replies: number
+  pending_approvals: number
+}
+
+export interface AiMember {
+  id: number
+  group_id: number
+  account_id: number
+  role_name: string | null
+  persona: string | null
+  talkativeness: number
+  reply_delay_s: number
+  provider_model: string | null
+  base_url: string
+  has_provider_key: boolean
+  status: string
+  account_label: string
+  account_running: boolean
+}
+
+export interface AiGroupMessage {
+  mid: number
+  sid: number | null
+  sender: string
+  text: string
+  ours?: boolean
+  ts?: number
+}
+
+export interface AiGroupRun {
+  id: number
+  created_time: string
+  status: string
+  mode: string
+  member_id: number | null
+  role_name: string | null
+  account_label: string
+  trigger_text: string
+  trigger_sender: string | null
+  content: string | null
+  candidate_status: string | null
+  last_error: string | null
+  model: string | null
+}
+
+export interface AiScript {
+  id: number
+  group_id: number
+  name: string
+  lines: { member_id: number; text: string }[]
+  interval_s: number
+  rewrite: boolean
+  status: string
+  cursor: number
+}
+
+export interface AiPersona {
+  id: number
+  tenant_id: number
+  project_id: number
+  name: string
+  role_name: string | null
+  persona: string
+  talkativeness: number
+}
+
+export interface AiPrivateReply {
+  id: number
+  tenant_id: number
+  project_id: number
+  account_id: number
+  enabled: boolean
+  reply_text: string | null
+  reply_cooldown_min: number
+  forward_chat_id: number | null
 }
 
 export interface AiBinding {

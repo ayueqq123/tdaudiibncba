@@ -72,6 +72,9 @@ class AiGroupEventParam(SchemaBase):
     sender_id: int | None = None
     sender_name: str = 'User'
     topic_id: int | None = None
+    reply_to_message_id: int | None = None
+    chat_class: str | None = Field(default=None, description='group|channel|private')
+    sender_is_bot: bool = False
 
 
 class AiTriggerParam(SchemaBase):
@@ -87,6 +90,9 @@ class AiTriggerParam(SchemaBase):
     source_refs: list[dict] | None = Field(default=None, description='触发来源消息集合')
     context_max_messages: int = Field(default=12, ge=0, le=100, description='内嵌上下文条数上限')
     context_override: list[dict] | None = Field(default=None, description='覆盖上下文(群最新消息缓存)')
+    mode: str = Field(default='reply', description='reply|warmup|script')
+    script_line: str | None = None
+    rewrite: bool = False
 
 
 class CreateAiConversationParam(SchemaBase):
@@ -197,36 +203,192 @@ class GetAiRunDetail(SchemaBase):
     completed_at: datetime | None
 
 
-class UpsertAiGroupPolicyParam(SchemaBase):
-    """保存炒群群策略(按 租户+项目+群+话题 唯一)"""
-
-    tenant_id: int
-    project_id: int
-    chat_id: int
-    topic_id: int | None = None
-    reply_min: int = Field(default=1, ge=1, le=20, description='每条消息最少接话号数')
-    reply_max: int = Field(default=1, ge=1, le=20, description='每条消息最多接话号数')
-    account_cooldown_s: int = Field(default=60, ge=0, le=86400, description='同一号两次发言最短间隔秒')
-    account_hourly_max: int = Field(default=20, ge=0, le=1000, description='同一号每小时最多发言数,0=不限')
-    stale_max_messages: int = Field(default=10, ge=0, le=100, description='到点时群里已新增≥N条则作废,0=不检查')
+class _GroupFields(SchemaBase):
+    name: str | None = Field(default=None, max_length=64)
+    theme: str | None = Field(default=None, description='群主题/背景')
+    base_url: str | None = None
+    provider_model: str | None = None
+    provider_key: str | None = Field(default=None, description='API key(加密落库不回显,留空不更换)')
+    reply_min: int | None = Field(default=None, ge=0, le=20)
+    reply_max: int | None = Field(default=None, ge=1, le=20)
+    account_cooldown_s: int | None = Field(default=None, ge=0, le=86400)
+    account_hourly_max: int | None = Field(default=None, ge=0, le=1000)
+    stale_max_messages: int | None = Field(default=None, ge=0, le=100)
+    context_max_messages: int | None = Field(default=None, ge=0, le=100)
+    bot_chain_max: int | None = Field(default=None, ge=0, le=10)
+    active_start_hour: int | None = Field(default=None, ge=0, le=23)
+    active_end_hour: int | None = Field(default=None, ge=0, le=23)
+    mention_bypass_hours: bool | None = None
+    idle_warmup_min: int | None = Field(default=None, ge=0, le=1440)
+    quote_prob: int | None = Field(default=None, ge=0, le=100)
+    blocked_words: list[str] | None = None
+    max_reply_chars: int | None = Field(default=None, ge=0, le=2000)
+    auto_approve: bool | None = None
+    status: str | None = Field(default=None, pattern='^(active|paused)$')
+    remark: str | None = None
 
     @model_validator(mode='after')
-    def _check_range(self) -> 'UpsertAiGroupPolicyParam':
-        if self.reply_max < self.reply_min:
+    def _check_range(self) -> '_GroupFields':
+        if self.reply_min is not None and self.reply_max is not None and self.reply_max < self.reply_min:
             raise ValueError('最多接话号数不能小于最少接话号数')
         return self
 
 
-class GetAiGroupPolicyDetail(SchemaBase):
+class CreateAiGroupParam(_GroupFields):
+    """新建炒群任务:chat 可填数字 ID / t.me 链接 / @用户名"""
+
+    tenant_id: int
+    project_id: int
+    name: str = Field(max_length=64)
+    chat: str = Field(description='群 ID 或链接')
+    topic_id: int | None = None
+    join_account_id: int | None = Field(default=None, description='用于解析链接/进群的账号')
+
+
+class UpdateAiGroupParam(_GroupFields):
+    """更新炒群任务(未传字段不改)"""
+
+
+class GetAiGroupDetail(SchemaBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     tenant_id: int
     project_id: int
+    name: str
     chat_id: int
+    chat_ref: str | None
     topic_id: int | None
+    theme: str | None
+    base_url: str
+    provider_model: str | None
+    has_provider_key: bool = False
+    status: str
     reply_min: int
     reply_max: int
     account_cooldown_s: int
     account_hourly_max: int
     stale_max_messages: int
+    context_max_messages: int
+    bot_chain_max: int
+    active_start_hour: int
+    active_end_hour: int
+    mention_bypass_hours: bool
+    idle_warmup_min: int
+    quote_prob: int
+    blocked_words: list
+    max_reply_chars: int
+    auto_approve: bool
+    last_message_at: datetime | None
+    last_warmup_at: datetime | None
+    remark: str | None
+    member_count: int = 0
+    active_member_count: int = 0
+    today_replies: int = 0
+    pending_approvals: int = 0
+
+
+class AiMemberParam(SchemaBase):
+    """炒群成员(账号 + 独立人设)"""
+
+    account_id: int | None = None
+    role_name: str | None = Field(default=None, max_length=64)
+    persona: str | None = None
+    talkativeness: int | None = Field(default=None, ge=0, le=100, description='活跃度 0=只在被@时说话')
+    reply_delay_s: int | None = Field(default=None, ge=0, le=300)
+    provider_model: str | None = Field(default=None, description='单独模型(空=用群设置)')
+    provider_key: str | None = Field(default=None, description='单独 key(空=用群设置)')
+    base_url: str | None = None
+    status: str | None = Field(default=None, pattern='^(active|paused)$')
+
+
+class GetAiMemberDetail(SchemaBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    group_id: int | None
+    account_id: int
+    role_name: str | None
+    persona: str | None
+    talkativeness: int
+    reply_delay_s: int
+    provider_model: str | None
+    base_url: str
+    has_provider_key: bool = False
+    status: str
+    account_label: str = ''
+    account_running: bool = False
+
+
+class AiPersonaParam(SchemaBase):
+    tenant_id: int
+    project_id: int
+    name: str = Field(max_length=64)
+    role_name: str | None = Field(default=None, max_length=64)
+    persona: str = ''
+    talkativeness: int = Field(default=30, ge=0, le=100)
+
+
+class GetAiPersonaDetail(AiPersonaParam):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+
+
+class AiScriptLine(SchemaBase):
+    member_id: int
+    text: str = Field(min_length=1, max_length=1000)
+
+
+class AiScriptParam(SchemaBase):
+    name: str = Field(max_length=64)
+    lines: list[AiScriptLine] = Field(min_length=1, max_length=50)
+    interval_s: int = Field(default=30, ge=3, le=3600)
+    rewrite: bool = False
+
+
+class GetAiScriptDetail(SchemaBase):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    group_id: int
+    name: str
+    lines: list
+    interval_s: int
+    rewrite: bool
+    status: str
+    cursor: int
+
+
+class AiPrivateReplyParam(SchemaBase):
+    enabled: bool = True
+    reply_text: str | None = None
+    reply_cooldown_min: int = Field(default=60, ge=0, le=10080)
+    forward_chat_id: int | None = None
+
+
+class GetAiPrivateReplyDetail(AiPrivateReplyParam):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tenant_id: int
+    project_id: int
+    account_id: int
+
+
+class GetAiGroupRunDetail(SchemaBase):
+    """发言记录:一次生成的调度结果"""
+
+    id: int
+    created_time: datetime
+    status: str
+    mode: str
+    member_id: int | None
+    role_name: str | None
+    account_label: str
+    trigger_text: str
+    trigger_sender: str | None
+    content: str | None
+    candidate_status: str | None
+    last_error: str | None
+    model: str | None

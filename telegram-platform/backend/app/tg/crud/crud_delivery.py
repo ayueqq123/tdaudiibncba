@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from datetime import datetime
 
 import sqlalchemy as sa
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 

@@ -357,6 +357,9 @@ async def _report_ai_event(event, raw, control, api_row_id: int) -> None:
             "message_id": raw.message_id, "text": text[:2000],
             "sender_id": raw.sender_id, "sender_name": name,
             "topic_id": raw.topic_id,
+            "reply_to_message_id": raw.reply_to_message_id,
+            "chat_class": raw.chat_class.value,
+            "sender_is_bot": bool(raw.sender_is_bot),
         })
     except Exception:
         log.warning("ai event notify failed", exc_info=True)
@@ -410,6 +413,15 @@ def _media_kind(msg) -> str:
     return "text"
 
 
+def _topic_id(reply_to) -> int | None:
+    """Forum topic of a message. reply_to_top_id alone is the reply-thread
+    root in ordinary groups, not a topic."""
+    if reply_to is None or not getattr(reply_to, "forum_topic", False):
+        return None
+    return (getattr(reply_to, "reply_to_top_id", None)
+            or getattr(reply_to, "reply_to_msg_id", None))
+
+
 def _to_raws(event) -> list[RawUpdate]:
     """Adapt one Telethon event into zero-or-more RawUpdates. MessageDeleted
     carries a whole deleted_ids list — each id is its own inbox row."""
@@ -432,8 +444,7 @@ def _to_raws(event) -> list[RawUpdate]:
             content_hash=_content_hash(msg),
             grouped_id=getattr(msg, "grouped_id", None),
             reply_to_message_id=getattr(reply_to, "reply_to_msg_id", None),
-            topic_id=getattr(reply_to, "reply_to_top_id", None)
-            if reply_to else None,
+            topic_id=_topic_id(reply_to),
             protected=bool(getattr(msg, "noforwards", False)),
             sender_id=_sender_id(msg),
             media_kind=_media_kind(msg),

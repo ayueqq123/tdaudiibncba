@@ -1,9 +1,19 @@
 from collections.abc import Sequence
+from typing import Generic, TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
-from backend.app.tg.model.ai import TgAiBinding, TgAiCallback, TgAiConversation, TgAiGroupPolicy, TgAiRun
+from backend.app.tg.model.ai import (
+    TgAiBinding,
+    TgAiCallback,
+    TgAiConversation,
+    TgAiGroup,
+    TgAiPersona,
+    TgAiPrivateReply,
+    TgAiRun,
+    TgAiScript,
+)
 from backend.app.tg.schema.ai import (
     CreateAiBindingParam,
     CreateAiCallbackParam,
@@ -37,7 +47,8 @@ class CRUDAiBinding(CRUDPlus[TgAiBinding]):
         return await self.update_model(db, pk, fields)
 
     async def delete(self, db: AsyncSession, pk: int) -> int:
-        return await self.delete_model_by_column(db, id=pk)
+        """软删:会话/运行记录仍外键引用绑定,硬删会违反约束。"""
+        return await self.update_model(db, pk, {'deleted': 1, 'status': 'removed', 'group_id': None})
 
 
 class CRUDAiConversation(CRUDPlus[TgAiConversation]):
@@ -139,18 +150,21 @@ ai_run_dao: CRUDAiRun = CRUDAiRun(TgAiRun)
 ai_callback_dao: CRUDAiCallback = CRUDAiCallback(TgAiCallback)
 
 
-class CRUDAiGroupPolicy(CRUDPlus[TgAiGroupPolicy]):
-    """炒群群策略"""
+T = TypeVar('T')
+
+
+class _ScopedCRUD(CRUDPlus[T], Generic[T]):
+    async def get(self, db: AsyncSession, pk: int) -> T | None:
+        return await self.select_model_by_column(db, id=pk, deleted=0)
 
     async def get_all(
-        self, db: AsyncSession, tenant_id: int | None = None, project_id: int | None = None
-    ) -> Sequence[TgAiGroupPolicy]:
-        filters: dict = {'deleted': 0}
-        if tenant_id is not None:
-            filters['tenant_id'] = tenant_id
-        if project_id is not None:
-            filters['project_id'] = project_id
-        return await self.select_models(db, **filters)
+        self, db: AsyncSession, tenant_id: int | None = None, project_id: int | None = None, **extra: int
+    ) -> Sequence[T]:
+        filters = {k: v for k, v in {'tenant_id': tenant_id, 'project_id': project_id}.items() if v is not None}
+        return await self.select_models(db, deleted=0, **filters, **extra)
 
 
-ai_group_policy_dao: CRUDAiGroupPolicy = CRUDAiGroupPolicy(TgAiGroupPolicy)
+ai_group_dao: _ScopedCRUD[TgAiGroup] = _ScopedCRUD(TgAiGroup)
+ai_persona_dao: _ScopedCRUD[TgAiPersona] = _ScopedCRUD(TgAiPersona)
+ai_script_dao: _ScopedCRUD[TgAiScript] = _ScopedCRUD(TgAiScript)
+ai_private_reply_dao: _ScopedCRUD[TgAiPrivateReply] = _ScopedCRUD(TgAiPrivateReply)
