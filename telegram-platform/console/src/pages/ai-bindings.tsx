@@ -14,7 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Textarea } from '@/components/ui/textarea'
 
 interface FormState {
-  account_id: string
+  account_ids: string[]
   chat_id: string
   persona: string
   base_url: string
@@ -28,7 +28,7 @@ interface FormState {
 }
 
 const EMPTY: FormState = {
-  account_id: '',
+  account_ids: [],
   chat_id: '',
   persona: '',
   base_url: 'https://api.deepseek.com/v1',
@@ -97,7 +97,7 @@ export default function AiBindingsPage() {
   }, [])
 
   const doCreate = async () => {
-    if (!form.account_id || !form.chat_id.trim()) {
+    if (!form.account_ids.length || !form.chat_id.trim()) {
       toast.error('账号和群 ID 必填')
       return
     }
@@ -108,28 +108,42 @@ export default function AiBindingsPage() {
     setSaving(true)
     try {
       const ws = await tgApi.ensureWorkspace()
-      await tgApi.createAiBinding({
-        tenant_id: ws.tenant_id,
-        project_id: ws.project_id,
-        account_id: Number(form.account_id),
-        engine: 'openai',
-        chat_id: form.chat_id.trim(),
-        persona: form.persona.trim() || null,
-        base_url: form.base_url.trim(),
-        provider_model: form.provider_model.trim(),
-        provider_key: form.provider_key.trim(),
-        speak_policy: form.speak_policy,
-        reply_delay_s: Number(form.reply_delay_s) || 0,
-        random_prob: Number(form.random_prob) || 30,
-        context_max_messages: Number(form.context_max) || 12,
-        remark: form.remark.trim() || null,
-      })
-      toast.success('已创建,群里来消息会自动生成回复进审批')
-      setOpen(false)
-      setForm(EMPTY)
+      let ok = 0
+      const failed: string[] = []
+      for (const id of form.account_ids) {
+        try {
+          await tgApi.createAiBinding({
+            tenant_id: ws.tenant_id,
+            project_id: ws.project_id,
+            account_id: Number(id),
+            engine: 'openai',
+            chat_id: form.chat_id.trim(),
+            persona: form.persona.trim() || null,
+            base_url: form.base_url.trim(),
+            provider_model: form.provider_model.trim(),
+            provider_key: form.provider_key.trim(),
+            speak_policy: form.speak_policy,
+            reply_delay_s: Number(form.reply_delay_s) || 0,
+            random_prob: Number(form.random_prob) || 30,
+            context_max_messages: Number(form.context_max) || 12,
+            remark: form.remark.trim() || null,
+          })
+          ok++
+        } catch (e) {
+          const acc = accounts.find((a) => a.id === Number(id))
+          failed.push(`${acc ? `@${acc.username || acc.phone || acc.id}` : id}: ${e instanceof Error ? e.message : '失败'}`)
+        }
+      }
+      if (failed.length) {
+        toast.warning(`成功 ${ok} 个,失败 ${failed.length} 个:${failed.join(';')}`)
+      } else {
+        toast.success(`已创建 ${ok} 个绑定,群里来消息会自动生成回复进审批`)
+      }
+      if (ok) {
+        setOpen(false)
+        setForm(EMPTY)
+      }
       void load()
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : '创建失败')
     } finally {
       setSaving(false)
     }
@@ -415,19 +429,32 @@ export default function AiBindingsPage() {
           </DialogHeader>
           <div className="space-y-3">
             <div>
-              <Label>发言账号</Label>
-              <Select value={form.account_id} onValueChange={(v) => setForm({ ...form, account_id: v })}>
-                <SelectTrigger>
-                  <SelectValue placeholder="选账号" />
-                </SelectTrigger>
-                <SelectContent>
-                  {accounts.map((a) => (
-                    <SelectItem key={a.id} value={String(a.id)}>
+              <Label>发言账号(可多选,每个号建一条绑定)</Label>
+              <div className="max-h-40 overflow-y-auto rounded-md border p-1">
+                {accounts.map((a) => {
+                  const id = String(a.id)
+                  const checked = form.account_ids.includes(id)
+                  return (
+                    <label key={a.id} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() =>
+                          setForm({
+                            ...form,
+                            account_ids: checked ? form.account_ids.filter((x) => x !== id) : [...form.account_ids, id],
+                          })
+                        }
+                      />
                       @{a.username || a.phone || a.telegram_user_id || a.id}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                    </label>
+                  )
+                })}
+                {!accounts.length && <p className="px-2 py-1.5 text-sm text-muted-foreground">暂无账号</p>}
+              </div>
+              {form.account_ids.length > 0 && (
+                <p className="mt-1 text-xs text-muted-foreground">已选 {form.account_ids.length} 个账号</p>
+              )}
             </div>
             <div>
               <Label>群(填 chat_id 或 t.me 群链接)</Label>
