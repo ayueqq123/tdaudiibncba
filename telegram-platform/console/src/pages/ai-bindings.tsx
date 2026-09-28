@@ -202,12 +202,14 @@ function GroupSettings({
   creating,
   accounts,
   hasKey,
+  scope,
 }: {
   form: GroupForm
   setForm: (f: GroupForm) => void
   creating: boolean
   accounts: TgAccount[]
   hasKey: boolean
+  scope?: { tenant_id: number; project_id: number } | null
 }) {
   const set = (k: keyof GroupForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     setForm({ ...form, [k]: e.target.value })
@@ -227,11 +229,13 @@ function GroupSettings({
                 <SelectValue placeholder="填数字 ID 可不选" />
               </SelectTrigger>
               <SelectContent>
-                {accounts.map((a) => (
-                  <SelectItem key={a.id} value={String(a.id)}>
-                    {accLabel(a)}
-                  </SelectItem>
-                ))}
+                {accounts
+                  .filter((a) => !scope || (a.tenant_id === scope.tenant_id && a.project_id === scope.project_id))
+                  .map((a) => (
+                    <SelectItem key={a.id} value={String(a.id)}>
+                      {accLabel(a)}
+                    </SelectItem>
+                  ))}
               </SelectContent>
             </Select>
           </Field>
@@ -367,6 +371,7 @@ export default function AiBindingsPage() {
   const [current, setCurrent] = useState<AiGroup | null>(null)
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState<GroupForm>(GROUP_DEFAULT)
+  const [ws, setWs] = useState<{ tenant_id: number; project_id: number } | null>(null)
   const [saving, setSaving] = useState(false)
   const [privateOpen, setPrivateOpen] = useState(false)
 
@@ -375,10 +380,11 @@ export default function AiBindingsPage() {
     const seq = ++loadSeq.current
     setLoading(true)
     try {
-      const [g, a] = await Promise.all([tgApi.aiGroups(), tgApi.accounts()])
+      const [g, a, w] = await Promise.all([tgApi.aiGroups(), tgApi.accounts(), tgApi.ensureWorkspace()])
       if (seq !== loadSeq.current) return
       setGroups(g)
       setAccounts(a)
+      setWs(w)
       setCurrent((c) => (c ? (g.find((x) => x.id === c.id) ?? null) : c))
     } catch (e) {
       if (seq === loadSeq.current) toast.error(errMsg(e, '加载失败'))
@@ -544,7 +550,7 @@ export default function AiBindingsPage() {
           <DialogHeader>
             <DialogTitle>新建炒群任务</DialogTitle>
           </DialogHeader>
-          <GroupSettings form={form} setForm={setForm} creating accounts={accounts} hasKey={false} />
+          <GroupSettings form={form} setForm={setForm} creating accounts={accounts} hasKey={false} scope={ws} />
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setCreating(false)}>
               取消
@@ -556,7 +562,11 @@ export default function AiBindingsPage() {
         </DialogContent>
       </Dialog>
 
-      <PrivateReplyDialog open={privateOpen} onOpenChange={setPrivateOpen} accounts={accounts} />
+      <PrivateReplyDialog
+        open={privateOpen}
+        onOpenChange={setPrivateOpen}
+        accounts={accounts.filter((a) => !ws || (a.tenant_id === ws.tenant_id && a.project_id === ws.project_id))}
+      />
     </div>
   )
 }
@@ -681,7 +691,7 @@ function SettingsTab({ group, accounts, onSaved }: { group: AiGroup; accounts: T
   }
   return (
     <div className="space-y-3">
-      <GroupSettings form={form} setForm={setForm} creating={false} accounts={accounts} hasKey={group.has_provider_key} />
+      <GroupSettings form={form} setForm={setForm} creating={false} accounts={accounts} hasKey={group.has_provider_key} scope={{ tenant_id: group.tenant_id, project_id: group.project_id }} />
       <div className="flex justify-end">
         <Button onClick={() => void save()} disabled={saving}>
           <Save className="mr-1 h-4 w-4" />
@@ -825,7 +835,12 @@ function MembersTab({
     }
   }
 
-  const free = accounts.filter((a) => !members.some((m) => m.account_id === a.id))
+  const free = accounts.filter(
+    (a) =>
+      a.tenant_id === group.tenant_id &&
+      a.project_id === group.project_id &&
+      !members.some((m) => m.account_id === a.id),
+  )
 
   return (
     <div className="space-y-3">
