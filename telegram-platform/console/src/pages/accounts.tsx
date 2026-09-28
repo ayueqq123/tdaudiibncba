@@ -251,13 +251,13 @@ export default function AccountsPage() {
                     <div className="flex flex-col gap-1.5">
                       <Label>API 凭据</Label>
                       <Select value={credIdx} onValueChange={pickCred}>
-                        <SelectTrigger>
+                        <SelectTrigger className="[&>span]:truncate">
                           <SelectValue placeholder="选择已用过的凭据" />
                         </SelectTrigger>
-                        <SelectContent>
+                        <SelectContent className="max-w-[var(--radix-select-trigger-width)]">
                           {creds.map((c, i) => (
                             <SelectItem key={i} value={String(i)}>
-                              {`api_id: ${c.api_id} · ${c.phones.length ? c.phones.join('/') : `${c.account_count} 个账号在用`}`}
+                              {`api_id: ${c.api_id} · ${c.phones[0] ?? ''}${c.account_count > 1 ? ` 等${c.account_count}个号在用` : ''}`}
                             </SelectItem>
                           ))}
                           <SelectItem value="manual">手动输入新凭据</SelectItem>
