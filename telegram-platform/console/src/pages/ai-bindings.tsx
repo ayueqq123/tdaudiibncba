@@ -329,6 +329,7 @@ function GroupSettings({
 // ---------------- 成员表单 ----------------
 interface MemberForm {
   account_id: string
+  account_ids: string[]
   role_name: string
   persona: string
   talkativeness: string
@@ -339,6 +340,7 @@ interface MemberForm {
 }
 const MEMBER_DEFAULT: MemberForm = {
   account_id: '',
+  account_ids: [],
   role_name: '',
   persona: '',
   talkativeness: '30',
@@ -722,6 +724,7 @@ function MembersTab({
     setEdit(m)
     setForm({
       account_id: String(m.account_id),
+      account_ids: [],
       role_name: m.role_name || '',
       persona: m.persona || '',
       talkativeness: String(m.talkativeness),
@@ -734,7 +737,7 @@ function MembersTab({
   }
 
   const save = async () => {
-    if (!edit && !form.account_id) {
+    if (!edit && !form.account_ids.length) {
       toast.error('请选择账号')
       return
     }
@@ -749,9 +752,24 @@ function MembersTab({
     }
     setSaving(true)
     try {
-      if (edit) await tgApi.updateAiMember(group.id, edit.id, body)
-      else await tgApi.addAiMember(group.id, { ...body, account_id: Number(form.account_id) })
-      toast.success(edit ? '已保存' : '已添加成员')
+      if (edit) {
+        await tgApi.updateAiMember(group.id, edit.id, body)
+        toast.success('已保存')
+      } else {
+        let ok = 0
+        const failed: string[] = []
+        for (const id of form.account_ids) {
+          try {
+            await tgApi.addAiMember(group.id, { ...body, account_id: Number(id) })
+            ok++
+          } catch (e) {
+            const acc = accounts.find((a) => a.id === Number(id))
+            failed.push(`${acc ? accLabel(acc) : id}: ${errMsg(e, '失败')}`)
+          }
+        }
+        if (failed.length) toast.warning(`成功 ${ok} 个,失败 ${failed.length} 个:${failed.join(';')}`)
+        else toast.success(`已添加 ${ok} 个成员`)
+      }
       setOpen(false)
       reload()
     } catch (e) {
@@ -884,20 +902,42 @@ function MembersTab({
           </DialogHeader>
           <div className="grid gap-3 sm:grid-cols-2">
             {!edit && (
-              <Field label="账号" hint={group.chat_ref ? '添加时会自动用链接进群' : undefined}>
-                <Select value={form.account_id} onValueChange={(v) => setForm({ ...form, account_id: v })}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="选择账号" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {free.map((a) => (
-                      <SelectItem key={a.id} value={String(a.id)}>
+              <div className="sm:col-span-2">
+                <Field label="账号(可多选,共用下方人设)" hint={group.chat_ref ? '添加时会自动用链接进群' : undefined}>
+                  <div className="max-h-44 overflow-y-auto rounded-md border p-1">
+                  {free.map((a) => {
+                    const id = String(a.id)
+                    const checked = form.account_ids.includes(id)
+                    return (
+                      <label
+                        key={a.id}
+                        className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() =>
+                            setForm({
+                              ...form,
+                              account_ids: checked
+                                ? form.account_ids.filter((x) => x !== id)
+                                : [...form.account_ids, id],
+                            })
+                          }
+                        />
                         {accLabel(a)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
+                      </label>
+                    )
+                  })}
+                  {!free.length && (
+                    <p className="px-2 py-1.5 text-sm text-muted-foreground">可选账号都在群里了</p>
+                  )}
+                  </div>
+                </Field>
+                {form.account_ids.length > 0 && (
+                  <p className="mt-1 text-xs text-muted-foreground">已选 {form.account_ids.length} 个账号</p>
+                )}
+              </div>
             )}
             {personas.length > 0 && (
               <Field label="套用人设模板">
