@@ -208,12 +208,14 @@ function GroupSettings({
   creating,
   accounts,
   hasKey,
+  scope,
 }: {
   form: GroupForm
   setForm: (f: GroupForm) => void
   creating: boolean
   accounts: TgAccount[]
   hasKey: boolean
+  scope?: { tenant_id: number; project_id: number } | null
 }) {
   const set = (k: keyof GroupForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     setForm({ ...form, [k]: e.target.value })
@@ -233,11 +235,13 @@ function GroupSettings({
                 <SelectValue placeholder="填数字 ID 可不选" />
               </SelectTrigger>
               <SelectContent>
-                {accounts.map((a) => (
-                  <SelectItem key={a.id} value={String(a.id)}>
-                    {accLabel(a)}
-                  </SelectItem>
-                ))}
+                {accounts
+                  .filter((a) => !scope || (a.tenant_id === scope.tenant_id && a.project_id === scope.project_id))
+                  .map((a) => (
+                    <SelectItem key={a.id} value={String(a.id)}>
+                      {accLabel(a)}
+                    </SelectItem>
+                  ))}
               </SelectContent>
             </Select>
           </Field>
@@ -338,6 +342,7 @@ function GroupSettings({
 // ---------------- 成员表单 ----------------
 interface MemberForm {
   account_id: string
+  account_ids: string[]
   role_name: string
   persona: string
   talkativeness: string
@@ -348,6 +353,7 @@ interface MemberForm {
 }
 const MEMBER_DEFAULT: MemberForm = {
   account_id: '',
+  account_ids: [],
   role_name: '',
   persona: '',
   talkativeness: '30',
@@ -376,16 +382,18 @@ export default function AiBindingsPage() {
   const [form, setForm] = useState<GroupForm>(GROUP_DEFAULT)
   const [saving, setSaving] = useState(false)
   const [privateOpen, setPrivateOpen] = useState(false)
+  const [ws, setWs] = useState<{ tenant_id: number; project_id: number } | null>(null)
 
   const loadSeq = useRef(0)
   const load = async () => {
     const seq = ++loadSeq.current
     setLoading(true)
     try {
-      const [g, a] = await Promise.all([tgApi.aiGroups(), tgApi.accounts()])
+      const [g, a, w] = await Promise.all([tgApi.aiGroups(), tgApi.accounts(), tgApi.ensureWorkspace()])
       if (seq !== loadSeq.current) return
       setGroups(g)
       setAccounts(a)
+      setWs(w)
       setCurrent((c) => (c ? (g.find((x) => x.id === c.id) ?? null) : c))
     } catch (e) {
       if (seq === loadSeq.current) toast.error(errMsg(e, '加载失败'))
@@ -551,7 +559,7 @@ export default function AiBindingsPage() {
           <DialogHeader>
             <DialogTitle>新建炒群任务</DialogTitle>
           </DialogHeader>
-          <GroupSettings form={form} setForm={setForm} creating accounts={accounts} hasKey={false} />
+          <GroupSettings form={form} setForm={setForm} creating accounts={accounts} hasKey={false} scope={ws} />
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setCreating(false)}>
               取消
@@ -563,7 +571,11 @@ export default function AiBindingsPage() {
         </DialogContent>
       </Dialog>
 
-      <PrivateReplyDialog open={privateOpen} onOpenChange={setPrivateOpen} accounts={accounts} />
+      <PrivateReplyDialog
+        open={privateOpen}
+        onOpenChange={setPrivateOpen}
+        accounts={accounts.filter((a) => !ws || (a.tenant_id === ws.tenant_id && a.project_id === ws.project_id))}
+      />
     </div>
   )
 }
@@ -688,7 +700,7 @@ function SettingsTab({ group, accounts, onSaved }: { group: AiGroup; accounts: T
   }
   return (
     <div className="space-y-3">
-      <GroupSettings form={form} setForm={setForm} creating={false} accounts={accounts} hasKey={group.has_provider_key} />
+      <GroupSettings form={form} setForm={setForm} creating={false} accounts={accounts} hasKey={group.has_provider_key} scope={{ tenant_id: group.tenant_id, project_id: group.project_id }} />
       <div className="flex justify-end">
         <Button onClick={() => void save()} disabled={saving}>
           <Save className="mr-1 h-4 w-4" />
@@ -731,6 +743,7 @@ function MembersTab({
     setEdit(m)
     setForm({
       account_id: String(m.account_id),
+      account_ids: [],
       role_name: m.role_name || '',
       persona: m.persona || '',
       talkativeness: String(m.talkativeness),
@@ -743,7 +756,7 @@ function MembersTab({
   }
 
   const save = async () => {
-    if (!edit && !form.account_id) {
+    if (!edit && !form.account_ids.length) {
       toast.error('请选择账号')
       return
     }
@@ -758,9 +771,24 @@ function MembersTab({
     }
     setSaving(true)
     try {
-      if (edit) await tgApi.updateAiMember(group.id, edit.id, body)
-      else await tgApi.addAiMember(group.id, { ...body, account_id: Number(form.account_id) })
-      toast.success(edit ? '已保存' : '已添加成员')
+      if (edit) {
+        await tgApi.updateAiMember(group.id, edit.id, body)
+        toast.success('已保存')
+      } else {
+        let ok = 0
+        const failed: string[] = []
+        for (const id of form.account_ids) {
+          try {
+            await tgApi.addAiMember(group.id, { ...body, account_id: Number(id) })
+            ok++
+          } catch (e) {
+            const acc = accounts.find((a) => a.id === Number(id))
+            failed.push(`${acc ? accLabel(acc) : id}: ${errMsg(e, '失败')}`)
+          }
+        }
+        if (failed.length) toast.warning(`成功 ${ok} 个,失败 ${failed.length} 个:${failed.join(';')}`)
+        else toast.success(`已添加 ${ok} 个成员`)
+      }
       setOpen(false)
       reload()
     } catch (e) {
@@ -816,7 +844,12 @@ function MembersTab({
     }
   }
 
-  const free = accounts.filter((a) => !members.some((m) => m.account_id === a.id))
+  const free = accounts.filter(
+    (a) =>
+      a.tenant_id === group.tenant_id &&
+      a.project_id === group.project_id &&
+      !members.some((m) => m.account_id === a.id),
+  )
 
   return (
     <div className="space-y-3">
@@ -893,20 +926,42 @@ function MembersTab({
           </DialogHeader>
           <div className="grid gap-3 sm:grid-cols-2">
             {!edit && (
-              <Field label="账号" hint={group.chat_ref ? '添加时会自动用链接进群' : undefined}>
-                <Select value={form.account_id} onValueChange={(v) => setForm({ ...form, account_id: v })}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="选择账号" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {free.map((a) => (
-                      <SelectItem key={a.id} value={String(a.id)}>
-                        {accLabel(a)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
+              <div className="sm:col-span-2">
+                <Field label="账号(可多选,共用下方人设)" hint={group.chat_ref ? '添加时会自动用链接进群' : undefined}>
+                  <div className="max-h-44 overflow-y-auto rounded-md border p-1">
+                    {free.map((a) => {
+                      const id = String(a.id)
+                      const checked = form.account_ids.includes(id)
+                      return (
+                        <label
+                          key={a.id}
+                          className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() =>
+                              setForm({
+                                ...form,
+                                account_ids: checked
+                                  ? form.account_ids.filter((x) => x !== id)
+                                  : [...form.account_ids, id],
+                              })
+                            }
+                          />
+                          {accLabel(a)}
+                        </label>
+                      )
+                    })}
+                    {!free.length && (
+                      <p className="px-2 py-1.5 text-sm text-muted-foreground">可选账号都在群里了</p>
+                    )}
+                  </div>
+                </Field>
+                {form.account_ids.length > 0 && (
+                  <p className="mt-1 text-xs text-muted-foreground">已选 {form.account_ids.length} 个账号</p>
+                )}
+              </div>
             )}
             {personas.length > 0 && (
               <Field label="套用人设模板">
