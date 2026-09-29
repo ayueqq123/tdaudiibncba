@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import random
+import re
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -360,9 +361,43 @@ class AiService:
         return group.base_url, AiService._decrypt(group.provider_key_enc), group.provider_model
 
     @staticmethod
-    async def _peer_names(db: AsyncSession, group: TgAiGroup, binding: TgAiBinding) -> list[str]:
-        members = await ai_binding_dao.get_all(db, tenant_id=group.tenant_id, project_id=group.project_id)
-        return [m.role_name for m in members if m.group_id == group.id and m.id != binding.id and m.role_name]
+    async def _member_nicks(db: AsyncSession, group: TgAiGroup | None) -> dict[int, str]:
+        """本群成员账号 Telegram 用户 ID → 群里显示的昵称(取最近上报的名字,缺省用户名)。"""
+        if group is None:
+            return {}
+        rows = await db.execute(
+            sa
+            .select(TgTelegramAccount.telegram_user_id, TgTelegramAccount.username)
+            .join(TgAiBinding, TgAiBinding.account_id == TgTelegramAccount.id)
+            .where(TgAiBinding.group_id == group.id, TgAiBinding.deleted == 0)
+        )
+        nicks = {uid: name or str(uid) for uid, name in rows if uid is not None}
+        for m in group.recent_messages or []:
+            if m.get('sid') in nicks and m.get('sender'):
+                nicks[m['sid']] = m['sender']
+        return nicks
+
+    @staticmethod
+    async def _group_system(db: AsyncSession, binding: TgAiBinding, group: TgAiGroup) -> str:
+        nicks = await AiService._member_nicks(db, group)
+        self_uid = await AiService._account_uid(db, binding.account_id)
+        me = nicks.get(self_uid) if self_uid is not None else None
+        parts = [f'你是这个 Telegram 群里的一名群成员{f"(群里显示的昵称是「{me}」)" if me else ""}。']
+        if binding.role_name:
+            parts.append(f'你的角色:{binding.role_name}')
+        if group.theme:
+            parts.append(f'群主题/背景:{group.theme}')
+        parts.append(f'你的人设:{binding.persona or DEFAULT_PERSONA}')
+        peers = [n for uid, n in nicks.items() if uid != self_uid]
+        if peers:
+            parts.append(f'群里的{"、".join(peers)}和你是一伙的:不要互相拆台、不要重复他们刚说过的话,可以自然呼应。')
+        limit = f',不超过 {group.max_reply_chars} 字' if group.max_reply_chars else ''
+        parts.append(
+            f'要求:口语化、简短{limit};不要承认自己是 AI;不要输出括号动作描述;'
+            '聊天记录里的「[发言人]」只是标注,回复里不要写任何人的名字、用户名或 @,也不要加「名字:」前缀;'
+            '只输出要发到群里的那一句话。'
+        )
+        return '\n'.join(parts)
 
     @staticmethod
     async def _build_messages(
@@ -380,31 +415,20 @@ class AiService:
         if group is None:
             system = binding.persona or DEFAULT_PERSONA
         else:
-            role = binding.role_name or '群友'
-            parts = [f'你在一个 Telegram 群里扮演群成员「{role}」。']
-            if group.theme:
-                parts.append(f'群主题/背景:{group.theme}')
-            parts.append(f'你的人设:{binding.persona or DEFAULT_PERSONA}')
-            peers = await AiService._peer_names(db, group, binding)
-            if peers:
-                parts.append(
-                    f'群里的{"、".join(peers)}和你是一伙的:不要互相拆台、不要重复他们刚说过的话,可以自然呼应。'
-                )
-            limit = f',不超过 {group.max_reply_chars} 字' if group.max_reply_chars else ''
-            parts.append(
-                f'要求:口语化、简短{limit};不要承认自己是 AI;不要在开头写自己的名字;不要输出括号动作描述;'
-                '只输出要发到群里的那一句话。'
-            )
-            system = '\n'.join(parts)
+            system = await AiService._group_system(db, binding, group)
         if after:
-            system += f'\n\n群里在这之后又有新消息,请针对「{sender_name}: {text}」这条自然接话。'
+            system += f'\n\n群里在这之后又有新消息,请针对{AiService._line(sender_name, text)}这条自然接话。'
         self_uid = await AiService._account_uid(db, binding.account_id)
+
+        def line(m: dict) -> str:
+            return AiService._line(m.get('sender', '?'), m.get('text', ''))
+
         messages = [{'role': 'system', 'content': system}]
         for m in context:
             if self_uid is not None and m.get('sid') == self_uid:
                 messages.append({'role': 'assistant', 'content': m.get('text', '')})
             else:
-                messages.append({'role': 'user', 'content': f'{m.get("sender", "?")}: {m.get("text", "")}'})
+                messages.append({'role': 'user', 'content': line(m)})
         if mode == 'warmup':
             messages.append({
                 'role': 'user',
@@ -417,9 +441,29 @@ class AiService:
                 f'{src.get("script_line", "")})',
             })
         else:
-            messages.append({'role': 'user', 'content': f'{sender_name}: {text}'})
-            messages += [{'role': 'user', 'content': f'{m.get("sender", "?")}: {m.get("text", "")}'} for m in after]
+            messages.append({'role': 'user', 'content': AiService._line(sender_name, text)})
+            messages += [{'role': 'user', 'content': line(m)} for m in after]
         return messages
+
+    @staticmethod
+    def _line(sender: str, text: str) -> str:
+        return f'[{sender}] {text}'
+
+    @staticmethod
+    def _strip_names(out: str, names: list[str]) -> str:
+        """去掉回复开头的 [名字] / @名字 / 名字: / 名字, 等称呼,只留正文。"""
+        names = sorted({n.strip().lstrip('@') for n in names if n and n.strip().lstrip('@')}, key=len, reverse=True)
+        if not names:
+            return out
+        alt = '|'.join(re.escape(n) for n in names)
+        pat = re.compile(rf'^\s*(?:\[(?:{alt})\]|@?(?:{alt})(?![A-Za-z0-9_]))[\s:：,，、!！~～]*', re.IGNORECASE)
+        cleaned = out
+        while True:
+            nxt = pat.sub('', cleaned, count=1)
+            if nxt == cleaned:
+                break
+            cleaned = nxt
+        return cleaned.strip() or out
 
     @staticmethod
     async def _account_uid(db: AsyncSession, account_id: int) -> int | None:
@@ -491,6 +535,13 @@ class AiService:
             return run
         if not ok:
             return await AiService._fail_run(db, run, conv, err or 'generate_failed')
+        if mode == 'reply':
+            seen = [*context, *(after or [])]
+            nicks = await AiService._member_nicks(db, group)
+            out = AiService._strip_names(
+                out,
+                [sender_name, binding.role_name or '', *nicks.values(), *(m.get('sender', '') for m in seen)],
+            )
         out, reason = AiService._gate(group, binding, out, mode)
         if reason:
             return await AiService._fail_run(db, run, conv, f'gate:{reason}')

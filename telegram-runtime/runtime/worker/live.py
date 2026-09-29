@@ -339,6 +339,16 @@ def make_ingest_handler(session_factory, account_id: str, tenant_id: str,
     return on_update
 
 
+def _display_name(sender) -> str | None:
+    """Telegram nickname as shown in the group; falls back to @username."""
+    if sender is None:
+        return None
+    nick = " ".join(
+        p for p in (getattr(sender, "first_name", None), getattr(sender, "last_name", None)) if p
+    ).strip() or (getattr(sender, "title", None) or "").strip()
+    return nick or getattr(sender, "username", None)
+
+
 async def _report_ai_event(event, raw, control, api_row_id: int) -> None:
     """Best-effort group-message report for AI 炒群 (worker -> control plane)."""
     msg = getattr(event, "message", None)
@@ -346,11 +356,7 @@ async def _report_ai_event(event, raw, control, api_row_id: int) -> None:
     if not text:
         return
     sender = getattr(msg, "sender", None)
-    name = (
-        getattr(sender, "username", None)
-        or getattr(sender, "first_name", None)
-        or str(raw.sender_id or "User")
-    )
+    name = _display_name(sender) or str(raw.sender_id or "User")
     try:
         await control.notify_ai_event({
             "api_row_id": api_row_id, "chat_id": raw.chat_id,

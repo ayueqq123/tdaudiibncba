@@ -478,7 +478,7 @@ def test_group_event_multi_account_deferred(client: TestClient, token_headers: d
     other = _add_account(tid, pid, other_tg)
     _set_running(aid, other)
     gid = _mk_group(client, token_headers, tid, pid, reply_min=2, reply_max=2)
-    _add_member(client, token_headers, gid, aid)
+    m1 = _add_member(client, token_headers, gid, aid)
     m2 = _add_member(client, token_headers, gid, other)
 
     assert _event(client, other, 1, 42) == 2  # 先到的上报做决策:两个号同时接话
@@ -516,6 +516,13 @@ def test_group_event_multi_account_deferred(client: TestClient, token_headers: d
     _event(client, aid, 6, 43)
     _event(client, aid, 7, 44)
     assert _run_deferred(dispatched[-1]) == 'stale'  # 到点时群里已刷过 2 条 → 作废
+
+    assert _event(client, aid, 8, 45) == 1
+    resp = client.delete(f'/tg/ai/groups/{gid}/members/{m1}', headers=token_headers)
+    assert resp.json()['code'] == 200, resp.text  # 有历史会话的成员也能删
+    assert _run_deferred(dispatched[-1]) == 'cancelled'  # 延迟中的生成随成员删除作废
+    ids = [m['id'] for m in client.get(f'/tg/ai/groups/{gid}/members', headers=token_headers).json()['data']]
+    assert m1 not in ids
 
 
 def test_group_range_validation(client: TestClient, token_headers: dict[str, str]) -> None:
@@ -708,3 +715,15 @@ def test_private_auto_reply_and_forward(client: TestClient, token_headers: dict[
     assert pm(1) == 2  # 回复 + 转发
     assert pm(1) == 0  # 同一条重复上报
     assert pm(2) == 1  # 冷却内只转发不再回复
+
+
+def test_strip_leading_sender_names() -> None:
+    from backend.app.tg.service.ai_service import AiService
+
+    names = ['hangge520', 'Tom']
+    assert AiService._strip_names('hangge520我不懂,你懂你上啊', names) == '我不懂,你懂你上啊'
+    assert AiService._strip_names('@hangge520 你懂你上啊', names) == '你懂你上啊'
+    assert AiService._strip_names('hangge520：哈哈', names) == '哈哈'
+    assert AiService._strip_names('[Tom] 对啊', names) == '对啊'
+    assert AiService._strip_names('Tomato 好吃', names) == 'Tomato 好吃'
+    assert AiService._strip_names('hangge520', names) == 'hangge520'

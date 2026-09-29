@@ -27,6 +27,8 @@ class ProjectService:
     async def create(*, db: AsyncSession, obj: CreateProjectParam) -> None:
         if not await tenant_dao.get(db, obj.tenant_id):
             raise errors.NotFoundError(msg='租户不存在')
+        if await project_dao.get_all(db, tenant_id=obj.tenant_id):
+            raise errors.ConflictError(msg='每个租户只能有一个项目')
         if await project_dao.get_by_tenant_and_name(db, obj.tenant_id, obj.name):
             raise errors.ConflictError(msg='该租户下项目名称已存在')
         await project_dao.create(db, obj)
