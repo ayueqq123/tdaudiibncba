@@ -88,6 +88,7 @@ interface GroupForm {
   mention_bypass_hours: boolean
   idle_warmup_min: string
   quote_prob: string
+  punct_space_prob: string
   blocked_words: string
   max_reply_chars: string
   auto_approve: boolean
@@ -115,6 +116,7 @@ const GROUP_DEFAULT: GroupForm = {
   mention_bypass_hours: true,
   idle_warmup_min: '0',
   quote_prob: '30',
+  punct_space_prob: '70',
   blocked_words: '',
   max_reply_chars: '200',
   auto_approve: false,
@@ -142,6 +144,7 @@ const toForm = (g: AiGroup): GroupForm => ({
   mention_bypass_hours: g.mention_bypass_hours,
   idle_warmup_min: String(g.idle_warmup_min),
   quote_prob: String(g.quote_prob),
+  punct_space_prob: String(g.punct_space_prob),
   blocked_words: (g.blocked_words || []).join('\n'),
   max_reply_chars: String(g.max_reply_chars),
   auto_approve: g.auto_approve,
@@ -168,6 +171,7 @@ const formPayload = (f: GroupForm) => ({
   mention_bypass_hours: f.mention_bypass_hours,
   idle_warmup_min: num(f.idle_warmup_min),
   quote_prob: num(f.quote_prob),
+  punct_space_prob: num(f.punct_space_prob, 70),
   blocked_words: f.blocked_words
     .split(/[\n,，]/)
     .map((w) => w.trim())
@@ -287,6 +291,9 @@ function GroupSettings({
         </Field>
         <Field label="号与号最多连续接几轮" hint="0 = 自己人发言不触发接话">
           <Input value={form.bot_chain_max} onChange={set('bot_chain_max')} />
+        </Field>
+        <Field label="标点转空格概率 %" hint="按概率把逗号句号换成空格,越高越像随手打字;0=保留原文">
+          <Input value={form.punct_space_prob} onChange={set('punct_space_prob')} />
         </Field>
         <Field label="引用回复概率 %" hint="接话时按概率「回复」原消息">
           <Input value={form.quote_prob} onChange={set('quote_prob')} />

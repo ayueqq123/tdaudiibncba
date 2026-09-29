@@ -221,6 +221,7 @@ class _GroupFields(SchemaBase):
     mention_bypass_hours: bool | None = None
     idle_warmup_min: int | None = Field(default=None, ge=0, le=1440)
     quote_prob: int | None = Field(default=None, ge=0, le=100)
+    punct_space_prob: int | None = Field(default=None, ge=0, le=100, description='逗号句号转空格概率')
     blocked_words: list[str] | None = None
     max_reply_chars: int | None = Field(default=None, ge=0, le=2000)
     auto_approve: bool | None = None
@@ -276,6 +277,7 @@ class GetAiGroupDetail(SchemaBase):
     mention_bypass_hours: bool
     idle_warmup_min: int
     quote_prob: int
+    punct_space_prob: int
     blocked_words: list
     max_reply_chars: int
     auto_approve: bool
