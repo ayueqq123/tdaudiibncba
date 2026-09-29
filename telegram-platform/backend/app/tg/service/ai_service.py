@@ -76,7 +76,7 @@ def _norm(s: str) -> str:
     return ''.join(ch for ch in s if ch.isalnum())
 
 
-_PUNCT_TO_SPACE = str.maketrans(dict.fromkeys(',。、;:,;:', ' '))
+_PUNCT_TO_SPACE = str.maketrans(dict.fromkeys('，。、；：,;:', ' '))
 
 
 def _strip_punct(s: str) -> str:
