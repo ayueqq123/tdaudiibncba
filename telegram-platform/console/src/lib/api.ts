@@ -357,6 +357,7 @@ export interface AiGroup {
   mention_bypass_hours: boolean
   idle_warmup_min: number
   quote_prob: number
+  punct_space_prob: number
   blocked_words: string[]
   max_reply_chars: number
   auto_approve: boolean

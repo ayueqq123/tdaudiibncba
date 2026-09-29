@@ -76,6 +76,14 @@ def _norm(s: str) -> str:
     return ''.join(ch for ch in s if ch.isalnum())
 
 
+_PUNCT_TO_SPACE = str.maketrans(dict.fromkeys(',。、;:,;:', ' '))
+
+
+def _strip_punct(s: str) -> str:
+    """口语化:逗号句号类标点换成空格,连续空白收敛;情绪类标点(?!~…)保留"""
+    return ' '.join(s.translate(_PUNCT_TO_SPACE).split())
+
+
 class AiService:
     """AI 链路编排(§9.2):trigger → ai_run → LangBot → callback → candidate → approval。"""
 
@@ -485,6 +493,10 @@ class AiService:
             return out, 'empty'
         if group is None:
             return out, None
+        if group.punct_space_prob and random.random() * 100 < group.punct_space_prob:
+            out = _strip_punct(out)
+            if not out:
+                return out, 'empty'
         return out, AiService._gate_reason(group, out, mode)
 
     @staticmethod

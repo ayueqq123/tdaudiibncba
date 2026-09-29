@@ -198,6 +198,7 @@ class TgAiGroup(Base):
     mention_bypass_hours: Mapped[bool] = mapped_column(sa.Boolean, default=True, comment='被@时无视活跃时段')
     idle_warmup_min: Mapped[int] = mapped_column(sa.Integer, default=0, comment='冷场X分钟后暖场,0=关')
     quote_prob: Mapped[int] = mapped_column(sa.Integer, default=70, comment='引用回复概率 0-100')
+    punct_space_prob: Mapped[int] = mapped_column(sa.Integer, default=70, comment='逗号句号转空格概率 0-100')
     blocked_words: Mapped[list] = mapped_column(sa.JSON, default_factory=list, comment='关键词黑名单')
     max_reply_chars: Mapped[int] = mapped_column(sa.Integer, default=200, comment='回复最长字数,0=不限')
     auto_approve: Mapped[bool] = mapped_column(sa.Boolean, default=False, comment='自动审批')
