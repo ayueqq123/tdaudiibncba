@@ -78,24 +78,20 @@ class LangBotEngineAdapter:
         session_type: str = 'group',
         idempotency_key: str,
     ) -> EngineSubmitResult:
-        body = json.dumps(
-            {
-                'session_id': session_id,
-                'session_type': session_type,
-                'sender': sender,
-                'message': message,
-            }
-        ).encode()
+        body = json.dumps({
+            'session_id': session_id,
+            'session_type': session_type,
+            'sender': sender,
+            'message': message,
+        }).encode()
         ts = str(int(time.time()))
         headers = {
             'Content-Type': 'application/json',
             HEADER_TIMESTAMP: ts,
-            HEADER_SIGNATURE: compute_signature(
-                resolve_secret(binding.inbound_secret_ref), body, ts
-            ),
+            HEADER_SIGNATURE: compute_signature(resolve_secret(binding.inbound_secret_ref), body, ts),
             HEADER_IDEMPOTENCY: idempotency_key,
         }
-        url = f"{binding.base_url.rstrip('/')}/bots/{binding.bot_uuid}"
+        url = f'{binding.base_url.rstrip("/")}/bots/{binding.bot_uuid}'
         try:
             async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
                 resp = await client.post(url, content=body, headers=headers)
@@ -123,11 +119,9 @@ class LangBotEngineAdapter:
         headers = {
             'Content-Type': 'application/json',
             HEADER_TIMESTAMP: ts,
-            HEADER_SIGNATURE: compute_signature(
-                resolve_secret(binding.inbound_secret_ref), body, ts
-            ),
+            HEADER_SIGNATURE: compute_signature(resolve_secret(binding.inbound_secret_ref), body, ts),
         }
-        url = f"{binding.base_url.rstrip('/')}/bots/{binding.bot_uuid}/reset"
+        url = f'{binding.base_url.rstrip("/")}/bots/{binding.bot_uuid}/reset'
         try:
             async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
                 resp = await client.post(url, content=body, headers=headers)
@@ -153,7 +147,7 @@ async def openai_complete(
     返回 (ok, text, error)。结果不明不盲重试:HTTPError/超时按失败处理,
     失败的 run 进 failed 态由人决定补发。
     """
-    url = f"{base_url.rstrip('/')}/chat/completions"
+    url = f'{base_url.rstrip("/")}/chat/completions'
     headers = {'Authorization': f'Bearer {api_key}'}
     body = {'model': model, 'messages': messages, 'temperature': 0.8}
     try:

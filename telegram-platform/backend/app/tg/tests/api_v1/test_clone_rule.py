@@ -157,6 +157,29 @@ def test_rule_publish_flow(
     assert resp.json()['code'] == 200
 
 
+def test_rule_mutation_issues_reload_config(
+    client: TestClient, token_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tid, pid, aid = _mk_tenant_project_account(client, token_headers, 'R3', monkeypatch, tmp_path)
+    resp = client.post(
+        '/tg/clone-rules',
+        headers=token_headers,
+        json={'tenant_id': tid, 'project_id': pid, 'account_id': aid, 'name': '规则三', 'mode': 'copy'},
+    )
+    assert resp.json()['code'] == 200, resp.text
+    rid = client.get('/tg/clone-rules', headers=token_headers, params={'project_id': pid}).json()['data'][0]['id']
+
+    # 停用规则 -> 给该账号下发 ReloadConfig(worker 据此停发残留队列)
+    resp = client.put(
+        f'/tg/clone-rules/{rid}',
+        headers=token_headers,
+        json={'name': '规则三', 'mode': 'copy', 'sync_edit': True, 'sync_delete': True, 'enabled': False},
+    )
+    assert resp.json()['code'] == 200, resp.text
+    pending = client.get(f'/tg/runtime/accounts/{aid}/commands', headers=token_headers).json()['data']
+    assert any(c['type'] == 'ReloadConfig' for c in pending)
+
+
 def test_runtime_command_flow(
     client: TestClient, token_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

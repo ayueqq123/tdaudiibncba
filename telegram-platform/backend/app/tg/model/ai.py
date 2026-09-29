@@ -43,6 +43,8 @@ class TgAiBinding(Base):
     recent_messages: Mapped[list] = mapped_column(
         sa.JSON, default_factory=list, comment='群最新消息缓存(ring buffer,最多 100 条)'
     )
+    group_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, index=True, comment='所属炒群任务')
+    role_name: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='角色名')
 
     __table_args__ = ({'comment': 'TG AI LangBot 绑定表'},)
 
@@ -167,25 +169,102 @@ class TgAiCallback(Base):
     )
 
 
-class TgAiGroupPolicy(Base):
-    """炒群群策略:同一条群消息由几个号接话(并发区间)+ 每号冷却/小时上限 + 过期作废。"""
+class TgAiGroup(Base):
+    """炒群任务(按群):群主题 + 模型 + 节奏;成员 = group_id 指向本任务的 TgAiBinding。"""
 
-    __tablename__ = 'tg_ai_group_policy'
+    __tablename__ = 'tg_ai_group'
 
     id: Mapped[id_key] = mapped_column(init=False)
     tenant_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='租户ID')
     project_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='项目ID')
-    chat_id: Mapped[int] = mapped_column(sa.BigInteger, comment='群 chat_id')
+    name: Mapped[str] = mapped_column(sa.String(64), comment='任务名')
+    chat_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='群 chat_id')
+    chat_ref: Mapped[str | None] = mapped_column(sa.String(255), default=None, comment='群链接/用户名(自动进群用)')
     topic_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, comment='话题')
-    reply_min: Mapped[int] = mapped_column(sa.Integer, default=1, comment='每条消息最少接话号数')
+    theme: Mapped[str | None] = mapped_column(sa.Text, default=None, comment='群主题/背景')
+    base_url: Mapped[str] = mapped_column(sa.String(255), default='', comment='OpenAI 兼容 base_url')
+    provider_model: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='模型名')
+    provider_key_enc: Mapped[str | None] = mapped_column(sa.String(1024), default=None, comment='API key 密文')
+    status: Mapped[str] = mapped_column(sa.String(20), default='paused', index=True, comment='active/paused')
+    reply_min: Mapped[int] = mapped_column(sa.Integer, default=0, comment='每条消息最少接话号数')
     reply_max: Mapped[int] = mapped_column(sa.Integer, default=1, comment='每条消息最多接话号数')
-    account_cooldown_s: Mapped[int] = mapped_column(sa.Integer, default=60, comment='同一号两次发言最短间隔秒')
-    account_hourly_max: Mapped[int] = mapped_column(sa.Integer, default=20, comment='同一号每小时最多发言数,0=不限')
-    stale_max_messages: Mapped[int] = mapped_column(
-        sa.Integer, default=10, comment='到点时群里已新增≥N条则作废,0=不检查'
-    )
+    account_cooldown_s: Mapped[int] = mapped_column(sa.Integer, default=60, comment='同号两次发言最短间隔秒')
+    account_hourly_max: Mapped[int] = mapped_column(sa.Integer, default=20, comment='同号每小时上限,0=不限')
+    stale_max_messages: Mapped[int] = mapped_column(sa.Integer, default=10, comment='到点时新增≥N条作废,0=不查')
+    context_max_messages: Mapped[int] = mapped_column(sa.Integer, default=12, comment='上下文条数')
+    bot_chain_max: Mapped[int] = mapped_column(sa.Integer, default=0, comment='自己号之间最多连续接几轮,0=不互聊')
+    active_start_hour: Mapped[int] = mapped_column(sa.Integer, default=0, comment='活跃开始小时(UTC+8)')
+    active_end_hour: Mapped[int] = mapped_column(sa.Integer, default=0, comment='活跃结束小时,与开始相同=全天')
+    mention_bypass_hours: Mapped[bool] = mapped_column(sa.Boolean, default=True, comment='被@时无视活跃时段')
+    idle_warmup_min: Mapped[int] = mapped_column(sa.Integer, default=0, comment='冷场X分钟后暖场,0=关')
+    quote_prob: Mapped[int] = mapped_column(sa.Integer, default=30, comment='引用回复概率 0-100')
+    punct_space_prob: Mapped[int] = mapped_column(sa.Integer, default=70, comment='逗号句号转空格概率 0-100')
+    blocked_words: Mapped[list] = mapped_column(sa.JSON, default_factory=list, comment='关键词黑名单')
+    max_reply_chars: Mapped[int] = mapped_column(sa.Integer, default=200, comment='回复最长字数,0=不限')
+    auto_approve: Mapped[bool] = mapped_column(sa.Boolean, default=False, comment='自动审批')
+    recent_messages: Mapped[list] = mapped_column(sa.JSON, default_factory=list, comment='群最新消息缓存')
+    last_message_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近群消息时间')
+    last_warmup_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近暖场时间')
+    remark: Mapped[str | None] = mapped_column(sa.String(255), default=None)
 
     __table_args__ = (
-        sa.UniqueConstraint('tenant_id', 'project_id', 'chat_id', 'topic_id', name='uq_tg_ai_group_policy_scope'),
-        {'comment': 'TG AI 炒群群策略表'},
+        sa.UniqueConstraint('tenant_id', 'project_id', 'chat_id', 'topic_id', name='uq_tg_ai_group_scope'),
+        {'comment': 'TG AI 炒群任务表'},
     )
+
+    @property
+    def has_provider_key(self) -> bool:
+        return bool(self.provider_key_enc)
+
+
+class TgAiPersona(Base):
+    """人设模板库:成员可一键套用(复制内容,改模板不影响已套用的成员)。"""
+
+    __tablename__ = 'tg_ai_persona'
+
+    id: Mapped[id_key] = mapped_column(init=False)
+    tenant_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='租户ID')
+    project_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='项目ID')
+    name: Mapped[str] = mapped_column(sa.String(64), comment='模板名')
+    role_name: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='角色名')
+    persona: Mapped[str] = mapped_column(sa.Text, default='', comment='人设内容')
+    talkativeness: Mapped[int] = mapped_column(sa.Integer, default=30, comment='建议活跃度')
+
+    __table_args__ = ({'comment': 'TG AI 人设模板表'},)
+
+
+class TgAiScript(Base):
+    """剧本:按顺序由指定成员发出台词(可让 AI 用人设口吻改写),执行一轮即止。"""
+
+    __tablename__ = 'tg_ai_script'
+
+    id: Mapped[id_key] = mapped_column(init=False)
+    tenant_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='租户ID')
+    project_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='项目ID')
+    group_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='炒群任务ID')
+    name: Mapped[str] = mapped_column(sa.String(64), comment='剧本名')
+    lines: Mapped[list] = mapped_column(sa.JSON, default_factory=list, comment='[{member_id,text}]')
+    interval_s: Mapped[int] = mapped_column(sa.Integer, default=30, comment='台词间隔秒(±30%)')
+    rewrite: Mapped[bool] = mapped_column(sa.Boolean, default=False, comment='AI 按人设改写台词')
+    status: Mapped[str] = mapped_column(sa.String(20), default='idle', comment='idle/running')
+    run_token: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='当前执行令牌')
+    cursor: Mapped[int] = mapped_column(sa.Integer, default=0, comment='下一句台词下标')
+
+    __table_args__ = ({'comment': 'TG AI 剧本表'},)
+
+
+class TgAiPrivateReply(Base):
+    """私信自动回复/转发(按账号):回复走审批直通发送队列,转发到业务号或群。"""
+
+    __tablename__ = 'tg_ai_private_reply'
+
+    id: Mapped[id_key] = mapped_column(init=False)
+    tenant_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='租户ID')
+    project_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='项目ID')
+    account_id: Mapped[int] = mapped_column(sa.BigInteger, unique=True, comment='账号ID')
+    enabled: Mapped[bool] = mapped_column(sa.Boolean, default=True, comment='启用')
+    reply_text: Mapped[str | None] = mapped_column(sa.Text, default=None, comment='自动回复内容,空=不回复')
+    reply_cooldown_min: Mapped[int] = mapped_column(sa.Integer, default=60, comment='同一人多少分钟内只回一次')
+    forward_chat_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, comment='转发到的 chat_id')
+
+    __table_args__ = ({'comment': 'TG AI 私信自动回复表'},)

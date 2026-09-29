@@ -5,6 +5,7 @@ from pydantic import ConfigDict, Field
 
 from backend.common.schema import SchemaBase
 
+
 class ReportAccountStatusParam(SchemaBase):
     """Worker 上报账号观测状态(连接成功/断开/失败)"""
 

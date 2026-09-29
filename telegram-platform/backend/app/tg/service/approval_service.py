@@ -102,9 +102,7 @@ class ApprovalService:
         return await approval_dao.get(db, pk)
 
     @staticmethod
-    async def _create_send_job(
-        db: AsyncSession, approval: TgApproval, candidate: TgReplyCandidate
-    ) -> None:
+    async def _create_send_job(db: AsyncSession, approval: TgApproval, candidate: TgReplyCandidate) -> None:
         """审批通过 → delivery_job(ready)。幂等键 approval:{uuid},重复审批不会重建。"""
         if await delivery_job_dao.get_by_idempotency_key(db, f'approval:{approval.uuid}'):
             return
@@ -137,7 +135,7 @@ class ApprovalService:
             payload_ref=f'candidate:{candidate.uuid}',
             payload_hash=candidate.content_hash,
             requires_approval=True,
-            reply_to_target_message_id=None,
+            reply_to_target_message_id=candidate.reply_to_source_id if candidate.rule_id is None else None,
             grouped_id=None,
             status='ready',
             attempt_count=0,

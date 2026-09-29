@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -53,6 +54,7 @@ log = logging.getLogger(__name__)
 
 LEASE_TTL_S = 45.0
 HEARTBEAT_S = 10.0
+RULES_REFRESH_S = 60.0
 
 
 class SessionConnector(Protocol):
@@ -139,6 +141,11 @@ class WorkerHostMain:
         self._bg: set[asyncio.Task] = set()
         self._seen_cmds: set[int] = set()
         self._policy = policy or PolicySnapshot()
+        # rule_id 曾出现在该账号快照里、后来消失 → 视为已停用;发送门据此
+        # 拦截其残留队列 job(§8.5 check at send time)。
+        self._known_rule_ids: dict[str, set[str]] = {}
+        self._disabled_rule_ids: set[str] = set()
+        self._rules_refreshed_at = 0.0
         self._stopping = asyncio.Event()
 
         deps = RunnerDeps(
@@ -146,7 +153,7 @@ class WorkerHostMain:
             executor=DeliveryExecutor(self.router),
             rules=lambda account_id: self._rules_cache.get(account_id, []),
             live=self.registry.get,
-            policy=lambda: self._policy,
+            policy=self._current_policy,
             approvals=self._approval_for,
             retry_policy=retry_policy or RetryPolicy(),
         )
@@ -228,6 +235,19 @@ class WorkerHostMain:
             await session.close()
             raise
 
+    def _current_policy(self) -> PolicySnapshot:
+        if not self._disabled_rule_ids:
+            return self._policy
+        p = self._policy
+        return PolicySnapshot(
+            global_disabled=p.global_disabled,
+            tenant_disabled=p.tenant_disabled,
+            project_disabled=p.project_disabled,
+            account_disabled=p.account_disabled,
+            rule_disabled=p.rule_disabled | frozenset(self._disabled_rule_ids),
+            rate_limit_blocked=p.rate_limit_blocked,
+        )
+
     def _rule_chats(self, account_id: str) -> set[int]:
         chats: set[int] = set()
         for r in self._rules_cache.get(account_id, []):
@@ -276,6 +296,7 @@ class WorkerHostMain:
         self.router.drop(account_id)
         self.registry.drop(account_id)
         self._rules_cache.pop(account_id, None)
+        self._known_rule_ids.pop(account_id, None)
         if hosted is None:
             return
         hosted.heartbeat.stop()
@@ -301,7 +322,12 @@ class WorkerHostMain:
         for r in rows:
             account_uuid = r.get("account_uuid") or a.account_id
             snaps.extend(rules_from_snapshot(r, account_uuid))
+        new_ids = {s.rule_id for s in snaps}
+        removed = self._known_rule_ids.get(a.account_id, set()) - new_ids
+        self._disabled_rule_ids = (self._disabled_rule_ids | removed) - new_ids
+        self._known_rule_ids[a.account_id] = new_ids
         self._rules_cache[a.account_id] = snaps
+        self._rules_refreshed_at = time.monotonic()
 
     async def poll_commands(self) -> None:
         for account_id, hosted in list(self._hosted.items()):
@@ -379,6 +405,10 @@ class WorkerHostMain:
     async def tick(self) -> None:
         await self.reconcile()
         await self.poll_commands()
+        # 兜底:命令可能漏发/过期,周期性重拉保证停用的规则最终生效
+        if time.monotonic() - self._rules_refreshed_at > RULES_REFRESH_S:
+            for hosted in list(self._hosted.values()):
+                await self._refresh_rules(hosted.assignment)
         await self._runner_host.run_once()
         for account_id, runner in list(self._runner_host.runners.items()):
             if runner.halted:

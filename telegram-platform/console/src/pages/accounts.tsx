@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { RefreshCw, Smartphone, Upload } from 'lucide-react'
 import { toast } from 'sonner'
-import { tgApi, type TgAccount } from '@/lib/api'
+import { tgApi, type ApiCredential, type TgAccount } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 const statusVariant: Record<string, 'success' | 'warning' | 'destructive' | 'default' | 'secondary'> = {
@@ -47,6 +48,18 @@ export default function AccountsPage() {
   const [loginId, setLoginId] = useState('')
   const [needPwd, setNeedPwd] = useState(false)
   const [lf, setLf] = useState({ phone: '', api_id: '', api_hash: '', code: '', password: '' })
+  const [creds, setCreds] = useState<ApiCredential[]>([])
+  const [credIdx, setCredIdx] = useState('')
+
+  function pickCred(idx: string) {
+    setCredIdx(idx)
+    if (idx === 'manual') {
+      setLf((p) => ({ ...p, api_id: '', api_hash: '' }))
+      return
+    }
+    const c = creds[Number(idx)]
+    if (c) setLf((p) => ({ ...p, api_id: String(c.api_id), api_hash: c.api_hash }))
+  }
 
   async function load() {
     setLoading(true)
@@ -200,9 +213,19 @@ export default function AccountsPage() {
             open={loginOpen}
             onOpenChange={(v) => {
               setLoginOpen(v)
-              if (!v) {
+              if (v) {
+                tgApi
+                  .apiCredentials()
+                  .then((list) => {
+                    setCreds(list)
+                    if (list.length) pickCred('0')
+                    else setCredIdx('manual')
+                  })
+                  .catch(() => {})
+              } else {
                 setLoginStep('form')
                 setNeedPwd(false)
+                setCredIdx('')
               }
             }}
           >
@@ -224,14 +247,36 @@ export default function AccountsPage() {
                     <Label>手机号(带国家码)</Label>
                     <Input placeholder="+86138xxxxxxxx" value={lf.phone} onChange={(e) => setLf({ ...lf, phone: e.target.value })} />
                   </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>api_id</Label>
-                    <Input placeholder="数字" value={lf.api_id} onChange={(e) => setLf({ ...lf, api_id: e.target.value })} />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>api_hash</Label>
-                    <Input placeholder="32 位字符串" value={lf.api_hash} onChange={(e) => setLf({ ...lf, api_hash: e.target.value })} />
-                  </div>
+                  {creds.length > 0 && (
+                    <div className="flex flex-col gap-1.5">
+                      <Label>API 凭据</Label>
+                      <Select value={credIdx} onValueChange={pickCred}>
+                        <SelectTrigger className="[&>span]:truncate">
+                          <SelectValue placeholder="选择已用过的凭据" />
+                        </SelectTrigger>
+                        <SelectContent className="max-w-[var(--radix-select-trigger-width)]">
+                          {creds.map((c, i) => (
+                            <SelectItem key={i} value={String(i)}>
+                              {`api_id: ${c.api_id} · ${c.phones[0] ?? ''}${c.account_count > 1 ? ` 等${c.account_count}个号在用` : ''}`}
+                            </SelectItem>
+                          ))}
+                          <SelectItem value="manual">手动输入新凭据</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                  {(!creds.length || credIdx === 'manual') && (
+                    <>
+                      <div className="flex flex-col gap-1.5">
+                        <Label>api_id</Label>
+                        <Input placeholder="数字" value={lf.api_id} onChange={(e) => setLf({ ...lf, api_id: e.target.value })} />
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <Label>api_hash</Label>
+                        <Input placeholder="32 位字符串" value={lf.api_hash} onChange={(e) => setLf({ ...lf, api_hash: e.target.value })} />
+                      </div>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div className="flex flex-col gap-3">

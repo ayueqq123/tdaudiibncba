@@ -19,8 +19,11 @@ from backend.app.tg.schema.clone_rule import (
     CreateCloneTargetParam,
     UpdateCloneRuleParam,
 )
+from backend.app.tg.schema.runtime_command import CreateRuntimeCommandParam
 from backend.app.tg.service.account_service import JOIN_ERR, join_chat_refs, resolve_user_refs
+from backend.app.tg.service.command_service import runtime_command_service
 from backend.common.exception import errors
+from backend.database.db import uuid4_str
 from backend.utils.timezone import timezone
 
 
@@ -64,12 +67,14 @@ async def route_health(db: AsyncSession, targets: list[TgCloneTarget]) -> dict[i
     if not route_ids:
         return health
     ranked = (
-        sa.select(
+        sa
+        .select(
             TgDeliveryJob.route_id,
             TgDeliveryJob.status,
             TgDeliveryJob.last_error_class,
             TgDeliveryJob.updated_at,
-            sa.func.row_number()
+            sa.func
+            .row_number()
             .over(partition_by=TgDeliveryJob.route_id, order_by=TgDeliveryJob.updated_at.desc())
             .label('rn'),
         )
@@ -143,10 +148,26 @@ class CloneRuleService:
         await clone_rule_dao.create(db, obj)
 
     @staticmethod
+    async def _notify_reload(
+        db: AsyncSession, request: Request, rule: TgCloneRule
+    ) -> None:
+        """规则停用/发布/删除后让 worker 重拉快照,并拦截已停用规则的残留队列。"""
+        await runtime_command_service.issue(
+            db=db,
+            request=request,
+            account_id=rule.account_id,
+            obj=CreateRuntimeCommandParam(
+                type='ReloadConfig', dedup_key=f'reloadcfg-{uuid4_str()}'
+            ),
+        )
+
+    @staticmethod
     async def update(*, db: AsyncSession, request: Request, pk: int, obj: UpdateCloneRuleParam) -> int:
-        await CloneRuleService.get(db=db, request=request, pk=pk)
+        rule = await CloneRuleService.get(db=db, request=request, pk=pk)
         # 停用优先于快照:enabled=False 立即生效,不依赖下次发布
-        return await clone_rule_dao.update(db, pk, obj)
+        updated = await clone_rule_dao.update(db, pk, obj)
+        await CloneRuleService._notify_reload(db, request, rule)
+        return updated
 
     @staticmethod
     def _chat_ref(value: int | str) -> str:
@@ -250,8 +271,7 @@ class CloneRuleService:
         targets = [t for t in targets if t.joined_account_id != rule.account_id or health.get(t.id)]
         refs: list[str] = []
         for t in targets:
-            refs.append(t.source_chat_ref or str(t.source_chat_id))
-            refs.append(t.target_chat_ref or str(t.target_chat_id))
+            refs.extend((t.source_chat_ref or str(t.source_chat_id), t.target_chat_ref or str(t.target_chat_id)))
         uniq = list(dict.fromkeys(refs))
         if not uniq:
             return
@@ -275,22 +295,30 @@ class CloneRuleService:
     async def mark_chat_lost(*, db: AsyncSession, account_id: int, chat_id: int, reason: str) -> int:
         """账号已不在该群:相关路线标失效并清进群记录,下次运行用链接重新进群。"""
         rule_ids = (
-            await db.execute(
-                sa.select(TgCloneRule.id).where(TgCloneRule.account_id == account_id, TgCloneRule.deleted == 0)
+            (
+                await db.execute(
+                    sa.select(TgCloneRule.id).where(TgCloneRule.account_id == account_id, TgCloneRule.deleted == 0)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if not rule_ids:
             return 0
         targets = (
-            await db.execute(
-                sa.select(TgCloneTarget).where(
-                    TgCloneTarget.rule_id.in_(rule_ids),
-                    TgCloneTarget.status == 'active',
-                    TgCloneTarget.deleted == 0,
-                    sa.or_(TgCloneTarget.source_chat_id == chat_id, TgCloneTarget.target_chat_id == chat_id),
+            (
+                await db.execute(
+                    sa.select(TgCloneTarget).where(
+                        TgCloneTarget.rule_id.in_(rule_ids),
+                        TgCloneTarget.status == 'active',
+                        TgCloneTarget.deleted == 0,
+                        sa.or_(TgCloneTarget.source_chat_id == chat_id, TgCloneTarget.target_chat_id == chat_id),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         suffix = '(被移出或群已不可见)' if reason == 'kicked' else ''
         for t in targets:
             t.health_reason = (SOURCE_LOST if t.source_chat_id == chat_id else DEST_LOST) + suffix
@@ -421,6 +449,7 @@ class CloneRuleService:
                 'status': 'published',
             },
         )
+        await CloneRuleService._notify_reload(db, request, rule)
         return ver
 
     @staticmethod
@@ -430,8 +459,10 @@ class CloneRuleService:
 
     @staticmethod
     async def delete(*, db: AsyncSession, request: Request, pk: int) -> int:
-        await CloneRuleService.get(db=db, request=request, pk=pk)
-        return await clone_rule_dao.delete(db, pk)
+        rule = await CloneRuleService.get(db=db, request=request, pk=pk)
+        deleted = await clone_rule_dao.delete(db, pk)
+        await CloneRuleService._notify_reload(db, request, rule)
+        return deleted
 
 
 clone_rule_service: CloneRuleService = CloneRuleService()

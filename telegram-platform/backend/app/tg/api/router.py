@@ -1,9 +1,9 @@
 from fastapi import APIRouter
 
 from backend.app.tg.api.v1.account import router as account_router
-from backend.app.tg.api.v1.alert import router as alert_router
 from backend.app.tg.api.v1.ai import callback_router as ai_callback_router
 from backend.app.tg.api.v1.ai import router as ai_router
+from backend.app.tg.api.v1.alert import router as alert_router
 from backend.app.tg.api.v1.approval import router as approval_router
 from backend.app.tg.api.v1.clone_rule import router as clone_rule_router
 from backend.app.tg.api.v1.delivery import router as delivery_router

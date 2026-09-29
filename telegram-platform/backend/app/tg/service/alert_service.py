@@ -50,6 +50,13 @@ AI_ERR = {
     'provider_not_configured': '未配置模型或 API Key',
     'callback_deadline_exceeded': 'AI 回复超时',
     'idempotent_conflict_unlinked': 'AI 请求重复冲突',
+    'member_offline': '成员账号未运行',
+}
+GATE_ERR = {
+    'blocked_word': '命中关键词黑名单',
+    'duplicate': '与群里近期内容重复',
+    'too_long': '回复超过字数上限',
+    'empty': '模型返回空内容',
 }
 
 
@@ -61,11 +68,21 @@ def _label(a: TgTelegramAccount | None) -> str:
     return a.phone or str(a.telegram_user_id or a.id)
 
 
+def _is_gate(err: str | None) -> bool:
+    return (err or '').startswith('gate:')
+
+
 def _ai_reason(err: str | None) -> str:
     if not err:
         return '生成失败'
     if err in AI_ERR:
         return AI_ERR[err]
+    if err.startswith('gate:'):
+        return (
+            '内容闸门拦截:'
+            + GATE_ERR.get(err.split(':')[1], err[5:])
+            + (f'「{err.split(":", 2)[2]}」' if err.count(':') >= 2 else '')
+        )
     if 'http_401' in err or 'http_403' in err:
         return 'API Key 无效或无权限'
     if 'http_429' in err:
@@ -179,7 +196,8 @@ class AlertService:
         if uuids:
             rows = (
                 await db.execute(
-                    sa.select(
+                    sa
+                    .select(
                         TgDeliveryJob.account_id,
                         TgDeliveryJob.status,
                         TgDeliveryJob.last_error_class,
@@ -210,7 +228,8 @@ class AlertService:
                 })
 
         ai_q = (
-            sa.select(
+            sa
+            .select(
                 TgAiBinding.id,
                 TgAiBinding.account_id,
                 TgAiBinding.chat_id,
@@ -225,18 +244,17 @@ class AlertService:
         )
         if tenants is not None:
             ai_q = ai_q.where(TgAiRun.tenant_id.in_(tenants))
-        for r in (await db.execute(ai_q)).all():
-            alerts.append({
+        alerts.extend({
                 'key': f'ai:{r.id}:{(r.last_error or "")[:40]}',
-                'level': 'error',
+                'level': 'warning' if _is_gate(r.last_error) else 'error',
                 'category': 'ai',
-                'title': f'AI 炒群调用失败(群 {r.chat_id})',
+                'title': f'AI 炒群{"内容被拦截" if _is_gate(r.last_error) else "调用失败"}(群 {r.chat_id})',
                 'detail': f'原因:{_ai_reason(r.last_error)}(近 24 小时)',
                 'account_label': _label(by_id.get(r.account_id)),
                 'count': r.n,
                 'last_at': r.last_at,
                 'link': '/ai-bindings',
-            })
+            } for r in (await db.execute(ai_q)).all())
 
         alerts.sort(key=lambda x: x['last_at'] or now - timedelta(days=3650), reverse=True)
         acks: dict[str, TgAlertAck] = {}
@@ -244,9 +262,7 @@ class AlertService:
             acks = {
                 k.alert_key: k
                 for k in (
-                    await db.execute(
-                        sa.select(TgAlertAck).where(TgAlertAck.alert_key.in_([a['key'] for a in alerts]))
-                    )
+                    await db.execute(sa.select(TgAlertAck).where(TgAlertAck.alert_key.in_([a['key'] for a in alerts])))
                 ).scalars()
             }
         for a in alerts:
