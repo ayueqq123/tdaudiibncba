@@ -14,7 +14,14 @@ from typing import Protocol
 from runtime.planner.model import DeliveryPlan, PlanKind
 
 from .model import ErrorClass
-from .policy import ApprovalRecord, LiveAccount, PolicyCheckable, PolicySnapshot, check, Decision
+from .policy import (
+    ApprovalRecord,
+    Decision,
+    LiveAccount,
+    PolicyCheckable,
+    PolicySnapshot,
+    check,
+)
 
 
 class TransportErrorKind(enum.Enum):
