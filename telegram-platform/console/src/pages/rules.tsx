@@ -317,7 +317,28 @@ export default function RulesPage() {
                     </div>
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label>发送号池(勾选多个号轮流发;不勾 = 监听号自己发)</Label>
+                    <div className="flex items-center justify-between">
+                      <Label>发送号池(勾选多个号随机发;不勾 = 监听号自己发)</Label>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() =>
+                          setForm({
+                            ...form,
+                            sender_account_ids:
+                              form.sender_account_ids.length === accounts.length
+                                ? []
+                                : accounts.map((a) => a.id),
+                          })
+                        }
+                      >
+                        {form.sender_account_ids.length === accounts.length && accounts.length > 0
+                          ? '清空'
+                          : '全选'}
+                      </Button>
+                    </div>
                     <div className="grid max-h-32 grid-cols-2 gap-1.5 overflow-y-auto rounded-md border p-2 sm:grid-cols-3">
                       {accounts.map((a) => {
                         const on = form.sender_account_ids.includes(a.id)
