@@ -486,6 +486,16 @@ class CloneRuleService:
         # 解析出的 chat_id 若变化(群迁移等)同步更新目标行
         if rule.enabled:
             await CloneRuleService._auto_join(db, rule, targets)
+            # 进群发生在控制面子进程(独立连接):worker 的活客户端还不认识
+            # 新加入的群,收不到它的频道更新 —— SyncChats 让监听号 warm 会话缓存
+            await runtime_command_service.issue(
+                db=db,
+                request=request,
+                account_id=rule.account_id,
+                obj=CreateRuntimeCommandParam(
+                    type='SyncChats', dedup_key=f'syncchats-{uuid4_str()}'
+                ),
+            )
         new_version = rule.current_version + 1
         ver = await clone_rule_version_dao.create(
             db,
