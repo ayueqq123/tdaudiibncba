@@ -20,6 +20,8 @@ const statusVariant: Record<string, 'success' | 'warning' | 'destructive' | 'def
   revoked: 'destructive',
   disabled: 'secondary',
   auth_dead: 'destructive',
+  banned: 'destructive',
+  frozen: 'destructive',
   error: 'destructive',
 }
 
@@ -33,6 +35,8 @@ const statusLabel: Record<string, string> = {
   revoked: '已失效',
   disabled: '已禁用',
   auth_dead: '登录失效',
+  banned: '已禁言',
+  frozen: '已冻结',
 }
 
 export default function AccountsPage() {
@@ -338,6 +342,11 @@ export default function AccountsPage() {
                 </TableCell>
                 <TableCell>
                   <Badge variant={statusVariant[r.observed_status] || 'secondary'}>{statusLabel[r.observed_status] || r.observed_status}</Badge>
+                  {r.last_error && (
+                    <div className="mt-1 max-w-56 truncate text-xs text-destructive" title={r.last_error}>
+                      {r.last_error}
+                    </div>
+                  )}
                 </TableCell>
                 <TableCell className="text-muted-foreground">{r.remark || '-'}</TableCell>
                 <TableCell>

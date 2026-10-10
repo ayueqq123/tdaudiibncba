@@ -25,6 +25,7 @@ from telethon.errors import (
     ChannelPrivateError,
     ChatWriteForbiddenError,
     FloodWaitError,
+    FrozenMethodInvalidError,
     MessageEmptyError,
     PeerIdInvalidError,
     SessionRevokedError,
@@ -136,7 +137,7 @@ def _classify(exc: Exception) -> TransportErrorKind:
                         ChannelPrivateError)):
         return TransportErrorKind.PERMISSION
     if isinstance(exc, (AuthKeyUnregisteredError, SessionRevokedError,
-                        UnauthorizedError)):
+                        UnauthorizedError, FrozenMethodInvalidError)):
         return TransportErrorKind.AUTH
     if isinstance(exc, (MessageEmptyError, PeerIdInvalidError, ValueError)):
         return TransportErrorKind.CONTENT
@@ -150,12 +151,25 @@ class TelethonTransport(SendTransport):
     (-100...); rules and this layer share that convention."""
 
     def __init__(self, client: TelegramClient, account_id: str,
-                 registry: LiveRegistry, resolver: PayloadResolver):
+                 registry: LiveRegistry, resolver: PayloadResolver,
+                 status_cb: Callable[[str, str], Awaitable[None]] | None = None):
         self.client = client
         self.account_id = account_id
         self.registry = registry
         self.resolver = resolver
+        self.status_cb = status_cb
         self._self_id: int | None = None
+        self._reported: set[str] = set()
+
+    async def _report_dead(self, status: str, exc: Exception) -> None:
+        """死号/禁言/冻结透出到控制面账号状态;同状态只报一次。"""
+        if self.status_cb is None or status in self._reported:
+            return
+        self._reported.add(status)
+        try:
+            await self.status_cb(status, str(exc)[:300])
+        except Exception:  # noqa: BLE001 — 上报失败不影响发送判定
+            log.warning("status report failed account=%s", self.account_id)
 
     async def _entity(self, target_id: int):
         # Telegram rejects PeerUser(self) in send/edit/delete — Saved
@@ -186,6 +200,11 @@ class TelethonTransport(SendTransport):
             kind = _classify(exc)
             if kind is TransportErrorKind.AUTH:
                 self.registry.mark_auth_dead(self.account_id)
+                status = ("frozen" if isinstance(exc, FrozenMethodInvalidError)
+                          else "auth_dead")
+                await self._report_dead(status, exc)
+            elif kind is TransportErrorKind.PERMISSION:
+                await self._report_dead("banned", exc)
             raise TransportError(kind, str(exc)[:300])
 
     async def _resolve_text(self, plan: DeliveryPlan) -> str | None:

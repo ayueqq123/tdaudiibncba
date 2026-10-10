@@ -137,6 +137,7 @@ export interface TgAccount {
   username?: string | null
   desired_status: string
   observed_status: string
+  last_error: string | null
   remark: string | null
 }
 export interface ApiCredential {

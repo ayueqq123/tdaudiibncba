@@ -215,8 +215,11 @@ class WorkerHostMain:
             self.registry.register(a.account_id, generation)
             self.router.add(
                 a.account_id,
-                TelethonTransport(session.client, a.account_id,
-                                  self.registry, self.resolver))
+                TelethonTransport(
+                    session.client, a.account_id,
+                    self.registry, self.resolver,
+                    status_cb=lambda st, er, _a=a: self._report_status(
+                        _a.api_row_id, st, er)))
             await self._refresh_rules(a)
             register_membership_watch(
                 session,
