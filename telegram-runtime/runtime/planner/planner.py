@@ -6,6 +6,7 @@ filtering runs here, Telegram sends never do (§4.2 item 2-3).
 
 from __future__ import annotations
 
+import random
 from typing import Protocol
 
 from .model import (
@@ -177,12 +178,11 @@ class ClonePlanner:
     def _sender_for(
         self, event: SourceEvent, rule: RuleSnapshot, route_id: str, kind: PlanKind,
     ) -> str:
-        """选发送号:CREATE 按源消息确定性哈希进号池(重试/多号上报收敛同一号);
-        EDIT/DELETE 找回 message_map 里的原发送号;单号规则恒为监听号。"""
+        """选发送号:CREATE 随机抽取号池一个号;EDIT/DELETE 找回 message_map
+        里的原发送号;单号规则恒为监听号。"""
         pool = rule.sender_account_ids or (rule.account_id,)
         if kind is PlanKind.SEND:
-            idx = (event.source_chat_id * 31 + event.source_message_id) % len(pool)
-            return pool[idx]
+            return random.choice(pool)
         original = self._mapping.find_sender_account_id(
             route_id, event.source_scope, event.source_chat_id, event.source_message_id)
         return original or pool[0]
