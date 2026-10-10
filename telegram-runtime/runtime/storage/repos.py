@@ -37,6 +37,11 @@ def _aware(dt: datetime | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+# 'sending' 停留超过该时长即视为执行器已死——必须 > RPC 超时(120s)+
+# 变换/审批耗时,否则会把正常在飞的 job 错杀重发。
+_SENDING_STALE_S = 300.0
+
+
 class EventInboxRepository:
     """§6.4 boundary 1: one tx = source_message revision + dedup'd event row."""
 
@@ -192,6 +197,7 @@ class DeliveryJobRepository:
     async def claim_next(self, account_id: str, *, worker_generation: int) -> DeliveryJob | None:
         """Atomic conditional update: first due ready job for the account goes
         READY -> LEASED and records the attempt row (same tx, §6.4 boundary 3)."""
+        await self._reclaim_stale_sending(account_id)
         now = _utcnow()
         stmt = (
             select(DeliveryJob)
@@ -223,6 +229,28 @@ class DeliveryJobRepository:
             await self.s.refresh(job)
             return job
         return None
+
+    async def _reclaim_stale_sending(self, account_id: str) -> None:
+        """同账号的 job 只会被本 runner 执行:runner 活着而 job 停在
+        'sending' 超过阈值,说明上一次执行崩了/被取消了——放回 ready 重排,
+        孤儿 attempt 标 abandoned。"""
+        cutoff = _utcnow() - timedelta(seconds=_SENDING_STALE_S)
+        res = await self.s.execute(
+            update(DeliveryJob)
+            .where(DeliveryJob.account_id == account_id,
+                   DeliveryJob.status == "sending",
+                   DeliveryJob.updated_at < cutoff)
+            .values(status="ready")
+            .returning(DeliveryJob.id))
+        stale_ids = list(res.scalars().all())
+        if not stale_ids:
+            return
+        await self.s.execute(
+            update(DeliveryAttempt)
+            .where(DeliveryAttempt.job_id.in_(stale_ids),
+                   DeliveryAttempt.finished_at.is_(None))
+            .values(result_status="abandoned", finished_at=_utcnow()))
+        await self.s.commit()
 
     async def transition(self, job_id: str, src: str, dst: str, *,
                          next_attempt_at: datetime | None = None,
