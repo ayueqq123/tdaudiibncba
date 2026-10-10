@@ -15,6 +15,7 @@ import asyncio
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from dataclasses import replace as dc_replace
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -96,6 +97,7 @@ RulesProvider = Callable[[str], list[RuleSnapshot]]
 LiveProvider = Callable[[str], LiveAccount]
 PolicyProvider = Callable[[], PolicySnapshot]
 ApprovalProvider = Callable[[DeliveryJob], ApprovalRecord | None]
+PlanHintsProvider = Callable[[str, int], tuple[str | None, bool] | None]
 
 
 class _DictMappingView(MappingView):
@@ -103,13 +105,21 @@ class _DictMappingView(MappingView):
 
     def __init__(self, rows: list[MessageMap]):
         self._m = {(r.route_id, r.source_scope, r.source_chat_id,
-                    r.source_message_id): r.target_message_id for r in rows}
+                    r.source_message_id): r for r in rows}
 
     def find_target_message_id(self, route_id: str, source_scope: str,
                                source_chat_id: int,
                                source_message_id: int) -> int | None:
-        return self._m.get((route_id, source_scope, source_chat_id,
-                            source_message_id))
+        r = self._m.get((route_id, source_scope, source_chat_id,
+                         source_message_id))
+        return r.target_message_id if r is not None else None
+
+    def find_sender_account_id(self, route_id: str, source_scope: str,
+                               source_chat_id: int,
+                               source_message_id: int) -> str | None:
+        r = self._m.get((route_id, source_scope, source_chat_id,
+                         source_message_id))
+        return r.sender_account_id if r is not None else None
 
 
 @dataclass
@@ -120,6 +130,9 @@ class RunnerDeps:
     live: LiveProvider
     policy: PolicyProvider
     approvals: ApprovalProvider = lambda _job: None
+    # (rule_id, rule_version) -> (fetch_account_id, transform):池模式下投递 job
+    # 不存这两个字段,发送时从监听号的规则缓存找回;查不到=None(单号旧行为)
+    plan_hints: PlanHintsProvider = lambda _rid, _ver: None
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     clock: Callable[[], float] = time.time
     tenant_id: str = ""
@@ -175,6 +188,13 @@ class AccountRunner:
                 return None
             attempt_no = job.attempt_count
             plan = plan_from_job(job)
+            hints = d.plan_hints(plan.rule_id, plan.rule_version)
+            if hints is not None:
+                plan = dc_replace(
+                    plan,
+                    fetch_account_id=hints[0] or plan.account_id,
+                    transform=hints[1],
+                )
 
             live = d.live(self.account_id)
             decision = check(

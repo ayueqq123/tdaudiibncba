@@ -77,6 +77,8 @@ class RuleSnapshot:
     sync_delete: bool
     approval_policy: ApprovalPolicy = ApprovalPolicy.RULE_AUTHORIZED
     filters: tuple[dict[str, Any], ...] = ()  # e.g. {"sender_user_ids", "blocked_sender_ids", "media_kinds", "exclude_bots"} per target
+    sender_account_ids: tuple[str, ...] = ()  # 发送号池 uuid;空=仅 account_id(监听号)发送
+    transform: bool = False  # copy 发送前过控制面变形闸(广告拦截/AI 改写)
 
 
 class PlanKind(enum.Enum):
@@ -107,6 +109,8 @@ class DeliveryPlan:
     requires_approval: bool
     reply_to_target_message_id: int | None = None
     grouped_id: int | None = None
+    fetch_account_id: str | None = None  # 代取源消息的监听号 uuid;None=发送号自取
+    transform: bool = False  # 该 job 发送前过 clone_transform
 
     @property
     def idempotency_key(self) -> str:

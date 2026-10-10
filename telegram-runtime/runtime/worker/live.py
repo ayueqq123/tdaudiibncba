@@ -115,6 +115,16 @@ class PayloadResolver:
                                  f"candidate {uuid} hash mismatch")
         return cand.content
 
+    async def clone_transform(self, rule_id: str, text: str) -> dict:
+        """发送前过控制面变形闸;网络/服务错按 TRANSIENT 重试。"""
+        try:
+            return await self._control.clone_transform(rule_id, text)
+        except TransportError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 控制面调用失败一律可重试
+            raise TransportError(TransportErrorKind.TRANSIENT,
+                                 f"clone_transform: {exc!r}"[:300])
+
 
 def _classify(exc: Exception) -> TransportErrorKind:
     if isinstance(exc, (FloodWaitError, SlowModeWaitError)):
@@ -178,7 +188,39 @@ class TelethonTransport(SendTransport):
                 plan.payload_ref.removeprefix("candidate:"), plan.payload_hash)
         return None
 
-    async def send(self, plan: DeliveryPlan) -> list[int]:
+    async def _fetch_source(self, plan: DeliveryPlan,
+                            fetcher: TelethonTransport):
+        """源消息统一经监听号 fetcher 回取——发送号不需要在源群。
+        fetcher 的 _call 把错误记到 fetcher 自己的 registry。"""
+        src = await fetcher._call(lambda: fetcher.client.get_messages(
+            plan.source_chat_id, ids=plan.source_message_id))
+        if src is None:
+            raise TransportError(TransportErrorKind.CONTENT,
+                                 "source message missing")
+        return src
+
+    async def _media_file(self, src, fetcher: TelethonTransport):
+        """同号直传 TL media(快路径);跨账号下载 bytes 由发送号重传
+        (file_reference 与账号绑定,不能直接把别的号抓到的 media 发出去)。"""
+        media = getattr(src, "media", None)
+        if media is None:
+            return None
+        if fetcher is self:
+            return media
+        return await fetcher._call(lambda: src.download_media(file=bytes))
+
+    async def _transform(self, plan: DeliveryPlan, text: str) -> str:
+        if not plan.transform or not text.strip():
+            return text
+        r = await self.resolver.clone_transform(plan.rule_id, text)
+        if r.get("action") == "drop":
+            raise TransportError(TransportErrorKind.CONTENT,
+                                 f"dropped:{r.get('reason') or 'filtered'}")
+        return str(r.get("text") or text)
+
+    async def send(self, plan: DeliveryPlan,
+                   *, fetcher: TelethonTransport | None = None) -> list[int]:
+        fetcher = fetcher or self
         text = await self._resolve_text(plan)
         if text is not None:
             entity = await self._entity(plan.target_chat_id)
@@ -191,29 +233,25 @@ class TelethonTransport(SendTransport):
                 plan.target_chat_id, [plan.source_message_id],
                 from_peer=plan.source_chat_id))
             return [m.id for m in msgs] if isinstance(msgs, list) else [msgs.id]
-        # copy mode: re-send the source message's own content
-        src = await self._call(lambda: self.client.get_messages(
-            plan.source_chat_id, ids=plan.source_message_id))
-        if src is None:
-            raise TransportError(TransportErrorKind.CONTENT,
-                                 "source message missing")
+        # copy mode: re-send the source message's own content(经监听号回取)
+        src = await self._fetch_source(plan, fetcher)
         entity = await self._entity(plan.target_chat_id)
+        text = await self._transform(plan, getattr(src, "text", None) or "")
+        file = await self._media_file(src, fetcher)
         msg = await self._call(lambda: self.client.send_message(
-            entity, getattr(src, "text", None) or "",
-            file=getattr(src, "media", None),
+            entity, text, file=file,
             reply_to=plan.reply_to_target_message_id))
         return [msg.id]
 
-    async def edit(self, plan: DeliveryPlan, target_message_id: int) -> None:
-        src = await self._call(lambda: self.client.get_messages(
-            plan.source_chat_id, ids=plan.source_message_id))
-        if src is None:
-            raise TransportError(TransportErrorKind.CONTENT,
-                                 "source message missing for edit")
+    async def edit(self, plan: DeliveryPlan, target_message_id: int,
+                   *, fetcher: TelethonTransport | None = None) -> None:
+        fetcher = fetcher or self
+        src = await self._fetch_source(plan, fetcher)
         entity = await self._entity(plan.target_chat_id)
+        text = await self._transform(plan, getattr(src, "text", None) or "")
+        file = await self._media_file(src, fetcher)
         await self._call(lambda: self.client.edit_message(
-            entity, target_message_id,
-            getattr(src, "text", None) or "", file=getattr(src, "media", None)))
+            entity, target_message_id, text, file=file))
 
     async def delete(self, plan: DeliveryPlan,
                      target_message_ids: list[int]) -> None:
@@ -242,11 +280,15 @@ class TransportRouter(SendTransport):
                                  f"no live session for {plan.account_id}")
         return t
 
+    def _fetcher_for(self, plan: DeliveryPlan) -> TelethonTransport | None:
+        return self._routes.get(plan.fetch_account_id or plan.account_id)
+
     async def send(self, plan: DeliveryPlan) -> list[int]:
-        return await self._for(plan).send(plan)
+        return await self._for(plan).send(plan, fetcher=self._fetcher_for(plan))
 
     async def edit(self, plan: DeliveryPlan, target_message_id: int) -> None:
-        await self._for(plan).edit(plan, target_message_id)
+        await self._for(plan).edit(plan, target_message_id,
+                                   fetcher=self._fetcher_for(plan))
 
     async def delete(self, plan: DeliveryPlan,
                      target_message_ids: list[int]) -> None:

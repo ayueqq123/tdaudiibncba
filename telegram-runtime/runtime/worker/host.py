@@ -79,6 +79,9 @@ def rules_from_snapshot(row: dict[str, Any], account_uuid: str) -> list[RuleSnap
     approval = (ApprovalPolicy.MESSAGE_REVIEW
                 if rule.get("approval_policy") == "message_review"
                 else ApprovalPolicy.RULE_AUTHORIZED)
+    # 发送号池 uuid(控制面已把行 ID 解成 uuid);空=仅监听号发送
+    sender_uuids = tuple(u for u in (row.get("sender_account_uuids") or []) if u)
+    transform = bool(rule.get("transform"))
     out: list[RuleSnapshot] = []
     for t in snap.get("targets") or []:
         route = RouteTarget(
@@ -97,6 +100,8 @@ def rules_from_snapshot(row: dict[str, Any], account_uuid: str) -> list[RuleSnap
                 sync_delete=bool(rule.get("sync_delete", True)),
                 approval_policy=approval,
                 filters=(t.get("filters") or {},),
+                sender_account_ids=sender_uuids,
+                transform=transform,
             ))
     return out
 
@@ -155,6 +160,7 @@ class WorkerHostMain:
             live=self.registry.get,
             policy=self._current_policy,
             approvals=self._approval_for,
+            plan_hints=self._plan_hints,
             retry_policy=retry_policy or RetryPolicy(),
         )
         self._runner_host = WorkerHost(worker_id, deps)
@@ -311,6 +317,20 @@ class WorkerHostMain:
         # lease row left to expire by TTL — no release mutation (§5.3)
 
     # ---------- rules / commands ----------
+
+    def _plan_hints(self, rule_id: str, rule_version: int) -> tuple[str | None, bool] | None:
+        """发送时找回投递 job 未持久化的 fetch_account_id/transform:扫所有账号的
+        规则缓存命中该 rule_id(版本漂移时取最新)。规则只缓存在监听号名下。"""
+        best: RuleSnapshot | None = None
+        for snaps in self._rules_cache.values():
+            for s in snaps:
+                if s.rule_id != str(rule_id):
+                    continue
+                if best is None or abs(s.version - rule_version) < abs(best.version - rule_version):
+                    best = s
+        if best is None:
+            return None
+        return best.account_id, best.transform
 
     async def _refresh_rules(self, a: Assignment) -> None:
         try:
