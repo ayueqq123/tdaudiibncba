@@ -21,7 +21,7 @@ class TgCloneRule(Base):
     uuid: Mapped[str] = mapped_column(sa.String(64), init=False, default_factory=uuid4_str, unique=True)
     tenant_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='租户ID')
     project_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='项目ID')
-    account_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='发送账号ID')
+    account_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='监听账号ID(进源群收消息)')
     name: Mapped[str] = mapped_column(sa.String(128), comment='规则名称')
     mode: Mapped[str] = mapped_column(sa.String(16), default='copy', comment='模式(copy/forward)')
     sync_edit: Mapped[bool] = mapped_column(default=True, comment='是否同步编辑')
@@ -31,7 +31,22 @@ class TgCloneRule(Base):
     status: Mapped[str] = mapped_column(
         sa.String(16), default='draft', index=True, comment='规则状态(draft/published/disabled)'
     )
+    ai_rewrite: Mapped[str] = mapped_column(
+        sa.String(16), default='off', comment='克隆文本改写(off/light/strong)'
+    )
+    ad_block: Mapped[str] = mapped_column(
+        sa.String(16), default='off', comment='广告拦截(off/keyword/ai)'
+    )
+    ad_keywords: Mapped[list] = mapped_column(
+        sa.JSON, default_factory=list, comment='广告关键词列表'
+    )
+    ai_group_id: Mapped[int | None] = mapped_column(
+        sa.BigInteger, default=None, comment='复用的 AI 群配置(模型 key 来源;空=按目标群自动匹配)'
+    )
     remark: Mapped[str | None] = mapped_column(sa.String(512), default=None, comment='备注')
+    sender_account_ids: Mapped[list] = mapped_column(
+        sa.JSON, default_factory=list, comment='发送号池(行ID列表);空=仅监听号发送'
+    )
 
 
 class TgCloneRuleVersion(Base):
@@ -72,7 +87,7 @@ class TgCloneTarget(Base):
     source_chat_ref: Mapped[str | None] = mapped_column(sa.Text, default=None, comment='源群原始标识(链接,供重新进群)')
     target_chat_ref: Mapped[str | None] = mapped_column(sa.Text, default=None, comment='目标群原始标识')
     joined_account_id: Mapped[int | None] = mapped_column(
-        sa.BigInteger, default=None, comment='已完成进群的账号ID(同账号不重复进群)'
+        sa.BigInteger, default=None, comment='已完成进群的监听账号ID(同账号不重复进群)'
     )
     source_topic_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, comment='源 topic')
     target_topic_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, comment='目标 topic')
@@ -82,6 +97,9 @@ class TgCloneTarget(Base):
     joined_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近完成进群时间')
     health_reason: Mapped[str | None] = mapped_column(
         sa.String(255), default=None, comment='路线失效原因(NULL=正常)'
+    )
+    joined_account_ids: Mapped[list] = mapped_column(
+        sa.JSON, default_factory=list, comment='已完成进目标群的池内账号ID列表'
     )
 
     __table_args__ = (

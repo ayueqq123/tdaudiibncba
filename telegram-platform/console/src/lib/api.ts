@@ -186,6 +186,11 @@ export interface CloneRule {
   tenant_id: number
   project_id: number
   account_id: number
+  sender_account_ids?: number[]
+  ai_rewrite?: 'off' | 'light' | 'strong'
+  ad_block?: 'off' | 'keyword' | 'ai'
+  ad_keywords?: string[]
+  ai_group_id?: number | null
   name: string
   mode: 'copy' | 'forward'
   sync_edit?: boolean

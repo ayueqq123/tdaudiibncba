@@ -22,9 +22,10 @@ from backend.app.tg.crud.crud_ai import (
     ai_run_dao,
 )
 from backend.app.tg.crud.crud_approval import approval_dao, reply_candidate_dao
+from backend.app.tg.crud.crud_clone_rule import clone_rule_dao, clone_target_dao
 from backend.app.tg.crud.crud_telegram_account import telegram_account_dao
 from backend.app.tg.metrics import tg_ai_callback_total, tg_ai_run_active, tg_ai_run_total
-from backend.app.tg.model import TgReplyCandidate, TgTelegramAccount
+from backend.app.tg.model import TgCloneRule, TgCloneTarget, TgReplyCandidate, TgTelegramAccount
 from backend.app.tg.model.ai import TgAiBinding, TgAiCallback, TgAiConversation, TgAiGroup, TgAiRun, TgAiScript
 from backend.app.tg.schema.ai import (
     AiGroupEventParam,
@@ -631,8 +632,13 @@ class AiService:
             return 0
         managed = await AiService._managed_user_ids(db, account.tenant_id)
         is_ours = obj.sender_id is not None and obj.sender_id in managed
-        recent = await AiService._record_group_message(db, group, obj, is_ours=is_ours)
-        if recent is None or group.status != 'active' or obj.sender_is_bot:
+        # 克隆搬运件:发送者是本项目克隆号池里的号且目标路由指向本群。优先于
+        # is_ours 判定——克隆件按“外部内容”进上下文但永不触发接话,也不计入互聊链。
+        cloned = obj.sender_id is not None and await AiService._is_clone_sender(db, account, obj)
+        if cloned:
+            is_ours = False
+        recent = await AiService._record_group_message(db, group, obj, is_ours=is_ours, cloned=cloned)
+        if recent is None or group.status != 'active' or obj.sender_is_bot or cloned:
             return 0
         if is_ours and not AiService._chain_allowed(group, recent):
             return 0
@@ -655,26 +661,152 @@ class AiService:
         return bool(group.bot_chain_max) and chain <= group.bot_chain_max
 
     @staticmethod
+    async def _is_clone_sender(db: AsyncSession, account: TgTelegramAccount, obj: AiGroupEventParam) -> bool:
+        """上报消息是否为克隆搬运产物:发送者 TG 账号属于本项目某条已发布规则的
+        发送号池,且该规则有激活路由指向本群。发送号不监听,故不走 message_map。"""
+        sender_acct = (
+            await db.execute(
+                sa.select(TgTelegramAccount.id).where(
+                    TgTelegramAccount.tenant_id == account.tenant_id,
+                    TgTelegramAccount.project_id == account.project_id,
+                    TgTelegramAccount.telegram_user_id == obj.sender_id,
+                    TgTelegramAccount.deleted == 0,
+                )
+            )
+        ).scalar_one_or_none()
+        if sender_acct is None:
+            return False
+        rules = [
+            r
+            for r in await clone_rule_dao.get_all(db, tenant_id=account.tenant_id, project_id=account.project_id)
+            if r.status == 'published'
+            and r.enabled
+            and sender_acct in ({int(a) for a in (r.sender_account_ids or [])} or {r.account_id})
+        ]
+        if not rules:
+            return False
+        return (
+            await db.execute(
+                sa.select(TgCloneTarget.id)
+                .where(
+                    TgCloneTarget.rule_id.in_([r.id for r in rules]),
+                    TgCloneTarget.target_chat_id == obj.chat_id,
+                    TgCloneTarget.status == 'active',
+                    TgCloneTarget.deleted == 0,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none() is not None
+
+    @staticmethod
     async def _record_group_message(
-        db: AsyncSession, group: TgAiGroup, obj: AiGroupEventParam, *, is_ours: bool
+        db: AsyncSession, group: TgAiGroup, obj: AiGroupEventParam, *, is_ours: bool, cloned: bool = False
     ) -> list[dict] | None:
         """写入群缓存;同一条已记过(别的号先上报了)返回 None。"""
         recent = list(group.recent_messages or [])
         if any(m.get('mid') == obj.message_id for m in recent):
             return None
-        recent.append({
+        entry = {
             'sender': obj.sender_name or 'User',
             'text': (obj.text or '')[:500],
             'mid': obj.message_id,
             'sid': obj.sender_id,
             'ours': is_ours,
             'ts': int(timezone.now().timestamp()),
-        })
+        }
+        if cloned:
+            entry['cloned'] = True
+        recent.append(entry)
         group.recent_messages = recent[-100:]
         group.last_message_at = timezone.now()
         db.add(group)
         await db.flush()
         return recent
+
+    @staticmethod
+    def _parse_transform(out: str) -> dict | None:
+        s = out.strip()
+        if s.startswith('```'):
+            s = re.sub(r'^```[a-zA-Z]*\s*', '', s)
+            s = re.sub(r'\s*```$', '', s)
+        try:
+            obj = json.loads(s)
+        except (ValueError, TypeError):
+            m = re.search(r'\{.*\}', s, flags=re.DOTALL)
+            if not m:
+                return None
+            try:
+                obj = json.loads(m.group(0))
+            except (ValueError, TypeError):
+                return None
+        return obj if isinstance(obj, dict) else None
+
+    @staticmethod
+    async def clone_transform(db: AsyncSession, *, rule_id: int, text: str) -> dict:
+        """克隆发送前变形闸:关键词粗拦 → AI 判广告 → AI 改写,一次模型调用完成。
+
+        模型调用失败抛错,worker 侧按 TRANSIENT 重试;模型返回不可解析时放行原文
+        (宁退化不误丢用户消息);广告判定为 drop。"""
+        rule = await clone_rule_dao.get(db, rule_id)
+        if rule is None:
+            return {'action': 'send', 'text': text, 'reason': 'rule_not_found'}
+        low = text.lower()
+        kws = [str(k).strip() for k in (rule.ad_keywords or []) if str(k).strip()]
+        if any(k.lower() in low for k in kws):
+            return {'action': 'drop', 'text': '', 'reason': 'keyword'}
+        need_ai = (rule.ad_block or 'off') == 'ai' or (rule.ai_rewrite or 'off') not in ('', 'off')
+        if not need_ai:
+            return {'action': 'send', 'text': text, 'reason': ''}
+        group = await AiService._clone_ai_group(db, rule)
+        api_key = AiService._decrypt(group.provider_key_enc) if group is not None else None
+        if group is None or not api_key or not group.provider_model:
+            return {'action': 'send', 'text': text, 'reason': 'no_provider'}
+        sys_prompt = AiService._transform_sys_prompt(rule)
+        ok, out, err = await openai_complete(
+            base_url=group.base_url or '',
+            api_key=api_key,
+            model=group.provider_model,
+            messages=[{'role': 'system', 'content': sys_prompt}, {'role': 'user', 'content': text}],
+        )
+        if not ok:
+            raise errors.ServerError(msg=f'clone_transform 模型调用失败:{err}')
+        payload = AiService._parse_transform(out or '')
+        if payload is None:
+            return {'action': 'send', 'text': text, 'reason': 'unparseable'}
+        if payload.get('drop'):
+            return {'action': 'drop', 'text': '', 'reason': 'ai_ad'}
+        new_text = str(payload.get('text') or '').strip() or text
+        return {'action': 'send', 'text': new_text, 'reason': ''}
+
+    @staticmethod
+    def _transform_sys_prompt(rule: TgCloneRule) -> str:
+        tasks: list[str] = []
+        if (rule.ad_block or 'off') == 'ai':
+            tasks.append('判断它是不是广告/引流类内容(拉群、加联系方式、推广链接、兼职诱惑、诈骗引流等)')
+        if rule.ai_rewrite == 'light':
+            tasks.append('在保持原意和口语语气的前提下轻微改写:替换个别同义词、微调语序,长度不要变长')
+        elif rule.ai_rewrite == 'strong':
+            tasks.append('在保持原意的前提下换一种说法改写')
+        return (
+            '你是群消息处理助手。给你一条来自被克隆电报群的消息:'
+            + ';'.join(tasks)
+            + '。只输出 JSON {"drop": true|false, "text": "处理后文本"};'
+            '判定广告时 drop=true、text 为空串,否则 text 为处理后的文本(无需改写时原样返回)。'
+        )
+
+    @staticmethod
+    async def _clone_ai_group(db: AsyncSession, rule: TgCloneRule) -> TgAiGroup | None:
+        """变形闸的模型来源:规则绑定了 AI 群用它(D1 复用),否则按目标群匹配项目内 AI 群。"""
+        if rule.ai_group_id:
+            group = await ai_group_dao.get(db, int(rule.ai_group_id))
+            if group is not None:
+                return group
+        groups = await ai_group_dao.get_all(db, tenant_id=rule.tenant_id, project_id=rule.project_id)
+        target_chats = {t.target_chat_id for t in await clone_target_dao.get_active_by_rule(db, rule.id)}
+        return next(
+            (g for g in groups if any(AiService._chat_match(g.chat_id, c) for c in target_chats)),
+            None,
+        )
 
     @staticmethod
     async def _group_members(db: AsyncSession, group: TgAiGroup) -> list[TgAiBinding]:
