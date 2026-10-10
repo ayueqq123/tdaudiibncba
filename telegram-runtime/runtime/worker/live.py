@@ -9,6 +9,7 @@ SendPolicy gate upstream; this layer only maps Telegram outcomes into the
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -43,6 +44,8 @@ from runtime.storage.repos import EventInboxRepository
 from runtime.worker.control_client import ControlClient, SessionBundle
 
 log = logging.getLogger(__name__)
+
+_RPC_TIMEOUT_S = 120.0
 
 
 class LiveRegistry:
@@ -168,7 +171,10 @@ class TelethonTransport(SendTransport):
             # "不确定结果重发",此时请求尚未离手。
             if not self.client.is_connected():
                 await self.client.connect()
-            return await fn()
+            # 请求级超时:半死连接上的 RPC 会无声挂起,job 永远停在 sending。
+            # 超时记 RESULT_UNKNOWN——请求可能已离手,结果不确定不盲重发。
+            async with asyncio.timeout(_RPC_TIMEOUT_S):
+                return await fn()
         except TransportError:
             raise
         except (FloodWaitError, SlowModeWaitError) as exc:
