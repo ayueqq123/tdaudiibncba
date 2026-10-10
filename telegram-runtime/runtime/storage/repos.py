@@ -297,6 +297,19 @@ class MappingRepository:
         )
         return (await self.s.execute(stmt)).scalar_one_or_none()
 
+    async def find_target_message_ids(self, route_id: str, source_scope: str,
+                                      source_chat_id: int,
+                                      source_message_id: int) -> list[int]:
+        """All live target parts for one source message (albums → several)."""
+        stmt = select(MessageMap.target_message_id).where(
+            MessageMap.route_id == route_id,
+            MessageMap.source_scope == source_scope,
+            MessageMap.source_chat_id == source_chat_id,
+            MessageMap.source_message_id == source_message_id,
+            MessageMap.deleted_at.is_(None),
+        ).order_by(MessageMap.output_part_index)
+        return list((await self.s.execute(stmt)).scalars().all())
+
     async def mark_deleted(self, map_id: str) -> bool:
         """Tombstone, never hard delete (§6.3: mapping survives failures)."""
         res = await self.s.execute(

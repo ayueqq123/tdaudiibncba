@@ -20,7 +20,11 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from runtime.delivery.executor import DeliveryExecutor, ResultStatus
+from runtime.delivery.executor import (
+    DeliveryExecutor,
+    DeliveryResult,
+    ResultStatus,
+)
 from runtime.delivery.model import (
     ErrorClass,
     JobStatus,
@@ -223,11 +227,26 @@ class AccountRunner:
 
             await jobs.transition(job.id, "leased", "sending")
 
-            result = await d.executor.execute(
-                plan, live=live, policy=d.policy(), approval=d.approvals(job),
-                expected_generation=self.generation,
-                tenant_id=job.tenant_id, project_id=job.project_id,
-                now=d.clock())
+            target_ids: list[int] | None = None
+            if plan.kind in (PlanKind.EDIT, PlanKind.DELETE,
+                             PlanKind.TOMBSTONE):
+                target_ids = await MappingRepository(
+                    s).find_target_message_ids(
+                        job.route_id, job.source_scope, job.source_chat_id,
+                        job.source_message_id)
+
+            try:
+                result = await d.executor.execute(
+                    plan, live=live, policy=d.policy(),
+                    approval=d.approvals(job),
+                    expected_generation=self.generation,
+                    tenant_id=job.tenant_id, project_id=job.project_id,
+                    now=d.clock(), target_message_ids=target_ids)
+            except Exception as exc:  # noqa: BLE001 — 执行层异常必须落库,否则 job 永远卡 sending
+                result = DeliveryResult(
+                    plan=plan, status=ResultStatus.UNCERTAIN,
+                    error_class=ErrorClass.RESULT_UNKNOWN,
+                    error_detail=f"executor error: {exc}"[:300])
 
             await self._record(jobs, job, attempt_no, result)
             return job.id
