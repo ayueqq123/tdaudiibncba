@@ -178,6 +178,24 @@ async def join_chat_refs(account: TgTelegramAccount, refs: list[str | int]) -> d
     return out['results']
 
 
+async def check_chat_membership(account: TgTelegramAccount, chat_ids: list[int]) -> dict[str, dict]:
+    """查账号在一批群里的成员身份/发言权限。返回 {chat_id_str: {status,can_post,detail}}。
+
+    status: member|muted|banned|kicked|not_member|no_access|flood_wait|error;
+    会话失效时返回 {'__account__': {'status': 'unauthorized'}}。"""
+    if not settings.TG_RUNTIME_DIR or not settings.TG_RUNTIME_PYTHON:
+        return {}
+    session_path, api_id, api_hash = account_session_cli_args(account)
+    out = await _run_runtime_cli(
+        'runtime.account.check_membership',
+        ['--session', session_path, '--api-id', api_id, '--api-hash', api_hash],
+        {'chat_ids': chat_ids},
+    )
+    if not out.get('ok'):
+        return {'__account__': {'status': (out.get('error') or {}).get('status', 'error')}}
+    return out.get('results') or {}
+
+
 async def resolve_user_refs(account: TgTelegramAccount, users: list[str]) -> dict[str, dict]:
     """用账号会话把 @username 解析成 Telegram 用户 ID。返回 {ref: {ok,user_id,is_bot}|{ok:false,error}}。"""
     if not settings.TG_RUNTIME_DIR or not settings.TG_RUNTIME_PYTHON:

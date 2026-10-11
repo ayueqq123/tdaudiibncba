@@ -236,6 +236,9 @@ class AiGroupService:
                     status=b.status,
                     account_label=_account_label(acc),
                     account_running=bool(acc and acc.desired_status == 'running' and not acc.deleted),
+                    member_state=b.member_state,
+                    member_state_detail=b.member_state_detail,
+                    member_state_at=b.member_state_at,
                 )
             )
         return out

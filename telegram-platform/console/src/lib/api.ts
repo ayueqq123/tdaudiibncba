@@ -390,6 +390,9 @@ export interface AiMember {
   status: string
   account_label: string
   account_running: boolean
+  member_state: string | null
+  member_state_detail: string | null
+  member_state_at: string | null
 }
 
 export interface AiGroupMessage {

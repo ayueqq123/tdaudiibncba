@@ -45,6 +45,12 @@ class TgAiBinding(Base):
     )
     group_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, index=True, comment='所属炒群任务')
     role_name: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='角色名')
+    member_state: Mapped[str | None] = mapped_column(
+        sa.String(24), default=None,
+        comment='在群状态 ok|not_in_group|muted|banned|session_dead|frozen|check_failed',
+    )
+    member_state_detail: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment='在群状态说明')
+    member_state_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='在群状态检查时间')
 
     __table_args__ = ({'comment': 'TG AI LangBot 绑定表'},)
 

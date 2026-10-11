@@ -37,7 +37,7 @@ from backend.app.tg.schema.ai import (
     UpdateAiBindingParam,
 )
 from backend.app.tg.schema.approval import CreateApprovalParam, CreateReplyCandidateParam
-from backend.app.tg.service.account_service import JOIN_ERR, join_chat_refs
+from backend.app.tg.service.account_service import JOIN_ERR, check_chat_membership, join_chat_refs
 from backend.app.tg.service.ai_engine import (
     langbot_engine_adapter,
     openai_complete,
@@ -78,6 +78,8 @@ def _norm(s: str) -> str:
 
 
 _PUNCT_TO_SPACE = str.maketrans(dict.fromkeys('，。、；：,;:', ' '))
+# 巡检确认发不了言的状态:被踢/禁言/封禁/号死/冻结,发言挑选直接跳过
+DEAD_MEMBER_STATES = frozenset(('not_in_group', 'muted', 'banned', 'session_dead', 'frozen'))
 
 
 def _strip_punct(s: str) -> str:
@@ -947,6 +949,8 @@ class AiService:
             acc = accounts.get(b.account_id)
             if acc is None or (is_ours and acc.telegram_user_id == obj.sender_id):
                 continue
+            if b.member_state in DEAD_MEMBER_STATES:
+                continue
             if AiService._speaker_blocked(stats.get(b.id), group, now):
                 continue
             called = (bool(acc.username) and f'@{acc.username}'.lower() in text) or (
@@ -1020,6 +1024,7 @@ class AiService:
             b
             for b in members
             if b.account_id in accounts
+            and b.member_state not in DEAD_MEMBER_STATES
             and b.random_prob > 0
             and not AiService._speaker_blocked(stats.get(b.id), g, now)
         ]
@@ -1029,6 +1034,87 @@ class AiService:
         db.add(g)
         speaker = random.choices(pool, weights=[b.random_prob for b in pool], k=1)[0]
         return await AiService._start_member_run(db, g, speaker, mode='warmup')
+
+    @staticmethod
+    async def member_check_tick(db: AsyncSession) -> int:
+        """成员在群巡检(每10分钟):逐绑定用账号会话查 GetParticipant,
+        member_state 写回——被踢/被禁言/号冻结在成员列表直接可见,发言挑选也避开。"""
+        groups = (
+            (
+                await db.execute(
+                    sa.select(TgAiGroup).where(TgAiGroup.deleted == 0, TgAiGroup.status == 'active')
+                )
+            )
+            .scalars()
+            .all()
+        )
+        checked = 0
+        for g in groups:
+            members = [
+                b
+                for b in await ai_binding_dao.get_all(
+                    db, tenant_id=g.tenant_id, project_id=g.project_id
+                )
+                if b.group_id == g.id and b.status != 'deleted'
+            ]
+            if not members:
+                continue
+            accts = {
+                a.id: a
+                for a in (
+                    await db.execute(
+                        sa.select(TgTelegramAccount).where(
+                            TgTelegramAccount.id.in_([b.account_id for b in members])
+                        )
+                    )
+                ).scalars()
+            }
+            for b in members:
+                acct = accts.get(b.account_id)
+                if acct is None or acct.deleted:
+                    state, detail = 'session_dead', '账号已删除'
+                else:
+                    try:
+                        res = await check_chat_membership(acct, [g.chat_id])
+                    except errors.RequestError as exc:  # 会话/API凭据缺失
+                        state, detail, res = 'session_dead', str(exc)[:200], {}
+                    except Exception as exc:  # noqa: BLE001
+                        state, detail, res = 'check_failed', str(exc)[:200], {}
+                    else:
+                        state, detail = AiService._member_state_from(res, g.chat_id)
+                await ai_binding_dao.update_fields(
+                    db,
+                    b.id,
+                    {
+                        'member_state': state,
+                        'member_state_detail': detail,
+                        'member_state_at': timezone.now(),
+                    },
+                )
+                checked += 1
+        return checked
+
+    @staticmethod
+    def _member_state_from(res: dict, chat_id: int) -> tuple[str, str | None]:
+        if '__account__' in res:
+            st = res['__account__'].get('status')
+            return ('session_dead', '会话失效') if st == 'unauthorized' else ('check_failed', f'账号异常:{st}')
+        r = res.get(str(chat_id), {})
+        st = r.get('status', 'error')
+        detail = r.get('detail')
+        if st == 'member':
+            return 'ok', None
+        if st == 'muted':
+            return 'muted', detail or '被禁言/限制发言'
+        if st == 'banned':
+            return 'banned', '被该群封禁'
+        if st in ('kicked', 'not_member', 'no_access'):
+            return 'not_in_group', detail or '不在群里(被踢/退群)'
+        if st == 'flood_wait':
+            return 'check_failed', 'TG 限流,稍后重查'
+        if 'frozen' in (detail or '').lower():
+            return 'frozen', detail
+        return 'check_failed', detail or st
 
     @staticmethod
     async def script_step(db: AsyncSession, script_id: int, token: str) -> str:

@@ -328,6 +328,9 @@ class GetAiMemberDetail(SchemaBase):
     status: str
     account_label: str = ''
     account_running: bool = False
+    member_state: str | None = None
+    member_state_detail: str | None = None
+    member_state_at: datetime | None = None
 
 
 class AiPersonaParam(SchemaBase):

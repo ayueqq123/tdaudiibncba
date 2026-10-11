@@ -711,6 +711,18 @@ function SettingsTab({ group, accounts, onSaved }: { group: AiGroup; accounts: T
   )
 }
 
+function memberStateText(state: string) {
+  const m: Record<string, string> = {
+    not_in_group: '被踢出群',
+    muted: '被禁言',
+    banned: '被群封禁',
+    session_dead: '会话失效',
+    frozen: '账号冻结',
+    check_failed: '在群检查失败',
+  }
+  return m[state] || `在群状态异常:${state}`
+}
+
 function MembersTab({
   group,
   members,
@@ -882,6 +894,14 @@ function MembersTab({
                     <TableCell className="whitespace-nowrap">
                       {m.account_label}
                       {!m.account_running && <div className="text-[11px] text-destructive">账号未运行</div>}
+                      {m.member_state && m.member_state !== 'ok' && (
+                        <div
+                          className="text-[11px] text-destructive"
+                          title={m.member_state_detail || ''}
+                        >
+                          {memberStateText(m.member_state)}
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell className="whitespace-nowrap">{m.role_name || '-'}</TableCell>
                     <TableCell className="max-w-[260px] truncate text-xs text-muted-foreground" title={m.persona || ''}>
