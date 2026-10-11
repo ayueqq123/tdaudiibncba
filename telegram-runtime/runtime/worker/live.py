@@ -227,21 +227,26 @@ class TelethonTransport(SendTransport):
 
     async def _media_file(self, src, fetcher: TelethonTransport):
         """同号直传 TL media(快路径);跨账号下载 bytes 由发送号重传
-        (file_reference 与账号绑定,不能直接把别的号抓到的 media 发出去)。"""
+        (file_reference 与账号绑定,不能直接把别的号抓到的 media 发出去)。
+        返回 (file, attributes, mime_type):裸 bytes 会被当无名文件发,故带上
+        原名/扩展名 + 原文档 mime_type + 原文档属性(视频时长宽高、语音时长等),
+        否则源端是 octet-stream 的视频会落地成文件。"""
         media = getattr(src, "media", None)
         if media is None:
-            return None
+            return None, None, None
         if fetcher is self:
-            return media
+            return media, None, None
         data = await fetcher._call(lambda: src.download_media(file=bytes))
         if data is None:
-            return None
-        # 裸 bytes 会被当无名文件发;带上原名/扩展名,Telethon 才能按图片/视频发、文档也显示真实文件名
+            return None, None, None
         f = getattr(src, 'file', None)
         name = getattr(f, 'name', None) or (f'media{f.ext}' if getattr(f, 'ext', None) else 'media.bin')
         buf = io.BytesIO(data)
         buf.name = name
-        return buf
+        doc = getattr(src, 'document', None)
+        attrs = list(getattr(doc, 'attributes', None) or [])
+        mime = getattr(doc, 'mime_type', None)
+        return buf, attrs, mime
 
     async def _transform(self, plan: DeliveryPlan, text: str) -> str:
         if not plan.transform or not text.strip():
@@ -271,10 +276,15 @@ class TelethonTransport(SendTransport):
         src = await self._fetch_source(plan, fetcher)
         entity = await self._entity(plan.target_chat_id)
         text = await self._transform(plan, getattr(src, "text", None) or "")
-        file = await self._media_file(src, fetcher)
-        msg = await self._call(lambda: self.client.send_message(
-            entity, text, file=file,
-            reply_to=plan.reply_to_target_message_id))
+        file, attrs, mime = await self._media_file(src, fetcher)
+        if file is None:
+            msg = await self._call(lambda: self.client.send_message(
+                entity, text,
+                reply_to=plan.reply_to_target_message_id))
+        else:
+            msg = await self._call(lambda: self.client.send_file(
+                entity, file, caption=text, attributes=attrs, mime_type=mime,
+                reply_to=plan.reply_to_target_message_id))
         return [msg.id]
 
     async def edit(self, plan: DeliveryPlan, target_message_id: int,
@@ -283,7 +293,8 @@ class TelethonTransport(SendTransport):
         src = await self._fetch_source(plan, fetcher)
         entity = await self._entity(plan.target_chat_id)
         text = await self._transform(plan, getattr(src, "text", None) or "")
-        file = await self._media_file(src, fetcher)
+        file, attrs, mime = await self._media_file(src, fetcher)
+        # edit_message 不接 attributes;用原文件名已能保住媒体类型
         await self._call(lambda: self.client.edit_message(
             entity, target_message_id, text, file=file))
 
