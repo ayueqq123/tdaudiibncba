@@ -718,7 +718,10 @@ class AiService:
             entry['cloned'] = True
         recent.append(entry)
         group.recent_messages = recent[-100:]
-        group.last_message_at = timezone.now()
+        now = timezone.now()
+        group.last_message_at = now
+        if not cloned:
+            group.last_real_message_at = now
         db.add(group)
         await db.flush()
         return recent
@@ -1005,7 +1008,10 @@ class AiService:
         if not force:
             if not AiService.in_active_hours(g, now):
                 return False
-            last = max(x for x in (g.last_message_at, g.last_warmup_at, g.created_time) if x is not None)
+            # 冷场按真实活跃度算:克隆搬运刷屏不算数,否则搬运群永远判不冷、暖场永不发
+            last = max(
+                x for x in (g.last_real_message_at, g.last_warmup_at, g.created_time) if x is not None
+            )
             if now - last < timedelta(minutes=g.idle_warmup_min):
                 return False
         members = await AiService._group_members(db, g)

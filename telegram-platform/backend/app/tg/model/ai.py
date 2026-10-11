@@ -204,6 +204,7 @@ class TgAiGroup(Base):
     auto_approve: Mapped[bool] = mapped_column(sa.Boolean, default=False, comment='自动审批')
     recent_messages: Mapped[list] = mapped_column(sa.JSON, default_factory=list, comment='群最新消息缓存')
     last_message_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近群消息时间')
+    last_real_message_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近真实消息时间(克隆件不计)')
     last_warmup_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近暖场时间')
     remark: Mapped[str | None] = mapped_column(sa.String(255), default=None)
 

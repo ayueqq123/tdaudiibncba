@@ -289,6 +289,7 @@ class GetAiGroupDetail(SchemaBase):
     max_reply_chars: int
     auto_approve: bool
     last_message_at: datetime | None
+    last_real_message_at: datetime | None
     last_warmup_at: datetime | None
     remark: str | None
     member_count: int = 0
