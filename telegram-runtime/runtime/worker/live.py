@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import logging
 import os
 import tempfile
@@ -232,7 +233,15 @@ class TelethonTransport(SendTransport):
             return None
         if fetcher is self:
             return media
-        return await fetcher._call(lambda: src.download_media(file=bytes))
+        data = await fetcher._call(lambda: src.download_media(file=bytes))
+        if data is None:
+            return None
+        # 裸 bytes 会被当无名文件发;带上原名/扩展名,Telethon 才能按图片/视频发、文档也显示真实文件名
+        f = getattr(src, 'file', None)
+        name = getattr(f, 'name', None) or (f'media{f.ext}' if getattr(f, 'ext', None) else 'media.bin')
+        buf = io.BytesIO(data)
+        buf.name = name
+        return buf
 
     async def _transform(self, plan: DeliveryPlan, text: str) -> str:
         if not plan.transform or not text.strip():
