@@ -296,7 +296,7 @@ export default function AccountsPage() {
                         <SelectContent>
                           {creds.map((c, i) => (
                             <SelectItem key={i} value={String(i)}>
-                              {`api_id: ${c.api_id} · ${c.phones.length ? c.phones.join('/') : `${c.account_count} 个账号在用`}`}
+                              {`api_id: ${c.api_id} · ${c.account_count || c.phones.length} 个账号`}
                             </SelectItem>
                           ))}
                           <SelectItem value="manual">手动输入新凭据</SelectItem>
