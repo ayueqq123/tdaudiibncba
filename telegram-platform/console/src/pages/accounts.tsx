@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Play, RefreshCw, Smartphone, Upload } from 'lucide-react'
+import { Play, RefreshCw, Smartphone, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { tgApi, type ApiCredential, type TgAccount } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -109,6 +109,22 @@ export default function AccountsPage() {
   // 死态:这些号起不来也不该动
   const DEAD = ['auth_dead', 'revoked', 'banned', 'frozen', 'reauth_required', 'error', 'disabled']
   const [startAllBusy, setStartAllBusy] = useState(false)
+  const [delFrozenOpen, setDelFrozenOpen] = useState(false)
+  const [delFrozenBusy, setDelFrozenBusy] = useState(false)
+  const frozenCount = rows.filter((r) => r.observed_status === 'frozen').length
+  async function deleteFrozen() {
+    setDelFrozenBusy(true)
+    try {
+      const r = await tgApi.deleteFrozenAccounts()
+      toast.success(`已删除 ${r.deleted} 个冻结账号`)
+      setDelFrozenOpen(false)
+    } catch (e: any) {
+      toast.error(e?.detail || '删除失败')
+    } finally {
+      setDelFrozenBusy(false)
+      load()
+    }
+  }
   async function startAll() {
     const normal = rows.filter(
       (r) => r.desired_status !== 'running' && !DEAD.includes(r.observed_status),
@@ -221,6 +237,29 @@ export default function AccountsPage() {
           <Button variant="outline" onClick={startAll} disabled={startAllBusy}>
             <Play className="h-4 w-4" /> {startAllBusy ? '启动中…' : '一键启动'}
           </Button>
+          <Dialog open={delFrozenOpen} onOpenChange={setDelFrozenOpen}>
+            <DialogTrigger asChild>
+              <Button variant="outline">
+                <Trash2 className="h-4 w-4" /> 清除冻结账号
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>一键删除冻结账号</DialogTitle>
+              </DialogHeader>
+              <p className="text-sm text-muted-foreground">
+                将删除当前 {frozenCount} 个状态为"已冻结"的账号,删除后不可恢复。正常账号不受影响。
+              </p>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDelFrozenOpen(false)}>
+                  取消
+                </Button>
+                <Button variant="destructive" onClick={deleteFrozen} disabled={delFrozenBusy || !frozenCount}>
+                  {delFrozenBusy ? '删除中…' : `删除 ${frozenCount} 个冻结账号`}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button>

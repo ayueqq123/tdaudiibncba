@@ -182,6 +182,50 @@ def test_import_cross_project_denied(client: TestClient, token_headers: dict[str
     assert resp.json()['data'] == []
 
 
+def test_delete_frozen_accounts(client: TestClient, token_headers: dict[str, str], fake_runtime: int) -> None:
+    tid, pid = _mk_tenant_project(client, token_headers, 'D')
+    resp = client.post(
+        '/tg/accounts/import',
+        headers=token_headers,
+        data={'tenant_id': tid, 'project_id': pid},
+        files={'file': ('sessions.zip', _zip_bytes(['acc_frozen_del']), 'application/zip')},
+    )
+    assert resp.status_code == 200, resp.text
+    accounts = client.get(
+        '/tg/accounts', headers=token_headers, params={'tenant_id': tid, 'project_id': pid}
+    ).json()['data']
+    acc = next(a for a in accounts if a['telegram_user_id'] == fake_runtime)
+
+    # 标成 frozen → 一键清除应删
+    resp = client.put(
+        f'/tg/accounts/{acc["id"]}',
+        headers=token_headers,
+        json={
+            'tenant_id': tid,
+            'project_id': pid,
+            'desired_status': 'stopped',
+            'observed_status': 'frozen',
+        },
+    )
+    assert resp.status_code == 200
+    resp = client.post('/tg/accounts/delete-frozen', headers=token_headers)
+    assert resp.status_code == 200
+    assert resp.json()['data']['deleted'] >= 1
+    gone = client.get(f'/tg/accounts/{acc["id"]}', headers=token_headers)
+    assert gone.status_code in (404,) or gone.json()['code'] != 200
+
+    # 正常状态账号不受影响
+    resp = client.post(
+        '/tg/accounts/import',
+        headers=token_headers,
+        data={'tenant_id': tid, 'project_id': pid},
+        files={'file': ('sessions.zip', _zip_bytes(['acc_normal']), 'application/zip')},
+    )
+    assert resp.status_code == 200
+    resp = client.post('/tg/accounts/delete-frozen', headers=token_headers)
+    assert resp.json()['data']['deleted'] == 0
+
+
 def test_import_requires_runtime_config(client: TestClient, token_headers: dict[str, str]) -> None:
     """未配置 runtime 时明确报错而非静默"""
     tid, pid = _mk_tenant_project(client, token_headers, 'C')

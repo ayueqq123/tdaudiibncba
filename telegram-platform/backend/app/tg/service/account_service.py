@@ -312,6 +312,15 @@ class AccountService:
         return await telegram_account_dao.delete(db, pk)
 
     @staticmethod
+    async def delete_frozen(*, db: AsyncSession, request: Request) -> int:
+        """一键清理冻结账号(软删,限定调用者可见范围)"""
+        accounts = await AccountService.get_all(db=db, request=request, status='frozen')
+        count = 0
+        for account in accounts:
+            count += await telegram_account_dao.delete(db, account.id)
+        return count
+
+    @staticmethod
     async def login_start(*, db: AsyncSession, request: Request, obj) -> dict[str, Any]:
         """验证码登录第一步:发送验证码。pending 会话存内存(TTL 10min)。"""
         await AccountService._check_scope(db, request, obj.tenant_id, obj.project_id)
