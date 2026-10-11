@@ -229,10 +229,12 @@ export default function AccountsPage() {
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>批量导入 Session 包(zip)</DialogTitle>
+                <DialogTitle>批量导入账号包(zip)</DialogTitle>
               </DialogHeader>
               <div className="flex flex-col gap-3">
-                <p className="text-sm text-muted-foreground">上传 zip 协议号包,自动验证并归入你的账号列表</p>
+                <p className="text-sm text-muted-foreground">
+                  支持两种 zip:① 协议号包(.session+.json);② tdata 包(直接打包 Telegram 桌面版 tdata 目录)。上传后自动验证并归入账号列表
+                </p>
                 <div className="flex flex-col gap-1.5">
                   <Label>zip 文件</Label>
                   <Input ref={fileRef} type="file" accept=".zip" onChange={(e) => setFile(e.target.files?.[0] || null)} />
