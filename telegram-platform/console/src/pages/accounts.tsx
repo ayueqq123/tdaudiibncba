@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { RefreshCw, Smartphone, Upload } from 'lucide-react'
+import { Play, RefreshCw, Smartphone, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { tgApi, type ApiCredential, type TgAccount } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -106,6 +106,38 @@ export default function AccountsPage() {
     }
   }
 
+  // 死态:这些号起不来也不该动
+  const DEAD = ['auth_dead', 'revoked', 'banned', 'frozen', 'reauth_required', 'error', 'disabled']
+  const [startAllBusy, setStartAllBusy] = useState(false)
+  async function startAll() {
+    const normal = rows.filter(
+      (r) => r.desired_status !== 'running' && !DEAD.includes(r.observed_status),
+    )
+    if (!normal.length) {
+      toast.warning('没有可启动的正常账号')
+      return
+    }
+    setStartAllBusy(true)
+    let ok = 0
+    let fail = 0
+    for (const r of normal) {
+      try {
+        await tgApi.updateAccount(r.id, {
+          tenant_id: r.tenant_id,
+          project_id: r.project_id,
+          desired_status: 'running',
+          observed_status: r.observed_status,
+        })
+        ok++
+      } catch {
+        fail++
+      }
+    }
+    setStartAllBusy(false)
+    toast.success(`已下发启动 ${ok} 个账号${fail ? `,${fail} 个失败` : ''}(已自动跳过死号)`)
+    load()
+  }
+
   async function loginSend() {
     if (!lf.phone.trim() || !lf.api_id.trim() || !lf.api_hash.trim()) {
       toast.warning('手机号、api_id、api_hash 必填')
@@ -186,6 +218,9 @@ export default function AccountsPage() {
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-lg font-semibold">TG 账号</h2>
         <div className="flex gap-2">
+          <Button variant="outline" onClick={startAll} disabled={startAllBusy}>
+            <Play className="h-4 w-4" /> {startAllBusy ? '启动中…' : '一键启动'}
+          </Button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button>
