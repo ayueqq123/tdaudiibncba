@@ -307,7 +307,8 @@ class AccountRunner:
         await jobs.record_result(
             job, attempt_no=attempt_no,
             new_status=JobStatus.FAILED_PERMANENT.value,
-            error_class=err.value if err else None)
+            error_class=err.value if err else None,
+            request_ref=(result.error_detail or '')[:200] or None)
 
     async def run_once(self, *, limit: int = 200) -> None:
         """One poll round: drain inbox into jobs, then send while work is due."""

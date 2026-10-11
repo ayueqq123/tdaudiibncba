@@ -766,7 +766,8 @@ class AiService:
             base_url=group.base_url or '',
             api_key=api_key,
             model=group.provider_model,
-            messages=[{'role': 'system', 'content': sys_prompt}, {'role': 'user', 'content': text}],
+            messages=[{'role': 'system', 'content': sys_prompt},
+                      {'role': 'user', 'content': AiService._transform_user_msg(rule, text)}],
         )
         if not ok:
             raise errors.ServerError(msg=f'clone_transform 模型调用失败:{err}')
@@ -774,23 +775,50 @@ class AiService:
         if payload is None:
             return {'action': 'send', 'text': text, 'reason': 'unparseable'}
         if payload.get('drop'):
-            return {'action': 'drop', 'text': '', 'reason': 'ai_ad'}
+            return {'action': 'drop', 'text': '', 'reason': f"ai_ad:{payload.get('reason') or 'ad'}"[:60]}
         new_text = str(payload.get('text') or '').strip() or text
         return {'action': 'send', 'text': new_text, 'reason': ''}
+
+    # 发给模型的启发式信号(命中项列出,供模型参考而非硬判)
+    _AD_SIGNALS = (
+        ('t.me/群链接', re.compile(r't\.me/|telegram\.(me|dog)/', re.I)),
+        ('@用户名', re.compile(r'@[A-Za-z][A-Za-z0-9_]{3,}')),
+        ('http链接', re.compile(r'https?://', re.I)),
+        ('站外联系方式', re.compile(r'微信|wechat|qq号|vx[:：＝=]|whatsapp|飞机号|纸飞机|TG号|tg号|tele号', re.I)),
+        ('拉人/推广话术', re.compile(r'加我|私聊|私我|pm我|联系客服|接单|直推|扶持|团队收人|副业|兼职|日结|底薪|躺赚|免费领|进群|加群|进频道|点链接|扫码', re.I)),
+    )
+
+    @staticmethod
+    def _ad_signals(text: str) -> list[str]:
+        return [name for name, rx in AiService._AD_SIGNALS if rx.search(text)]
+
+    @staticmethod
+    def _transform_user_msg(rule: TgCloneRule, text: str) -> str:
+        if (rule.ad_block or 'off') != 'ai':
+            return text
+        sigs = AiService._ad_signals(text)
+        return (f'【检测信号:{",".join(sigs)}】\n' if sigs else '') + text
 
     @staticmethod
     def _transform_sys_prompt(rule: TgCloneRule) -> str:
         tasks: list[str] = []
         if (rule.ad_block or 'off') == 'ai':
-            tasks.append('判断它是不是广告/引流类内容(拉群、加联系方式、推广链接、兼职诱惑、诈骗引流等)')
+            tasks.append(
+                '判断它是不是广告/引流内容。广告特征(命中即判广告):'
+                '拉人进群/换群/进频道(t.me链接、二维码、群名片)、'
+                '留联系方式求加(微信/QQ/飞机号/@用户名配"加我私聊联系接单")、'
+                '担保商或代收代付的自我介绍推广、兼职/高薪/日结/躺赚/副业诱导、'
+                '推广机器人/频道/平台的卡片话术、刷屏式营销文案。'
+                '不是广告别误判:行情报价、砍价、担保流程问答、吐槽闲聊、表情梗、正常交易沟通'
+            )
         if rule.ai_rewrite == 'light':
             tasks.append('在保持原意和口语语气的前提下轻微改写:替换个别同义词、微调语序,长度不要变长')
         elif rule.ai_rewrite == 'strong':
             tasks.append('在保持原意的前提下换一种说法改写')
         return (
-            '你是群消息处理助手。给你一条来自被克隆电报群的消息:'
+            '你是群消息广告过滤与处理助手。给你一条来自被克隆电报群的消息(消息前可能带【检测信号:…】是规则引擎扫出的特征,供你参考):'
             + ';'.join(tasks)
-            + '。只输出 JSON {"drop": true|false, "text": "处理后文本"};'
+            + '。只输出 JSON {"drop": true|false, "reason": "drop理由(可空)", "text": "处理后文本"};'
             '判定广告时 drop=true、text 为空串,否则 text 为处理后的文本(无需改写时原样返回)。'
         )
 
