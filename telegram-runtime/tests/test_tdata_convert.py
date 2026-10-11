@@ -5,8 +5,8 @@ import hashlib
 import struct
 from pathlib import Path
 
-import cryptg
 import pytest
+from telethon.crypto import AES
 
 from runtime.account.tdata_convert import (
     DC_ENDPOINTS,
@@ -33,7 +33,7 @@ def _enc_local(payload: bytes, key256: bytes) -> bytes:
     data += bytes(pad)
     chk = hashlib.sha1(data).digest()[:16]
     aes_key, aes_iv = _aes_key_iv(key256, chk)
-    return chk + cryptg.encrypt_ige(data, aes_key, aes_iv)
+    return chk + AES.encrypt_ige(data, aes_key, aes_iv)
 
 
 def _qb(b: bytes) -> bytes:

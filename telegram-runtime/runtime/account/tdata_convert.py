@@ -17,7 +17,7 @@ import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import cryptg
+from telethon.crypto import AES
 
 TDF_MAGIC = b"TDF$"
 LOCAL_KEY_SIZE = 256
@@ -147,7 +147,7 @@ def _decrypt_local(encrypted: bytes, key256: bytes) -> bytes:
         raise TDataError(f"bad encrypted size {len(encrypted)}")
     key128, data = encrypted[:16], encrypted[16:]
     aes_key, aes_iv = _aes_key_iv(key256, key128)
-    plain = cryptg.decrypt_ige(data, aes_key, aes_iv)
+    plain = AES.decrypt_ige(data, aes_key, aes_iv)
     if hashlib.sha1(plain).digest()[:16] != key128:
         raise TDataError("bad decrypt key (tdata 可能有本地密码或已损坏)")
     data_len = struct.unpack("<I", plain[:4])[0]
