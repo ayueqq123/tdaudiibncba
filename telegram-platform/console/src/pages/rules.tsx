@@ -94,7 +94,7 @@ export default function RulesPage() {
     const acc = accounts.find((a) => a.id === +form.account_id)
     if (!form.name) return toast.warning('名称必填')
     if (!editRule && !acc) return toast.warning('请选择执行账号')
-    const formSrcs = form.source_chats.map((s) => s.trim()).filter(Boolean)
+    const formSrcs = form.source_chats.map((s: string) => s.trim()).filter(Boolean)
     if (!formSrcs.length || !form.target_chat_id) return toast.warning('源群/目标群必填')
     if (form.mode === 'forward' && form.sender_account_ids.length > 0)
       return toast.warning('多号搬运只支持「复制重发」,官方转发请留空号池')
@@ -138,11 +138,11 @@ export default function RulesPage() {
         const kept: CloneTarget[] = []
         const removed: CloneTarget[] = []
         for (const t of active) {
-          const hit = formSrcs.some((s) => s === t.source_chat_ref || s === String(t.source_chat_id))
+          const hit = formSrcs.some((s: string) => s === t.source_chat_ref || s === String(t.source_chat_id))
           ;(hit ? kept : removed).push(t)
         }
         const keptKeys = new Set(kept.flatMap((t) => [t.source_chat_ref, String(t.source_chat_id)].filter(Boolean) as string[]))
-        const added = formSrcs.filter((s) => !keptKeys.has(s))
+        const added = formSrcs.filter((s: string) => !keptKeys.has(s))
         for (const t of kept) await tgApi.updateTarget(editRule.id, t.id, mkBody(t.source_chat_ref || t.source_chat_id))
         for (const t of removed) await tgApi.retireTarget(editRule.id, t.id)
         for (const s of added) await tgApi.addTarget(editRule.id, mkBody(s))
@@ -385,12 +385,12 @@ export default function RulesPage() {
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="flex flex-col gap-1.5">
                       <Label>源群(ID 或链接,可多个)</Label>
-                      {form.source_chats.map((s, i) => (
+                      {form.source_chats.map((s: string, i: number) => (
                         <div key={i} className="flex gap-1.5">
                           <Input
                             value={s}
                             onChange={(e) =>
-                              setForm({ ...form, source_chats: form.source_chats.map((x, j) => (j === i ? e.target.value : x)) })
+                              setForm({ ...form, source_chats: form.source_chats.map((x: string, j: number) => (j === i ? e.target.value : x)) })
                             }
                             placeholder="-100 开头 ID 或 t.me/xx 链接"
                           />
@@ -400,7 +400,7 @@ export default function RulesPage() {
                               variant="ghost"
                               size="sm"
                               className="shrink-0 px-2"
-                              onClick={() => setForm({ ...form, source_chats: form.source_chats.filter((_, j) => j !== i) })}
+                              onClick={() => setForm({ ...form, source_chats: form.source_chats.filter((_: string, j: number) => j !== i) })}
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>
