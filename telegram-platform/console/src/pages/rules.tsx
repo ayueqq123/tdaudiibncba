@@ -23,7 +23,7 @@ const EMPTY_FORM = {
   sender_account_ids: [] as number[],
   ai_rewrite: 'off', ad_block: 'off', ad_keywords: '', ai_group_id: 'auto',
   sync_edit: true, sync_delete: true,
-  source_chat_id: '', target_chat_id: '',
+  source_chats: [''] as string[], target_chat_id: '',
   sender_user_ids: '', blocked_sender_ids: '', exclude_bots: false,
   media_kinds: [] as string[], remark: '',
 }
@@ -94,7 +94,8 @@ export default function RulesPage() {
     const acc = accounts.find((a) => a.id === +form.account_id)
     if (!form.name) return toast.warning('名称必填')
     if (!editRule && !acc) return toast.warning('请选择执行账号')
-    if (!form.source_chat_id || !form.target_chat_id) return toast.warning('源群/目标群必填')
+    const formSrcs = form.source_chats.map((s) => s.trim()).filter(Boolean)
+    if (!formSrcs.length || !form.target_chat_id) return toast.warning('源群/目标群必填')
     if (form.mode === 'forward' && form.sender_account_ids.length > 0)
       return toast.warning('多号搬运只支持「复制重发」,官方转发请留空号池')
     const senders = parseSenders(form.sender_user_ids)
@@ -107,11 +108,11 @@ export default function RulesPage() {
     if (blocked.length) filters.blocked_sender_ids = blocked
     if (form.media_kinds.length) filters.media_kinds = form.media_kinds
     const toRef = (s: string) => (/^-?\d+$/.test(s.trim()) ? Number(s.trim()) : s.trim())
-    const targetBody = {
-      source_chat_id: toRef(String(form.source_chat_id)),
+    const mkBody = (src: string | number) => ({
+      source_chat_id: toRef(String(src)),
       target_chat_id: toRef(String(form.target_chat_id)),
       filters: Object.keys(filters).length ? filters : null,
-    }
+    })
     const ruleBody = {
       name: form.name,
       mode: form.mode,
@@ -132,9 +133,19 @@ export default function RulesPage() {
           ...ruleBody,
           enabled: editRule.enabled,
         })
-        const t = activeTarget(editRule)
-        if (t) await tgApi.updateTarget(editRule.id, t.id, targetBody)
-        else await tgApi.addTarget(editRule.id, targetBody)
+        // 多源群 diff:还在表单里的→update;不在的→retire;新加的→addTarget
+        const active = (editRule.targets || []).filter((t) => t.status === 'active' || !t.status)
+        const kept: CloneTarget[] = []
+        const removed: CloneTarget[] = []
+        for (const t of active) {
+          const hit = formSrcs.some((s) => s === t.source_chat_ref || s === String(t.source_chat_id))
+          ;(hit ? kept : removed).push(t)
+        }
+        const keptKeys = new Set(kept.flatMap((t) => [t.source_chat_ref, String(t.source_chat_id)].filter(Boolean) as string[]))
+        const added = formSrcs.filter((s) => !keptKeys.has(s))
+        for (const t of kept) await tgApi.updateTarget(editRule.id, t.id, mkBody(t.source_chat_ref || t.source_chat_id))
+        for (const t of removed) await tgApi.retireTarget(editRule.id, t.id)
+        for (const s of added) await tgApi.addTarget(editRule.id, mkBody(s))
         if (isRunning(editRule)) {
           await applyToWorker(editRule.id, editRule.current_version, editRule.account_id)
           toast.success('已保存并生效')
@@ -151,7 +162,7 @@ export default function RulesPage() {
         })
         const list = await tgApi.rules()
         const created = list.filter((x) => x.name === form.name).sort((a, b) => b.id - a.id)[0]
-        await tgApi.addTarget(created.id, targetBody)
+        for (const s of formSrcs) await tgApi.addTarget(created.id, mkBody(s))
         toast.success('规则已建好,点"运行"开始搬运')
       }
       setOpen(false)
@@ -168,6 +179,8 @@ export default function RulesPage() {
   function openEdit(r: CloneRule) {
     const t = activeTarget(r)
     const f = t?.filters || {}
+    const active = (r.targets || []).filter((x) => x.status === 'active' || !x.status)
+    const srcs = [...new Set(active.map((x) => x.source_chat_ref || String(x.source_chat_id)))]
     setEditRule(r)
     setForm({
       ...EMPTY_FORM,
@@ -182,7 +195,7 @@ export default function RulesPage() {
       sync_edit: r.sync_edit ?? true,
       sync_delete: r.sync_delete ?? true,
       remark: r.remark || '',
-      source_chat_id: t ? t.source_chat_ref || String(t.source_chat_id) : '',
+      source_chats: srcs.length ? srcs : [''],
       target_chat_id: t ? t.target_chat_ref || String(t.target_chat_id) : '',
       sender_user_ids: senderText(f, 'sender_user_ids'),
       blocked_sender_ids: senderText(f, 'blocked_sender_ids'),
@@ -371,12 +384,38 @@ export default function RulesPage() {
                   <h3 className="text-sm font-semibold">搬运路线</h3>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="flex flex-col gap-1.5">
-                      <Label>源群(ID 或链接)</Label>
-                      <Input
-                        value={form.source_chat_id}
-                        onChange={(e) => setForm({ ...form, source_chat_id: e.target.value })}
-                        placeholder="-100 开头 ID 或 t.me/xx 链接"
-                      />
+                      <Label>源群(ID 或链接,可多个)</Label>
+                      {form.source_chats.map((s, i) => (
+                        <div key={i} className="flex gap-1.5">
+                          <Input
+                            value={s}
+                            onChange={(e) =>
+                              setForm({ ...form, source_chats: form.source_chats.map((x, j) => (j === i ? e.target.value : x)) })
+                            }
+                            placeholder="-100 开头 ID 或 t.me/xx 链接"
+                          />
+                          {form.source_chats.length > 1 && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="shrink-0 px-2"
+                              onClick={() => setForm({ ...form, source_chats: form.source_chats.filter((_, j) => j !== i) })}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                      ))}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="w-fit"
+                        onClick={() => setForm({ ...form, source_chats: [...form.source_chats, ''] })}
+                      >
+                        <Plus className="mr-1 h-3.5 w-3.5" /> 添加源群
+                      </Button>
                     </div>
                     <div className="flex flex-col gap-1.5">
                       <Label>目标群(ID 或链接)</Label>
