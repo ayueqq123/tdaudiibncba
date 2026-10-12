@@ -18,6 +18,17 @@ const MEDIA_KINDS: [string, string][] = [
 ]
 const KIND_LABEL: Record<string, string> = Object.fromEntries(MEDIA_KINDS)
 
+const STATUS_LABEL: Record<string, string> = {
+  auth_dead: '登录失效',
+  revoked: '登录失效',
+  reauth_required: '需重登',
+  banned: '已禁言',
+  frozen: '已冻结',
+  error: '异常',
+  disabled: '已禁用',
+}
+const DEAD_STATUS = new Set(Object.keys(STATUS_LABEL))
+
 const EMPTY_FORM = {
   account_id: '', name: '', mode: 'copy',
   sender_account_ids: [] as number[],
@@ -355,8 +366,10 @@ export default function RulesPage() {
                     <div className="grid max-h-32 grid-cols-2 gap-1.5 overflow-y-auto rounded-md border p-2 sm:grid-cols-3">
                       {accounts.map((a) => {
                         const on = form.sender_account_ids.includes(a.id)
+                        const st = a.observed_status
+                        const dead = st && DEAD_STATUS.has(st)
                         return (
-                          <label key={a.id} className="flex items-center gap-1.5 text-sm">
+                          <label key={a.id} className={`flex items-center gap-1.5 text-sm ${dead ? 'text-red-600' : ''}`} title={dead ? a.last_error || '' : ''}>
                             <input
                               type="checkbox"
                               checked={on}
@@ -370,6 +383,7 @@ export default function RulesPage() {
                               }
                             />
                             {a.username ? '@' + a.username : a.phone || String(a.telegram_user_id || a.id)}
+                            {dead && <Badge variant="destructive" className="px-1 py-0 text-[10px]">{STATUS_LABEL[st!] || st}</Badge>}
                           </label>
                         )
                       })}

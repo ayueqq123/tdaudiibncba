@@ -61,7 +61,9 @@ class SessionConnector(Protocol):
     async def __call__(self, bundle: SessionBundle) -> AccountSession: ...
 
 
-def rules_from_snapshot(row: dict[str, Any], account_uuid: str) -> list[RuleSnapshot]:
+def rules_from_snapshot(
+    row: dict[str, Any], account_uuid: str, dead: set[str] | frozenset[str] = frozenset(),
+) -> list[RuleSnapshot]:
     """Platform snapshot row -> runtime RuleSnapshots.
 
     Shape gap: the platform models one rule = N source→target targets
@@ -79,8 +81,8 @@ def rules_from_snapshot(row: dict[str, Any], account_uuid: str) -> list[RuleSnap
     approval = (ApprovalPolicy.MESSAGE_REVIEW
                 if rule.get("approval_policy") == "message_review"
                 else ApprovalPolicy.RULE_AUTHORIZED)
-    # 发送号池 uuid(控制面已把行 ID 解成 uuid);空=仅监听号发送
-    sender_uuids = tuple(u for u in (row.get("sender_account_uuids") or []) if u)
+    # 发送号池 uuid(控制面已把行 ID 解成 uuid);剔除已上报死亡的号,空=仅监听号发送
+    sender_uuids = tuple(u for u in (row.get("sender_account_uuids") or []) if u and u not in dead)
     transform = bool(rule.get("transform"))
     out: list[RuleSnapshot] = []
     for t in snap.get("targets") or []:
@@ -150,6 +152,8 @@ class WorkerHostMain:
         # 拦截其残留队列 job(§8.5 check at send time)。
         self._known_rule_ids: dict[str, set[str]] = {}
         self._disabled_rule_ids: set[str] = set()
+        # 已上报死亡的账号 uuid(认证死/冻结/禁言):发送号池抽取跳过(§8.3)
+        self._dead_accounts: set[str] = set()
         self._rules_refreshed_at = 0.0
         self._stopping = asyncio.Event()
 
@@ -218,8 +222,7 @@ class WorkerHostMain:
                 TelethonTransport(
                     session.client, a.account_id,
                     self.registry, self.resolver,
-                    status_cb=lambda st, er, _a=a: self._report_status(
-                        _a.api_row_id, st, er)))
+                    status_cb=lambda st, er, _a=a: self._on_status(_a, st, er)))
             await self._refresh_rules(a)
             register_membership_watch(
                 session,
@@ -283,6 +286,18 @@ class WorkerHostMain:
         except Exception as exc:  # noqa: BLE001 — report must never break the loop
             log.warning("chat-lost report failed account=%s: %s", a.api_row_id, exc)
 
+    _DEAD_STATUSES = frozenset({
+        "auth_dead", "revoked", "banned", "frozen", "error",
+        "disabled", "reauth_required", "unauthorized",
+    })
+
+    async def _on_status(self, a: Assignment, status: str, error: str = "") -> None:
+        if status in self._DEAD_STATUSES:
+            self._dead_accounts.add(a.account_id)
+        elif status == "active":
+            self._dead_accounts.discard(a.account_id)
+        await self._report_status(a.api_row_id, status, error)
+
     async def _report_status(self, api_row_id: int, status: str,
                              error: str = "") -> None:
         """Best-effort observed-status report to control-api (§5.3)."""
@@ -344,7 +359,7 @@ class WorkerHostMain:
         snaps: list[RuleSnapshot] = []
         for r in rows:
             account_uuid = r.get("account_uuid") or a.account_id
-            snaps.extend(rules_from_snapshot(r, account_uuid))
+            snaps.extend(rules_from_snapshot(r, account_uuid, dead=self._dead_accounts))
         new_ids = {s.rule_id for s in snaps}
         removed = self._known_rule_ids.get(a.account_id, set()) - new_ids
         self._disabled_rule_ids = (self._disabled_rule_ids | removed) - new_ids

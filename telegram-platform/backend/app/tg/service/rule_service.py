@@ -1,5 +1,7 @@
 import sqlalchemy as sa
 
+from datetime import timedelta
+
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,8 +12,9 @@ from backend.app.tg.crud.crud_clone_rule import (
 )
 from backend.app.tg.crud.crud_membership import membership_dao
 from backend.app.tg.crud.crud_project import project_dao
+from backend.app.tg.crud.crud_runtime_command import runtime_command_dao
 from backend.app.tg.crud.crud_telegram_account import telegram_account_dao
-from backend.app.tg.model import TgCloneRule, TgCloneRuleVersion, TgCloneTarget, TgDeliveryJob
+from backend.app.tg.model import TgCloneRule, TgCloneRuleVersion, TgCloneTarget, TgDeliveryJob, TgTelegramAccount
 from backend.app.tg.schema.clone_rule import (
     CloneTargetParam,
     CreateCloneRuleParam,
@@ -19,7 +22,7 @@ from backend.app.tg.schema.clone_rule import (
     CreateCloneTargetParam,
     UpdateCloneRuleParam,
 )
-from backend.app.tg.schema.runtime_command import CreateRuntimeCommandParam
+from backend.app.tg.schema.runtime_command import CreateRuntimeCommandInternalParam, CreateRuntimeCommandParam
 from backend.app.tg.service.account_service import JOIN_ERR, join_chat_refs, resolve_user_refs
 from backend.app.tg.service.command_service import runtime_command_service
 from backend.common.exception import errors
@@ -181,6 +184,58 @@ class CloneRuleService:
                 type='ReloadConfig', dedup_key=f'reloadcfg-{uuid4_str()}'
             ),
         )
+
+    _LISTENER_DEAD = {'auth_dead', 'revoked', 'banned', 'frozen', 'error', 'disabled', 'reauth_required'}
+
+    @staticmethod
+    async def failover_listener_if_dead(
+        *, db: AsyncSession, account: TgTelegramAccount, status: str
+    ) -> int | None:
+        """监听号死亡→从发送号池挑一个健康号接管监听并通知重载(§12 自愈)。
+        候选必须期望运行中、观测状态非死态且有会话;接管前先用源群原始链接
+        让新号进群(发送号只在目标群,不在源群)。返回新监听账号 id。"""
+        if status not in CloneRuleService._LISTENER_DEAD:
+            return None
+        rules = await clone_rule_dao.get_all(db)
+        new_id: int | None = None
+        for rule in rules:
+            if rule.account_id != account.id or rule.status != 'published' or not rule.enabled:
+                continue
+            targets = await clone_target_dao.get_all_by_rule(db, rule.id)
+            src_refs = [t.source_chat_ref for t in targets if t.status == 'active' and t.source_chat_ref]
+            cand = None
+            for pid in [int(x) for x in (rule.sender_account_ids or [])]:
+                if pid == account.id:
+                    continue
+                a = await telegram_account_dao.get_by_scope(db, rule.tenant_id, rule.project_id, pid)
+                if not (a and a.desired_status == 'running' and a.observed_status not in CloneRuleService._LISTENER_DEAD and a.secret_ref):
+                    continue
+                if src_refs:
+                    try:
+                        results = await join_chat_refs(a, src_refs)
+                    except Exception:  # noqa: BLE001 — 进群失败换下一个候选
+                        continue
+                    if not all((results.get(r) or {}).get('ok') for r in src_refs):
+                        continue
+                cand = a
+                break
+            if cand is None:
+                continue
+            await clone_rule_dao.update(db, rule.id, {'account_id': cand.id})
+            await runtime_command_dao.create(
+                db,
+                CreateRuntimeCommandInternalParam(
+                    tenant_id=rule.tenant_id,
+                    project_id=rule.project_id,
+                    account_id=cand.id,
+                    type='ReloadConfig',
+                    dedup_key=f'failover-{rule.id}-{uuid4_str()[:8]}',
+                    issued_by=0,
+                    deadline=timezone.now() + timedelta(minutes=30),
+                ),
+            )
+            new_id = cand.id
+        return new_id
 
     @staticmethod
     async def update(*, db: AsyncSession, request: Request, pk: int, obj: UpdateCloneRuleParam) -> int:

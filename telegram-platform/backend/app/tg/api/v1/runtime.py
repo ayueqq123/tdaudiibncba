@@ -263,7 +263,10 @@ async def report_account_status(
             'last_seen_at': timezone.now(),
         },
     )
-    return response_base.success(data={'ok': True})
+    new_listener = await clone_rule_service.failover_listener_if_dead(
+        db=db, account=account, status=obj.observed_status
+    )
+    return response_base.success(data={'ok': True, 'failover_to': new_listener})
 
 
 @router.post(
