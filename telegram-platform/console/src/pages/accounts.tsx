@@ -111,6 +111,8 @@ export default function AccountsPage() {
   const [startAllBusy, setStartAllBusy] = useState(false)
   const [delFrozenOpen, setDelFrozenOpen] = useState(false)
   const [delFrozenBusy, setDelFrozenBusy] = useState(false)
+  const [delTarget, setDelTarget] = useState<TgAccount | null>(null)
+  const [delAccountBusy, setDelAccountBusy] = useState(false)
   const frozenCount = rows.filter((r) => r.observed_status === 'frozen').length
   async function deleteFrozen() {
     setDelFrozenBusy(true)
@@ -123,6 +125,20 @@ export default function AccountsPage() {
     } finally {
       setDelFrozenBusy(false)
       load()
+    }
+  }
+  async function deleteAccount() {
+    if (!delTarget) return
+    setDelAccountBusy(true)
+    try {
+      await tgApi.deleteAccount(delTarget.id)
+      toast.success('已删除')
+      setDelTarget(null)
+      load()
+    } catch (e: any) {
+      toast.error(e?.detail || '删除失败')
+    } finally {
+      setDelAccountBusy(false)
     }
   }
   async function startAll() {
@@ -256,6 +272,30 @@ export default function AccountsPage() {
                 </Button>
                 <Button variant="destructive" onClick={deleteFrozen} disabled={delFrozenBusy || !frozenCount}>
                   {delFrozenBusy ? '删除中…' : `删除 ${frozenCount} 个冻结账号`}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+          <Dialog
+            open={!!delTarget}
+            onOpenChange={(v) => {
+              if (!v && !delAccountBusy) setDelTarget(null)
+            }}
+          >
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>删除账号</DialogTitle>
+              </DialogHeader>
+              <p className="text-sm text-muted-foreground">
+                {delTarget &&
+                  `确定删除账号 ${delTarget.phone || (delTarget.username ? `@${delTarget.username}` : `#${delTarget.id}`)}?删除后该账号停止运行并从列表移除,不可恢复。`}
+              </p>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDelTarget(null)} disabled={delAccountBusy}>
+                  取消
+                </Button>
+                <Button variant="destructive" onClick={deleteAccount} disabled={delAccountBusy}>
+                  {delAccountBusy ? '删除中…' : '删除'}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -403,7 +443,7 @@ export default function AccountsPage() {
               <TableHead>期望</TableHead>
               <TableHead>实际</TableHead>
               <TableHead>备注</TableHead>
-              <TableHead className="w-44">操作</TableHead>
+              <TableHead className="w-60">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -438,6 +478,9 @@ export default function AccountsPage() {
                     )}
                     <Button size="sm" variant="outline" onClick={() => syncChats(r)}>
                       同步群
+                    </Button>
+                    <Button size="sm" variant="destructive" onClick={() => setDelTarget(r)} disabled={delAccountBusy}>
+                      <Trash2 className="h-4 w-4" /> 删除
                     </Button>
                   </div>
                 </TableCell>
