@@ -155,6 +155,11 @@ class ControlClient:
         """Best-effort group-message report for AI 炒群 triggers (fire-and-forget)."""
         await self._post("/ai/event", payload)
 
+    async def clone_transform(self, rule_id: str, text: str) -> dict[str, Any]:
+        """copy 克隆发送前过变形闸:控制面按 rule_id 读实时配置做
+        广告拦截+AI 改写,返回 {action: send|drop, text, reason}。"""
+        return await self._post("/ai/clone_transform", {"rule_id": rule_id, "text": text})
+
     async def get_candidate(self, candidate_uuid: str) -> CandidatePayload:
         d = await self._get(f"/candidates/{candidate_uuid}")
         return CandidatePayload(

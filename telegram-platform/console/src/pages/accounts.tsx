@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { RefreshCw, Smartphone, Upload } from 'lucide-react'
+import { Play, RefreshCw, Smartphone, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { tgApi, type ApiCredential, type TgAccount } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -20,6 +20,8 @@ const statusVariant: Record<string, 'success' | 'warning' | 'destructive' | 'def
   revoked: 'destructive',
   disabled: 'secondary',
   auth_dead: 'destructive',
+  banned: 'destructive',
+  frozen: 'destructive',
   error: 'destructive',
 }
 
@@ -33,6 +35,8 @@ const statusLabel: Record<string, string> = {
   revoked: '已失效',
   disabled: '已禁用',
   auth_dead: '登录失效',
+  banned: '已禁言',
+  frozen: '已冻结',
 }
 
 export default function AccountsPage() {
@@ -100,6 +104,70 @@ export default function AccountsPage() {
     } catch (e: any) {
       toast.error(e?.detail || '下发失败')
     }
+  }
+
+  // 死态:这些号起不来也不该动
+  const DEAD = ['auth_dead', 'revoked', 'banned', 'frozen', 'reauth_required', 'error', 'disabled']
+  const [startAllBusy, setStartAllBusy] = useState(false)
+  const [delFrozenOpen, setDelFrozenOpen] = useState(false)
+  const [delFrozenBusy, setDelFrozenBusy] = useState(false)
+  const [delTarget, setDelTarget] = useState<TgAccount | null>(null)
+  const [delAccountBusy, setDelAccountBusy] = useState(false)
+  const frozenCount = rows.filter((r) => r.observed_status === 'frozen').length
+  async function deleteFrozen() {
+    setDelFrozenBusy(true)
+    try {
+      const r = await tgApi.deleteFrozenAccounts()
+      toast.success(`已删除 ${r.deleted} 个冻结账号`)
+      setDelFrozenOpen(false)
+    } catch (e: any) {
+      toast.error(e?.detail || '删除失败')
+    } finally {
+      setDelFrozenBusy(false)
+      load()
+    }
+  }
+  async function deleteAccount() {
+    if (!delTarget) return
+    setDelAccountBusy(true)
+    try {
+      await tgApi.deleteAccount(delTarget.id)
+      toast.success('已删除')
+      setDelTarget(null)
+      load()
+    } catch (e: any) {
+      toast.error(e?.detail || '删除失败')
+    } finally {
+      setDelAccountBusy(false)
+    }
+  }
+  async function startAll() {
+    const normal = rows.filter(
+      (r) => r.desired_status !== 'running' && !DEAD.includes(r.observed_status),
+    )
+    if (!normal.length) {
+      toast.warning('没有可启动的正常账号')
+      return
+    }
+    setStartAllBusy(true)
+    let ok = 0
+    let fail = 0
+    for (const r of normal) {
+      try {
+        await tgApi.updateAccount(r.id, {
+          tenant_id: r.tenant_id,
+          project_id: r.project_id,
+          desired_status: 'running',
+          observed_status: r.observed_status,
+        })
+        ok++
+      } catch {
+        fail++
+      }
+    }
+    setStartAllBusy(false)
+    toast.success(`已下发启动 ${ok} 个账号${fail ? `,${fail} 个失败` : ''}(已自动跳过死号)`)
+    load()
   }
 
   async function loginSend() {
@@ -182,6 +250,56 @@ export default function AccountsPage() {
       <div className="mb-4 flex items-center justify-between">
         <h2 className="text-lg font-semibold">TG 账号</h2>
         <div className="flex gap-2">
+          <Button variant="outline" onClick={startAll} disabled={startAllBusy}>
+            <Play className="h-4 w-4" /> {startAllBusy ? '启动中…' : '一键启动'}
+          </Button>
+          <Dialog open={delFrozenOpen} onOpenChange={setDelFrozenOpen}>
+            <DialogTrigger asChild>
+              <Button variant="outline">
+                <Trash2 className="h-4 w-4" /> 清除冻结账号
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>一键删除冻结账号</DialogTitle>
+              </DialogHeader>
+              <p className="text-sm text-muted-foreground">
+                将删除当前 {frozenCount} 个状态为"已冻结"的账号,删除后不可恢复。正常账号不受影响。
+              </p>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDelFrozenOpen(false)}>
+                  取消
+                </Button>
+                <Button variant="destructive" onClick={deleteFrozen} disabled={delFrozenBusy || !frozenCount}>
+                  {delFrozenBusy ? '删除中…' : `删除 ${frozenCount} 个冻结账号`}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+          <Dialog
+            open={!!delTarget}
+            onOpenChange={(v) => {
+              if (!v && !delAccountBusy) setDelTarget(null)
+            }}
+          >
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>删除账号</DialogTitle>
+              </DialogHeader>
+              <p className="text-sm text-muted-foreground">
+                {delTarget &&
+                  `确定删除账号 ${delTarget.phone || (delTarget.username ? `@${delTarget.username}` : `#${delTarget.id}`)}?删除后该账号停止运行并从列表移除,不可恢复。`}
+              </p>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDelTarget(null)} disabled={delAccountBusy}>
+                  取消
+                </Button>
+                <Button variant="destructive" onClick={deleteAccount} disabled={delAccountBusy}>
+                  {delAccountBusy ? '删除中…' : '删除'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button>
@@ -190,10 +308,12 @@ export default function AccountsPage() {
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>批量导入 Session 包(zip)</DialogTitle>
+                <DialogTitle>批量导入账号包(zip)</DialogTitle>
               </DialogHeader>
               <div className="flex flex-col gap-3">
-                <p className="text-sm text-muted-foreground">上传 zip 协议号包,自动验证并归入你的账号列表</p>
+                <p className="text-sm text-muted-foreground">
+                  支持两种 zip:① 协议号包(.session+.json);② tdata 包(直接打包 Telegram 桌面版 tdata 目录)。上传后自动验证并归入账号列表
+                </p>
                 <div className="flex flex-col gap-1.5">
                   <Label>zip 文件</Label>
                   <Input ref={fileRef} type="file" accept=".zip" onChange={(e) => setFile(e.target.files?.[0] || null)} />
@@ -251,13 +371,13 @@ export default function AccountsPage() {
                     <div className="flex flex-col gap-1.5">
                       <Label>API 凭据</Label>
                       <Select value={credIdx} onValueChange={pickCred}>
-                        <SelectTrigger className="[&>span]:truncate">
+                        <SelectTrigger>
                           <SelectValue placeholder="选择已用过的凭据" />
                         </SelectTrigger>
-                        <SelectContent className="max-w-[var(--radix-select-trigger-width)]">
+                        <SelectContent>
                           {creds.map((c, i) => (
                             <SelectItem key={i} value={String(i)}>
-                              {`api_id: ${c.api_id} · ${c.phones[0] ?? ''}${c.account_count > 1 ? ` 等${c.account_count}个号在用` : ''}`}
+                              {`api_id: ${c.api_id} · ${c.account_count || c.phones.length} 个账号`}
                             </SelectItem>
                           ))}
                           <SelectItem value="manual">手动输入新凭据</SelectItem>
@@ -323,7 +443,7 @@ export default function AccountsPage() {
               <TableHead>期望</TableHead>
               <TableHead>实际</TableHead>
               <TableHead>备注</TableHead>
-              <TableHead className="w-44">操作</TableHead>
+              <TableHead className="w-60">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -338,6 +458,11 @@ export default function AccountsPage() {
                 </TableCell>
                 <TableCell>
                   <Badge variant={statusVariant[r.observed_status] || 'secondary'}>{statusLabel[r.observed_status] || r.observed_status}</Badge>
+                  {r.last_error && (
+                    <div className="mt-1 max-w-56 truncate text-xs text-destructive" title={r.last_error}>
+                      {r.last_error}
+                    </div>
+                  )}
                 </TableCell>
                 <TableCell className="text-muted-foreground">{r.remark || '-'}</TableCell>
                 <TableCell>
@@ -353,6 +478,9 @@ export default function AccountsPage() {
                     )}
                     <Button size="sm" variant="outline" onClick={() => syncChats(r)}>
                       同步群
+                    </Button>
+                    <Button size="sm" variant="destructive" onClick={() => setDelTarget(r)} disabled={delAccountBusy}>
+                      <Trash2 className="h-4 w-4" /> 删除
                     </Button>
                   </div>
                 </TableCell>

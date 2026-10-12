@@ -77,6 +77,13 @@ class AiGroupEventParam(SchemaBase):
     sender_is_bot: bool = False
 
 
+class CloneTransformParam(SchemaBase):
+    """worker 克隆发送前的变形闸请求(广告拦截+AI 改写,按规则实时配置)"""
+
+    rule_id: str = Field(description='克隆规则行 ID(worker 快照里的 rule.id)')
+    text: str = Field(description='源消息文本')
+
+
 class AiTriggerParam(SchemaBase):
     """手动/规则触发一次 AI 生成(§9.2 起点)"""
 
@@ -282,6 +289,7 @@ class GetAiGroupDetail(SchemaBase):
     max_reply_chars: int
     auto_approve: bool
     last_message_at: datetime | None
+    last_real_message_at: datetime | None
     last_warmup_at: datetime | None
     remark: str | None
     member_count: int = 0
@@ -320,6 +328,9 @@ class GetAiMemberDetail(SchemaBase):
     status: str
     account_label: str = ''
     account_running: bool = False
+    member_state: str | None = None
+    member_state_detail: str | None = None
+    member_state_at: datetime | None = None
 
 
 class AiPersonaParam(SchemaBase):

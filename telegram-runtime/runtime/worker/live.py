@@ -9,11 +9,14 @@ SendPolicy gate upstream; this layer only maps Telegram outcomes into the
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import io
 import logging
 import os
 import tempfile
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -24,6 +27,7 @@ from telethon.errors import (
     ChannelPrivateError,
     ChatWriteForbiddenError,
     FloodWaitError,
+    FrozenMethodInvalidError,
     MessageEmptyError,
     PeerIdInvalidError,
     SessionRevokedError,
@@ -43,6 +47,22 @@ from runtime.storage.repos import EventInboxRepository
 from runtime.worker.control_client import ControlClient, SessionBundle
 
 log = logging.getLogger(__name__)
+
+_RPC_TIMEOUT_S = 120.0
+_SENDER_BOT_CACHE_MAX = 50_000
+_SENDER_BOT: OrderedDict[int, bool] = OrderedDict()
+
+
+def _record_sender_bot(sender_id: int | None, sender) -> bool:
+    is_bot = bool(getattr(sender, "bot", False)) or (
+        (getattr(sender, "username", None) or "").lower().endswith("bot")
+    )
+    if type(sender_id) is int and sender_id > 0:
+        _SENDER_BOT[sender_id] = is_bot
+        _SENDER_BOT.move_to_end(sender_id)
+        if len(_SENDER_BOT) > _SENDER_BOT_CACHE_MAX:
+            _SENDER_BOT.popitem(last=False)
+    return is_bot
 
 
 class LiveRegistry:
@@ -115,6 +135,16 @@ class PayloadResolver:
                                  f"candidate {uuid} hash mismatch")
         return cand.content
 
+    async def clone_transform(self, rule_id: str, text: str) -> dict:
+        """发送前过控制面变形闸;网络/服务错按 TRANSIENT 重试。"""
+        try:
+            return await self._control.clone_transform(rule_id, text)
+        except TransportError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 控制面调用失败一律可重试
+            raise TransportError(TransportErrorKind.TRANSIENT,
+                                 f"clone_transform: {exc!r}"[:300])
+
 
 def _classify(exc: Exception) -> TransportErrorKind:
     if isinstance(exc, (FloodWaitError, SlowModeWaitError)):
@@ -123,7 +153,7 @@ def _classify(exc: Exception) -> TransportErrorKind:
                         ChannelPrivateError)):
         return TransportErrorKind.PERMISSION
     if isinstance(exc, (AuthKeyUnregisteredError, SessionRevokedError,
-                        UnauthorizedError)):
+                        UnauthorizedError, FrozenMethodInvalidError)):
         return TransportErrorKind.AUTH
     if isinstance(exc, (MessageEmptyError, PeerIdInvalidError, ValueError)):
         return TransportErrorKind.CONTENT
@@ -137,12 +167,25 @@ class TelethonTransport(SendTransport):
     (-100...); rules and this layer share that convention."""
 
     def __init__(self, client: TelegramClient, account_id: str,
-                 registry: LiveRegistry, resolver: PayloadResolver):
+                 registry: LiveRegistry, resolver: PayloadResolver,
+                 status_cb: Callable[[str, str], Awaitable[None]] | None = None):
         self.client = client
         self.account_id = account_id
         self.registry = registry
         self.resolver = resolver
+        self.status_cb = status_cb
         self._self_id: int | None = None
+        self._reported: set[str] = set()
+
+    async def _report_dead(self, status: str, exc: Exception) -> None:
+        """死号/禁言/冻结透出到控制面账号状态;同状态只报一次。"""
+        if self.status_cb is None or status in self._reported:
+            return
+        self._reported.add(status)
+        try:
+            await self.status_cb(status, str(exc)[:300])
+        except Exception:  # noqa: BLE001 — 上报失败不影响发送判定
+            log.warning("status report failed account=%s", self.account_id)
 
     async def _entity(self, target_id: int):
         # Telegram rejects PeerUser(self) in send/edit/delete — Saved
@@ -158,7 +201,10 @@ class TelethonTransport(SendTransport):
             # "不确定结果重发",此时请求尚未离手。
             if not self.client.is_connected():
                 await self.client.connect()
-            return await fn()
+            # 请求级超时:半死连接上的 RPC 会无声挂起,job 永远停在 sending。
+            # 超时记 RESULT_UNKNOWN——请求可能已离手,结果不确定不盲重发。
+            async with asyncio.timeout(_RPC_TIMEOUT_S):
+                return await fn()
         except TransportError:
             raise
         except (FloodWaitError, SlowModeWaitError) as exc:
@@ -170,6 +216,11 @@ class TelethonTransport(SendTransport):
             kind = _classify(exc)
             if kind is TransportErrorKind.AUTH:
                 self.registry.mark_auth_dead(self.account_id)
+                status = ("frozen" if isinstance(exc, FrozenMethodInvalidError)
+                          else "auth_dead")
+                await self._report_dead(status, exc)
+            elif kind is TransportErrorKind.PERMISSION:
+                await self._report_dead("banned", exc)
             raise TransportError(kind, str(exc)[:300])
 
     async def _resolve_text(self, plan: DeliveryPlan) -> str | None:
@@ -178,7 +229,52 @@ class TelethonTransport(SendTransport):
                 plan.payload_ref.removeprefix("candidate:"), plan.payload_hash)
         return None
 
-    async def send(self, plan: DeliveryPlan) -> list[int]:
+    async def _fetch_source(self, plan: DeliveryPlan,
+                            fetcher: TelethonTransport):
+        """源消息统一经监听号 fetcher 回取——发送号不需要在源群。
+        fetcher 的 _call 把错误记到 fetcher 自己的 registry。"""
+        src = await fetcher._call(lambda: fetcher.client.get_messages(
+            plan.source_chat_id, ids=plan.source_message_id))
+        if src is None:
+            raise TransportError(TransportErrorKind.CONTENT,
+                                 "source message missing")
+        return src
+
+    async def _media_file(self, src, fetcher: TelethonTransport):
+        """同号直传 TL media(快路径);跨账号下载 bytes 由发送号重传
+        (file_reference 与账号绑定,不能直接把别的号抓到的 media 发出去)。
+        返回 (file, attributes, mime_type):裸 bytes 会被当无名文件发,故带上
+        原名/扩展名 + 原文档 mime_type + 原文档属性(视频时长宽高、语音时长等),
+        否则源端是 octet-stream 的视频会落地成文件。"""
+        media = getattr(src, "media", None)
+        if media is None:
+            return None, None, None
+        if fetcher is self:
+            return media, None, None
+        data = await fetcher._call(lambda: src.download_media(file=bytes))
+        if data is None:
+            return None, None, None
+        f = getattr(src, 'file', None)
+        name = getattr(f, 'name', None) or (f'media{f.ext}' if getattr(f, 'ext', None) else 'media.bin')
+        buf = io.BytesIO(data)
+        buf.name = name
+        doc = getattr(src, 'document', None)
+        attrs = list(getattr(doc, 'attributes', None) or [])
+        mime = getattr(doc, 'mime_type', None)
+        return buf, attrs, mime
+
+    async def _transform(self, plan: DeliveryPlan, text: str) -> str:
+        if not plan.transform or not text.strip():
+            return text
+        r = await self.resolver.clone_transform(plan.rule_id, text)
+        if r.get("action") == "drop":
+            raise TransportError(TransportErrorKind.CONTENT,
+                                 f"dropped:{r.get('reason') or 'filtered'}")
+        return str(r.get("text") or text)
+
+    async def send(self, plan: DeliveryPlan,
+                   *, fetcher: TelethonTransport | None = None) -> list[int]:
+        fetcher = fetcher or self
         text = await self._resolve_text(plan)
         if text is not None:
             entity = await self._entity(plan.target_chat_id)
@@ -191,29 +287,31 @@ class TelethonTransport(SendTransport):
                 plan.target_chat_id, [plan.source_message_id],
                 from_peer=plan.source_chat_id))
             return [m.id for m in msgs] if isinstance(msgs, list) else [msgs.id]
-        # copy mode: re-send the source message's own content
-        src = await self._call(lambda: self.client.get_messages(
-            plan.source_chat_id, ids=plan.source_message_id))
-        if src is None:
-            raise TransportError(TransportErrorKind.CONTENT,
-                                 "source message missing")
+        # copy mode: re-send the source message's own content(经监听号回取)
+        src = await self._fetch_source(plan, fetcher)
         entity = await self._entity(plan.target_chat_id)
-        msg = await self._call(lambda: self.client.send_message(
-            entity, getattr(src, "text", None) or "",
-            file=getattr(src, "media", None),
-            reply_to=plan.reply_to_target_message_id))
+        text = await self._transform(plan, getattr(src, "text", None) or "")
+        file, attrs, mime = await self._media_file(src, fetcher)
+        if file is None:
+            msg = await self._call(lambda: self.client.send_message(
+                entity, text,
+                reply_to=plan.reply_to_target_message_id))
+        else:
+            msg = await self._call(lambda: self.client.send_file(
+                entity, file, caption=text, attributes=attrs, mime_type=mime,
+                reply_to=plan.reply_to_target_message_id))
         return [msg.id]
 
-    async def edit(self, plan: DeliveryPlan, target_message_id: int) -> None:
-        src = await self._call(lambda: self.client.get_messages(
-            plan.source_chat_id, ids=plan.source_message_id))
-        if src is None:
-            raise TransportError(TransportErrorKind.CONTENT,
-                                 "source message missing for edit")
+    async def edit(self, plan: DeliveryPlan, target_message_id: int,
+                   *, fetcher: TelethonTransport | None = None) -> None:
+        fetcher = fetcher or self
+        src = await self._fetch_source(plan, fetcher)
         entity = await self._entity(plan.target_chat_id)
+        text = await self._transform(plan, getattr(src, "text", None) or "")
+        file, attrs, mime = await self._media_file(src, fetcher)
+        # edit_message 不接 attributes;用原文件名已能保住媒体类型
         await self._call(lambda: self.client.edit_message(
-            entity, target_message_id,
-            getattr(src, "text", None) or "", file=getattr(src, "media", None)))
+            entity, target_message_id, text, file=file))
 
     async def delete(self, plan: DeliveryPlan,
                      target_message_ids: list[int]) -> None:
@@ -242,11 +340,15 @@ class TransportRouter(SendTransport):
                                  f"no live session for {plan.account_id}")
         return t
 
+    def _fetcher_for(self, plan: DeliveryPlan) -> TelethonTransport | None:
+        return self._routes.get(plan.fetch_account_id or plan.account_id)
+
     async def send(self, plan: DeliveryPlan) -> list[int]:
-        return await self._for(plan).send(plan)
+        return await self._for(plan).send(plan, fetcher=self._fetcher_for(plan))
 
     async def edit(self, plan: DeliveryPlan, target_message_id: int) -> None:
-        await self._for(plan).edit(plan, target_message_id)
+        await self._for(plan).edit(plan, target_message_id,
+                                   fetcher=self._fetcher_for(plan))
 
     async def delete(self, plan: DeliveryPlan,
                      target_message_ids: list[int]) -> None:
@@ -326,6 +428,10 @@ def make_ingest_handler(session_factory, account_id: str, tenant_id: str,
 
     async def on_update(event) -> None:
         try:
+            if isinstance(event, (events.NewMessage.Event, events.MessageEdited.Event)):
+                message = getattr(event, "message", None)
+                if message is not None:
+                    await _resolve_sender_bot(message)
             for raw in _to_raws(event):
                 src_event = normalizer.normalize(raw, account_id)
                 async with session_factory() as s:
@@ -339,6 +445,16 @@ def make_ingest_handler(session_factory, account_id: str, tenant_id: str,
     return on_update
 
 
+def _display_name(sender) -> str | None:
+    """Telegram nickname as shown in the group; falls back to @username."""
+    if sender is None:
+        return None
+    nick = " ".join(
+        p for p in (getattr(sender, "first_name", None), getattr(sender, "last_name", None)) if p
+    ).strip() or (getattr(sender, "title", None) or "").strip()
+    return nick or getattr(sender, "username", None)
+
+
 async def _report_ai_event(event, raw, control, api_row_id: int) -> None:
     """Best-effort group-message report for AI 炒群 (worker -> control plane)."""
     msg = getattr(event, "message", None)
@@ -346,11 +462,7 @@ async def _report_ai_event(event, raw, control, api_row_id: int) -> None:
     if not text:
         return
     sender = getattr(msg, "sender", None)
-    name = (
-        getattr(sender, "username", None)
-        or getattr(sender, "first_name", None)
-        or str(raw.sender_id or "User")
-    )
+    name = _display_name(sender) or str(raw.sender_id or "User")
     try:
         await control.notify_ai_event({
             "api_row_id": api_row_id, "chat_id": raw.chat_id,
@@ -375,18 +487,34 @@ def _sender_id(msg) -> int | None:
     return utils.get_peer_id(from_id) if from_id is not None else None
 
 
+async def _resolve_sender_bot(msg) -> None:
+    sender_id = None
+    try:
+        sender_id = _sender_id(msg)
+        if type(sender_id) is not int or sender_id <= 0 or sender_id in _SENDER_BOT:
+            return
+        sender = getattr(msg, "sender", None)
+        if sender is None:
+            sender = await asyncio.wait_for(msg.get_sender(), timeout=5)
+        if sender is None:
+            log.debug("could not resolve sender bot status sender_id=%s: no sender",
+                      sender_id)
+            return
+        _record_sender_bot(sender_id, sender)
+    except Exception:
+        log.debug("could not resolve sender bot status sender_id=%s",
+                  sender_id, exc_info=True)
+
+
 def _sender_is_bot(msg) -> bool:
-    """True when the author is a bot account (cached sender entity, or a
-    `...bot` username as fallback) or the message was sent via an inline bot."""
+    """True when the author is a bot account or sent via an inline bot."""
     if getattr(msg, "via_bot_id", None):
         return True
+    sender_id = _sender_id(msg)
     sender = getattr(msg, "sender", None)
-    if sender is None:
-        return False
-    if getattr(sender, "bot", False):
-        return True
-    username = getattr(sender, "username", None) or ""
-    return username.lower().endswith("bot")
+    if sender is not None:
+        return _record_sender_bot(sender_id, sender)
+    return _SENDER_BOT.get(sender_id, False)
 
 
 _MEDIA_ATTRS: tuple[tuple[str, str], ...] = (

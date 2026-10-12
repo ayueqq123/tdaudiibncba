@@ -244,6 +244,11 @@ class Settings(BaseSettings):
         'old_password',
         'new_password',
         'confirm_password',
+        'provider_key',
+        'api_key',
+        'api_hash',
+        'code',
+        'session_string',
     ]
     OPERA_LOG_QUEUE_MAXSIZE: int = 100000
     OPERA_LOG_QUEUE_BATCH_CONSUME_SIZE: int = 100

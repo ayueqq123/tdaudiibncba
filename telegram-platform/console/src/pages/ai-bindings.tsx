@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Pause, Pencil, Play, Plus, RefreshCw, Save, Sparkles, Square, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
+  ApiError,
   tgApi,
   type AiGroup,
   type AiGroupMessage,
@@ -23,7 +24,8 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 
-const errMsg = (e: unknown, fallback: string) => (e instanceof Error && e.message ? e.message : fallback)
+const errMsg = (e: unknown, fallback: string) =>
+  e instanceof ApiError ? e.detail || fallback : e instanceof Error && e.message ? e.message : fallback
 
 function fmtTs(s?: string | number | null) {
   if (s === undefined || s === null || s === '') return '-'
@@ -115,7 +117,7 @@ const GROUP_DEFAULT: GroupForm = {
   active_end_hour: '0',
   mention_bypass_hours: true,
   idle_warmup_min: '0',
-  quote_prob: '30',
+  quote_prob: '70',
   punct_space_prob: '70',
   blocked_words: '',
   max_reply_chars: '200',
@@ -378,9 +380,9 @@ export default function AiBindingsPage() {
   const [current, setCurrent] = useState<AiGroup | null>(null)
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState<GroupForm>(GROUP_DEFAULT)
-  const [ws, setWs] = useState<{ tenant_id: number; project_id: number } | null>(null)
   const [saving, setSaving] = useState(false)
   const [privateOpen, setPrivateOpen] = useState(false)
+  const [ws, setWs] = useState<{ tenant_id: number; project_id: number } | null>(null)
 
   const loadSeq = useRef(0)
   const load = async () => {
@@ -709,6 +711,18 @@ function SettingsTab({ group, accounts, onSaved }: { group: AiGroup; accounts: T
   )
 }
 
+function memberStateText(state: string) {
+  const m: Record<string, string> = {
+    not_in_group: '被踢出群',
+    muted: '被禁言',
+    banned: '被群封禁',
+    session_dead: '会话失效',
+    frozen: '账号冻结',
+    check_failed: '在群检查失败',
+  }
+  return m[state] || `在群状态异常:${state}`
+}
+
 function MembersTab({
   group,
   members,
@@ -880,6 +894,14 @@ function MembersTab({
                     <TableCell className="whitespace-nowrap">
                       {m.account_label}
                       {!m.account_running && <div className="text-[11px] text-destructive">账号未运行</div>}
+                      {m.member_state && m.member_state !== 'ok' && (
+                        <div
+                          className="text-[11px] text-destructive"
+                          title={m.member_state_detail || ''}
+                        >
+                          {memberStateText(m.member_state)}
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell className="whitespace-nowrap">{m.role_name || '-'}</TableCell>
                     <TableCell className="max-w-[260px] truncate text-xs text-muted-foreground" title={m.persona || ''}>
@@ -927,33 +949,33 @@ function MembersTab({
               <div className="sm:col-span-2">
                 <Field label="账号(可多选,共用下方人设)" hint={group.chat_ref ? '添加时会自动用链接进群' : undefined}>
                   <div className="max-h-44 overflow-y-auto rounded-md border p-1">
-                  {free.map((a) => {
-                    const id = String(a.id)
-                    const checked = form.account_ids.includes(id)
-                    return (
-                      <label
-                        key={a.id}
-                        className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() =>
-                            setForm({
-                              ...form,
-                              account_ids: checked
-                                ? form.account_ids.filter((x) => x !== id)
-                                : [...form.account_ids, id],
-                            })
-                          }
-                        />
-                        {accLabel(a)}
-                      </label>
-                    )
-                  })}
-                  {!free.length && (
-                    <p className="px-2 py-1.5 text-sm text-muted-foreground">可选账号都在群里了</p>
-                  )}
+                    {free.map((a) => {
+                      const id = String(a.id)
+                      const checked = form.account_ids.includes(id)
+                      return (
+                        <label
+                          key={a.id}
+                          className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() =>
+                              setForm({
+                                ...form,
+                                account_ids: checked
+                                  ? form.account_ids.filter((x) => x !== id)
+                                  : [...form.account_ids, id],
+                              })
+                            }
+                          />
+                          {accLabel(a)}
+                        </label>
+                      )
+                    })}
+                    {!free.length && (
+                      <p className="px-2 py-1.5 text-sm text-muted-foreground">可选账号都在群里了</p>
+                    )}
                   </div>
                 </Field>
                 {form.account_ids.length > 0 && (

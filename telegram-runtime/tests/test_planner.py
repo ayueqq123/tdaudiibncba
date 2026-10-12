@@ -15,11 +15,15 @@ from runtime.planner.planner import ClonePlanner
 
 
 class DictMapping:
-    def __init__(self, entries=None):
+    def __init__(self, entries=None, senders=None):
         self.entries = entries or {}
+        self.senders = senders or {}
 
     def find_target_message_id(self, route_id, scope, chat, msg):
         return self.entries.get((route_id, scope, chat, msg))
+
+    def find_sender_account_id(self, route_id, scope, chat, msg):
+        return self.senders.get((route_id, scope, chat, msg))
 
 
 def _event(**kw):

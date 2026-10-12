@@ -8,13 +8,20 @@ taxonomy. Persistence of results is the caller's job (§6.4 boundary 4).
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol
 
 from runtime.planner.model import DeliveryPlan, PlanKind
 
 from .model import ErrorClass
-from .policy import ApprovalRecord, LiveAccount, PolicyCheckable, PolicySnapshot, check, Decision
+from .policy import (
+    ApprovalRecord,
+    Decision,
+    LiveAccount,
+    PolicyCheckable,
+    PolicySnapshot,
+    check,
+)
 
 
 class TransportErrorKind(enum.Enum):
@@ -112,12 +119,17 @@ class DeliveryExecutor:
                                       target_message_ids=tuple(ids), decision=decision)
             if plan.kind is PlanKind.EDIT:
                 if not target_message_ids:
-                    raise ValueError("EDIT plan requires target_message_ids")
+                    return DeliveryResult(
+                        plan=plan, status=ResultStatus.FAILED,
+                        error_class=ErrorClass.CONTENT_INVALID,
+                        error_detail="no mapped target message",
+                        decision=decision)
                 await self._transport.edit(plan, target_message_ids[0])
                 return DeliveryResult(plan=plan, status=ResultStatus.SUCCEEDED,
                                       target_message_ids=tuple(target_message_ids), decision=decision)
             if plan.kind in (PlanKind.DELETE, PlanKind.TOMBSTONE):
-                await self._transport.delete(plan, target_message_ids or [])
+                if target_message_ids:
+                    await self._transport.delete(plan, target_message_ids)
                 return DeliveryResult(plan=plan, status=ResultStatus.SUCCEEDED,
                                       target_message_ids=tuple(target_message_ids or ()),
                                       decision=decision)

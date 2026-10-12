@@ -45,6 +45,12 @@ class TgAiBinding(Base):
     )
     group_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, index=True, comment='所属炒群任务')
     role_name: Mapped[str | None] = mapped_column(sa.String(64), default=None, comment='角色名')
+    member_state: Mapped[str | None] = mapped_column(
+        sa.String(24), default=None,
+        comment='在群状态 ok|not_in_group|muted|banned|session_dead|frozen|check_failed',
+    )
+    member_state_detail: Mapped[str | None] = mapped_column(sa.String(500), default=None, comment='在群状态说明')
+    member_state_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='在群状态检查时间')
 
     __table_args__ = ({'comment': 'TG AI LangBot 绑定表'},)
 
@@ -197,13 +203,14 @@ class TgAiGroup(Base):
     active_end_hour: Mapped[int] = mapped_column(sa.Integer, default=0, comment='活跃结束小时,与开始相同=全天')
     mention_bypass_hours: Mapped[bool] = mapped_column(sa.Boolean, default=True, comment='被@时无视活跃时段')
     idle_warmup_min: Mapped[int] = mapped_column(sa.Integer, default=0, comment='冷场X分钟后暖场,0=关')
-    quote_prob: Mapped[int] = mapped_column(sa.Integer, default=30, comment='引用回复概率 0-100')
+    quote_prob: Mapped[int] = mapped_column(sa.Integer, default=70, comment='引用回复概率 0-100')
     punct_space_prob: Mapped[int] = mapped_column(sa.Integer, default=70, comment='逗号句号转空格概率 0-100')
     blocked_words: Mapped[list] = mapped_column(sa.JSON, default_factory=list, comment='关键词黑名单')
     max_reply_chars: Mapped[int] = mapped_column(sa.Integer, default=200, comment='回复最长字数,0=不限')
     auto_approve: Mapped[bool] = mapped_column(sa.Boolean, default=False, comment='自动审批')
     recent_messages: Mapped[list] = mapped_column(sa.JSON, default_factory=list, comment='群最新消息缓存')
     last_message_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近群消息时间')
+    last_real_message_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近真实消息时间(克隆件不计)')
     last_warmup_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近暖场时间')
     remark: Mapped[str | None] = mapped_column(sa.String(255), default=None)
 

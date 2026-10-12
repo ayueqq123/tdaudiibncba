@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, ArrowRight, History, Pencil, Play, Plus, RefreshCw, ShieldCheck, Square, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { tgApi, type CloneRule, type CloneTarget, type TgAccount } from '@/lib/api'
+import { tgApi, type AiGroup, type CloneRule, type CloneTarget, type TgAccount } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -18,10 +18,23 @@ const MEDIA_KINDS: [string, string][] = [
 ]
 const KIND_LABEL: Record<string, string> = Object.fromEntries(MEDIA_KINDS)
 
+const STATUS_LABEL: Record<string, string> = {
+  auth_dead: '登录失效',
+  revoked: '登录失效',
+  reauth_required: '需重登',
+  banned: '已禁言',
+  frozen: '已冻结',
+  error: '异常',
+  disabled: '已禁用',
+}
+const DEAD_STATUS = new Set(Object.keys(STATUS_LABEL))
+
 const EMPTY_FORM = {
   account_id: '', name: '', mode: 'copy',
+  sender_account_ids: [] as number[],
+  ai_rewrite: 'off', ad_block: 'off', ad_keywords: '', ai_group_id: 'auto',
   sync_edit: true, sync_delete: true,
-  source_chat_id: '', target_chat_id: '',
+  source_chats: [''] as string[], target_chat_id: '',
   sender_user_ids: '', blocked_sender_ids: '', exclude_bots: false,
   media_kinds: [] as string[], remark: '',
 }
@@ -46,6 +59,7 @@ function filterSummary(t: CloneTarget): string {
 export default function RulesPage() {
   const [rows, setRows] = useState<CloneRule[]>([])
   const [accounts, setAccounts] = useState<TgAccount[]>([])
+  const [aiGroups, setAiGroups] = useState<AiGroup[]>([])
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -62,8 +76,9 @@ export default function RulesPage() {
   async function load() {
     setLoading(true)
     try {
-      const [r, a] = await Promise.all([tgApi.rules(), tgApi.accounts()])
+      const [r, a, g] = await Promise.all([tgApi.rules(), tgApi.accounts(), tgApi.aiGroups().catch(() => [])])
       setAccounts(a)
+      setAiGroups(g)
       const detailed = await Promise.all(r.map((x) => tgApi.rule(x.id).catch(() => x)))
       detailed.sort((x, y) => x.id - y.id)
       setRows(detailed)
@@ -90,7 +105,10 @@ export default function RulesPage() {
     const acc = accounts.find((a) => a.id === +form.account_id)
     if (!form.name) return toast.warning('名称必填')
     if (!editRule && !acc) return toast.warning('请选择执行账号')
-    if (!form.source_chat_id || !form.target_chat_id) return toast.warning('源群/目标群必填')
+    const formSrcs = form.source_chats.map((s: string) => s.trim()).filter(Boolean)
+    if (!formSrcs.length || !form.target_chat_id) return toast.warning('源群/目标群必填')
+    if (form.mode === 'forward' && form.sender_account_ids.length > 0)
+      return toast.warning('多号搬运只支持「复制重发」,官方转发请留空号池')
     const senders = parseSenders(form.sender_user_ids)
     const blocked = parseSenders(form.blocked_sender_ids)
     if ([...senders, ...blocked].some((x) => !/^\d+$/.test(x) && !/^@?[A-Za-z][A-Za-z0-9_]{3,}$/.test(x)))
@@ -101,26 +119,44 @@ export default function RulesPage() {
     if (blocked.length) filters.blocked_sender_ids = blocked
     if (form.media_kinds.length) filters.media_kinds = form.media_kinds
     const toRef = (s: string) => (/^-?\d+$/.test(s.trim()) ? Number(s.trim()) : s.trim())
-    const targetBody = {
-      source_chat_id: toRef(String(form.source_chat_id)),
+    const mkBody = (src: string | number) => ({
+      source_chat_id: toRef(String(src)),
       target_chat_id: toRef(String(form.target_chat_id)),
       filters: Object.keys(filters).length ? filters : null,
+    })
+    const ruleBody = {
+      name: form.name,
+      mode: form.mode,
+      sync_edit: form.sync_edit,
+      sync_delete: form.sync_delete,
+      remark: form.remark || null,
+      sender_account_ids: form.sender_account_ids,
+      ai_rewrite: form.ai_rewrite,
+      ad_block: form.ad_block,
+      ad_keywords: parseSenders(form.ad_keywords),
+      ai_group_id: form.ai_group_id === 'auto' ? null : +form.ai_group_id,
     }
 
     setBusy(true)
     try {
       if (editRule) {
         await tgApi.updateRule(editRule.id, {
-          name: form.name,
-          mode: form.mode,
-          sync_edit: form.sync_edit,
-          sync_delete: form.sync_delete,
+          ...ruleBody,
           enabled: editRule.enabled,
-          remark: form.remark || null,
         })
-        const t = activeTarget(editRule)
-        if (t) await tgApi.updateTarget(editRule.id, t.id, targetBody)
-        else await tgApi.addTarget(editRule.id, targetBody)
+        // 多源群 diff:还在表单里的→update;不在的→retire;新加的→addTarget
+        const active = (editRule.targets || []).filter((t) => t.status === 'active' || !t.status)
+        const kept: CloneTarget[] = []
+        const removed: CloneTarget[] = []
+        for (const t of active) {
+          const hit = formSrcs.some((s: string) => s === t.source_chat_ref || s === String(t.source_chat_id))
+          ;(hit ? kept : removed).push(t)
+        }
+        const keptKeys = new Set(kept.flatMap((t) => [t.source_chat_ref, String(t.source_chat_id)].filter(Boolean) as string[]))
+        const added = formSrcs.filter((s: string) => !keptKeys.has(s))
+        for (const t of kept) await tgApi.updateTarget(editRule.id, t.id, mkBody(t.source_chat_ref || t.source_chat_id))
+        for (const t of removed) await tgApi.retireTarget(editRule.id, t.id)
+        for (const s of added) await tgApi.addTarget(editRule.id, mkBody(s))
         if (isRunning(editRule)) {
           await applyToWorker(editRule.id, editRule.current_version, editRule.account_id)
           toast.success('已保存并生效')
@@ -129,19 +165,15 @@ export default function RulesPage() {
         }
       } else {
         await tgApi.createRule({
+          ...ruleBody,
           account_id: acc!.id,
           tenant_id: acc!.tenant_id,
           project_id: acc!.project_id,
-          name: form.name,
-          mode: form.mode,
-          sync_edit: form.sync_edit,
-          sync_delete: form.sync_delete,
           enabled: true,
-          remark: form.remark || null,
         })
         const list = await tgApi.rules()
         const created = list.filter((x) => x.name === form.name).sort((a, b) => b.id - a.id)[0]
-        await tgApi.addTarget(created.id, targetBody)
+        for (const s of formSrcs) await tgApi.addTarget(created.id, mkBody(s))
         toast.success('规则已建好,点"运行"开始搬运')
       }
       setOpen(false)
@@ -158,16 +190,23 @@ export default function RulesPage() {
   function openEdit(r: CloneRule) {
     const t = activeTarget(r)
     const f = t?.filters || {}
+    const active = (r.targets || []).filter((x) => x.status === 'active' || !x.status)
+    const srcs = [...new Set(active.map((x) => x.source_chat_ref || String(x.source_chat_id)))]
     setEditRule(r)
     setForm({
       ...EMPTY_FORM,
       account_id: String(r.account_id),
       name: r.name,
       mode: r.mode,
+      sender_account_ids: r.sender_account_ids || [],
+      ai_rewrite: r.ai_rewrite || 'off',
+      ad_block: r.ad_block || 'off',
+      ad_keywords: (r.ad_keywords || []).join(','),
+      ai_group_id: r.ai_group_id ? String(r.ai_group_id) : 'auto',
       sync_edit: r.sync_edit ?? true,
       sync_delete: r.sync_delete ?? true,
       remark: r.remark || '',
-      source_chat_id: t ? t.source_chat_ref || String(t.source_chat_id) : '',
+      source_chats: srcs.length ? srcs : [''],
       target_chat_id: t ? t.target_chat_ref || String(t.target_chat_id) : '',
       sender_user_ids: senderText(f, 'sender_user_ids'),
       blocked_sender_ids: senderText(f, 'blocked_sender_ids'),
@@ -286,7 +325,7 @@ export default function RulesPage() {
                       <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="如:资源群搬运" />
                     </div>
                     <div className="flex flex-col gap-1.5">
-                      <Label>用哪个号搬运{editRule ? '(建好后不可改)' : ''}</Label>
+                      <Label>监听号(进源群收消息){editRule ? '(建好后不可改)' : ''}</Label>
                       <Select value={form.account_id} onValueChange={(v) => setForm({ ...form, account_id: v })} disabled={!!editRule}>
                         <SelectTrigger>
                           <SelectValue placeholder="选择账号" />
@@ -301,18 +340,96 @@ export default function RulesPage() {
                       </Select>
                     </div>
                   </div>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between">
+                      <Label>发送号池(勾选多个号随机发;不勾 = 监听号自己发)</Label>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() =>
+                          setForm({
+                            ...form,
+                            sender_account_ids:
+                              form.sender_account_ids.length === accounts.length
+                                ? []
+                                : accounts.map((a) => a.id),
+                          })
+                        }
+                      >
+                        {form.sender_account_ids.length === accounts.length && accounts.length > 0
+                          ? '清空'
+                          : '全选'}
+                      </Button>
+                    </div>
+                    <div className="grid max-h-32 grid-cols-2 gap-1.5 overflow-y-auto rounded-md border p-2 sm:grid-cols-3">
+                      {accounts.map((a) => {
+                        const on = form.sender_account_ids.includes(a.id)
+                        const st = a.observed_status
+                        const dead = st && DEAD_STATUS.has(st)
+                        return (
+                          <label key={a.id} className={`flex items-center gap-1.5 text-sm ${dead ? 'text-red-600' : ''}`} title={dead ? a.last_error || '' : ''}>
+                            <input
+                              type="checkbox"
+                              checked={on}
+                              onChange={(e) =>
+                                setForm({
+                                  ...form,
+                                  sender_account_ids: e.target.checked
+                                    ? [...form.sender_account_ids, a.id]
+                                    : form.sender_account_ids.filter((x: number) => x !== a.id),
+                                })
+                              }
+                            />
+                            {a.username ? '@' + a.username : a.phone || String(a.telegram_user_id || a.id)}
+                            {dead && <Badge variant="destructive" className="px-1 py-0 text-[10px]">{STATUS_LABEL[st!] || st}</Badge>}
+                          </label>
+                        )
+                      })}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      只有监听号进源群;发送号只需进目标群,源消息由监听号代取
+                    </p>
+                  </div>
                 </section>
 
                 <section className="flex flex-col gap-3">
                   <h3 className="text-sm font-semibold">搬运路线</h3>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="flex flex-col gap-1.5">
-                      <Label>源群(ID 或链接)</Label>
-                      <Input
-                        value={form.source_chat_id}
-                        onChange={(e) => setForm({ ...form, source_chat_id: e.target.value })}
-                        placeholder="-100 开头 ID 或 t.me/xx 链接"
-                      />
+                      <Label>源群(ID 或链接,可多个)</Label>
+                      {form.source_chats.map((s: string, i: number) => (
+                        <div key={i} className="flex gap-1.5">
+                          <Input
+                            value={s}
+                            onChange={(e) =>
+                              setForm({ ...form, source_chats: form.source_chats.map((x: string, j: number) => (j === i ? e.target.value : x)) })
+                            }
+                            placeholder="-100 开头 ID 或 t.me/xx 链接"
+                          />
+                          {form.source_chats.length > 1 && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="shrink-0 px-2"
+                              onClick={() => setForm({ ...form, source_chats: form.source_chats.filter((_: string, j: number) => j !== i) })}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
+                      ))}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="w-fit"
+                        onClick={() => setForm({ ...form, source_chats: [...form.source_chats, ''] })}
+                      >
+                        <Plus className="mr-1 h-3.5 w-3.5" /> 添加源群
+                      </Button>
                     </div>
                     <div className="flex flex-col gap-1.5">
                       <Label>目标群(ID 或链接)</Label>
@@ -347,6 +464,64 @@ export default function RulesPage() {
                       </label>
                     </div>
                   </div>
+                </section>
+
+                <section className="flex flex-col gap-3 rounded-md border p-3">
+                  <h3 className="text-sm font-semibold">广告屏蔽 / AI 改写(复制重发时生效)</h3>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="flex flex-col gap-1.5">
+                      <Label>广告拦截</Label>
+                      <Select value={form.ad_block} onValueChange={(v) => setForm({ ...form, ad_block: v })}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="off">不拦截</SelectItem>
+                          <SelectItem value="keyword">关键词拦截</SelectItem>
+                          <SelectItem value="ai">AI 智能判广告</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>AI 改写</Label>
+                      <Select value={form.ai_rewrite} onValueChange={(v) => setForm({ ...form, ai_rewrite: v })}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="off">不改写</SelectItem>
+                          <SelectItem value="light">轻微改写</SelectItem>
+                          <SelectItem value="strong">较大改写</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label>改写模型来源</Label>
+                      <Select value={form.ai_group_id} onValueChange={(v) => setForm({ ...form, ai_group_id: v })}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="auto">自动匹配目标群的 AI 群</SelectItem>
+                          {aiGroups.map((g) => (
+                            <SelectItem key={g.id} value={String(g.id)}>
+                              {g.name || `AI群 #${g.id}`}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  {form.ad_block === 'keyword' && (
+                    <div className="flex flex-col gap-1.5">
+                      <Label>广告关键词(逗号分隔)</Label>
+                      <Input
+                        value={form.ad_keywords}
+                        onChange={(e) => setForm({ ...form, ad_keywords: e.target.value })}
+                        placeholder="如 加V,兼职,招商,邀请码"
+                      />
+                    </div>
+                  )}
                 </section>
 
                 <section className="flex flex-col gap-3 rounded-md border p-3">
@@ -432,9 +607,20 @@ export default function RulesPage() {
                       <Badge variant="secondary">未运行</Badge>
                     )}
                     <Badge variant="outline">{accLabel(r.account_id)}</Badge>
+                    {(r.sender_account_ids || []).length > 0 && (
+                      <Badge variant="outline">号池×{(r.sender_account_ids || []).length}</Badge>
+                    )}
                     <Badge variant={r.mode === 'copy' ? 'default' : 'warning'}>
                       {r.mode === 'copy' ? '复制重发' : '官方转发'}
                     </Badge>
+                    {r.ai_rewrite && r.ai_rewrite !== 'off' && (
+                      <Badge variant="outline">AI改写</Badge>
+                    )}
+                    {r.ad_block && r.ad_block !== 'off' && (
+                      <Badge variant="outline">
+                        {r.ad_block === 'ai' ? 'AI拦广告' : '关键词拦广告'}
+                      </Badge>
+                    )}
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
                     {r.sync_edit === false ? '不同步编辑' : '同步编辑'} · {r.sync_delete === false ? '不同步删除' : '同步删除'}

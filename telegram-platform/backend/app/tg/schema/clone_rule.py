@@ -9,12 +9,17 @@ from backend.common.schema import SchemaBase
 class CloneRuleSchemaBase(SchemaBase):
     """Clone 规则基础模型"""
 
-    account_id: int = Field(description='发送账号 ID')
+    account_id: int = Field(description='监听账号 ID(进源群收消息)')
+    sender_account_ids: list[int] = Field(default_factory=list, description='发送号池;空=仅监听号发送')
     name: str = Field(description='规则名称')
     mode: Literal['copy', 'forward'] = Field('copy', description='投递模式')
     sync_edit: bool = Field(True, description='是否同步源消息编辑')
     sync_delete: bool = Field(True, description='是否同步源消息删除')
     enabled: bool = Field(True, description='是否启用')
+    ai_rewrite: Literal['off', 'light', 'strong'] = Field('off', description='克隆文本改写')
+    ad_block: Literal['off', 'keyword', 'ai'] = Field('off', description='广告拦截方式')
+    ad_keywords: list[str] = Field(default_factory=list, description='广告关键词')
+    ai_group_id: int | None = Field(None, description='复用的 AI 群(模型 key 来源;空=按目标群匹配)')
     remark: str | None = Field(None, description='备注')
 
 
@@ -33,6 +38,11 @@ class UpdateCloneRuleParam(SchemaBase):
     sync_edit: bool = Field(description='是否同步源消息编辑')
     sync_delete: bool = Field(description='是否同步源消息删除')
     enabled: bool = Field(description='是否启用')
+    sender_account_ids: list[int] | None = Field(None, description='发送号池;None=不变')
+    ai_rewrite: Literal['off', 'light', 'strong'] | None = Field(None, description='克隆文本改写')
+    ad_block: Literal['off', 'keyword', 'ai'] | None = Field(None, description='广告拦截方式')
+    ad_keywords: list[str] | None = Field(None, description='广告关键词')
+    ai_group_id: int | None = Field(None, description='复用的 AI 群 ID')
     remark: str | None = Field(None, description='备注')
 
 
@@ -66,7 +76,8 @@ class CreateCloneTargetParam(SchemaBase):
     target_chat_id: int = Field(description='目标 chat ID')
     target_chat_ref: str | None = Field(None, description='目标群原始标识')
     target_topic_id: int | None = Field(None, description='目标 topic')
-    joined_account_id: int | None = Field(None, description='已完成进群的账号ID')
+    joined_account_id: int | None = Field(None, description='已完成进群的监听账号ID')
+    joined_account_ids: list[int] = Field(default_factory=list, description='已进目标群的池内账号')
     filters: dict[str, Any] | None = None
     remark: str | None = Field(None, description='备注')
 

@@ -6,6 +6,7 @@ filtering runs here, Telegram sends never do (§4.2 item 2-3).
 
 from __future__ import annotations
 
+import random
 from typing import Protocol
 
 from .model import (
@@ -28,6 +29,14 @@ class MappingView(Protocol):
     ) -> int | None:
         """Return the target-side message id this route produced for a source
         message, or None. Used to resolve reply references (§7.5)."""
+        ...
+
+    def find_sender_account_id(
+        self, route_id: str, source_scope: str,
+        source_chat_id: int, source_message_id: int,
+    ) -> str | None:
+        """Return which pool account delivered this source message, or None.
+        EDIT/DELETE must route back to the original sender."""
         ...
 
 
@@ -140,13 +149,14 @@ class ClonePlanner:
                     route.route_id, event.source_scope,
                     event.source_chat_id, event.reply_to_source_id,
                 )
+            sender = self._sender_for(event, rule, route.route_id, kind)
             plans.append(
                 DeliveryPlan(
                     kind=kind,
                     rule_id=rule.rule_id,
                     rule_version=rule.version,
                     route_id=route.route_id,
-                    account_id=rule.account_id,
+                    account_id=sender,
                     source_scope=event.source_scope,
                     source_chat_id=event.source_chat_id,
                     source_message_id=event.source_message_id,
@@ -159,6 +169,20 @@ class ClonePlanner:
                     requires_approval=requires_approval,
                     reply_to_target_message_id=reply_target,
                     grouped_id=event.grouped_id,
+                    fetch_account_id=rule.account_id,
+                    transform=rule.transform and kind is not PlanKind.DELETE,
                 )
             )
         return plans
+
+    def _sender_for(
+        self, event: SourceEvent, rule: RuleSnapshot, route_id: str, kind: PlanKind,
+    ) -> str:
+        """选发送号:CREATE 随机抽取号池一个号;EDIT/DELETE 找回 message_map
+        里的原发送号;单号规则恒为监听号。"""
+        pool = rule.sender_account_ids or (rule.account_id,)
+        if kind is PlanKind.SEND:
+            return random.choice(pool)
+        original = self._mapping.find_sender_account_id(
+            route_id, event.source_scope, event.source_chat_id, event.source_message_id)
+        return original or pool[0]

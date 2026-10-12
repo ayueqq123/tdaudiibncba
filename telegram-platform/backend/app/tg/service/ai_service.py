@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import random
+import re
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -21,9 +22,10 @@ from backend.app.tg.crud.crud_ai import (
     ai_run_dao,
 )
 from backend.app.tg.crud.crud_approval import approval_dao, reply_candidate_dao
+from backend.app.tg.crud.crud_clone_rule import clone_rule_dao, clone_target_dao
 from backend.app.tg.crud.crud_telegram_account import telegram_account_dao
 from backend.app.tg.metrics import tg_ai_callback_total, tg_ai_run_active, tg_ai_run_total
-from backend.app.tg.model import TgReplyCandidate, TgTelegramAccount
+from backend.app.tg.model import TgCloneRule, TgCloneTarget, TgReplyCandidate, TgTelegramAccount
 from backend.app.tg.model.ai import TgAiBinding, TgAiCallback, TgAiConversation, TgAiGroup, TgAiRun, TgAiScript
 from backend.app.tg.schema.ai import (
     AiGroupEventParam,
@@ -35,7 +37,7 @@ from backend.app.tg.schema.ai import (
     UpdateAiBindingParam,
 )
 from backend.app.tg.schema.approval import CreateApprovalParam, CreateReplyCandidateParam
-from backend.app.tg.service.account_service import JOIN_ERR, join_chat_refs
+from backend.app.tg.service.account_service import JOIN_ERR, check_chat_membership, join_chat_refs
 from backend.app.tg.service.ai_engine import (
     langbot_engine_adapter,
     openai_complete,
@@ -75,7 +77,9 @@ def _norm(s: str) -> str:
     return ''.join(ch for ch in s if ch.isalnum())
 
 
-_PUNCT_TO_SPACE = str.maketrans(dict.fromkeys(',。、;:,;:', ' '))
+_PUNCT_TO_SPACE = str.maketrans(dict.fromkeys('，。、；：,;:', ' '))
+# 巡检确认发不了言的状态:被踢/禁言/封禁/号死/冻结,发言挑选直接跳过
+DEAD_MEMBER_STATES = frozenset(('not_in_group', 'muted', 'banned', 'session_dead', 'frozen'))
 
 
 def _strip_punct(s: str) -> str:
@@ -368,9 +372,43 @@ class AiService:
         return group.base_url, AiService._decrypt(group.provider_key_enc), group.provider_model
 
     @staticmethod
-    async def _peer_names(db: AsyncSession, group: TgAiGroup, binding: TgAiBinding) -> list[str]:
-        members = await ai_binding_dao.get_all(db, tenant_id=group.tenant_id, project_id=group.project_id)
-        return [m.role_name for m in members if m.group_id == group.id and m.id != binding.id and m.role_name]
+    async def _member_nicks(db: AsyncSession, group: TgAiGroup | None) -> dict[int, str]:
+        """本群成员账号 Telegram 用户 ID → 群里显示的昵称(取最近上报的名字,缺省用户名)。"""
+        if group is None:
+            return {}
+        rows = await db.execute(
+            sa
+            .select(TgTelegramAccount.telegram_user_id, TgTelegramAccount.username)
+            .join(TgAiBinding, TgAiBinding.account_id == TgTelegramAccount.id)
+            .where(TgAiBinding.group_id == group.id, TgAiBinding.deleted == 0)
+        )
+        nicks = {uid: name or str(uid) for uid, name in rows if uid is not None}
+        for m in group.recent_messages or []:
+            if m.get('sid') in nicks and m.get('sender'):
+                nicks[m['sid']] = m['sender']
+        return nicks
+
+    @staticmethod
+    async def _group_system(db: AsyncSession, binding: TgAiBinding, group: TgAiGroup) -> str:
+        nicks = await AiService._member_nicks(db, group)
+        self_uid = await AiService._account_uid(db, binding.account_id)
+        me = nicks.get(self_uid) if self_uid is not None else None
+        parts = [f'你是这个 Telegram 群里的一名群成员{f"(群里显示的昵称是「{me}」)" if me else ""}。']
+        if binding.role_name:
+            parts.append(f'你的角色:{binding.role_name}')
+        if group.theme:
+            parts.append(f'群主题/背景:{group.theme}')
+        parts.append(f'你的人设:{binding.persona or DEFAULT_PERSONA}')
+        peers = [n for uid, n in nicks.items() if uid != self_uid]
+        if peers:
+            parts.append(f'群里的{"、".join(peers)}和你是一伙的:不要互相拆台、不要重复他们刚说过的话,可以自然呼应。')
+        limit = f',不超过 {group.max_reply_chars} 字' if group.max_reply_chars else ''
+        parts.append(
+            f'要求:口语化、简短{limit};不要承认自己是 AI;不要输出括号动作描述;'
+            '聊天记录里的「[发言人]」只是标注,回复里不要写任何人的名字、用户名或 @,也不要加「名字:」前缀;'
+            '只输出要发到群里的那一句话。'
+        )
+        return '\n'.join(parts)
 
     @staticmethod
     async def _build_messages(
@@ -388,31 +426,20 @@ class AiService:
         if group is None:
             system = binding.persona or DEFAULT_PERSONA
         else:
-            role = binding.role_name or '群友'
-            parts = [f'你在一个 Telegram 群里扮演群成员「{role}」。']
-            if group.theme:
-                parts.append(f'群主题/背景:{group.theme}')
-            parts.append(f'你的人设:{binding.persona or DEFAULT_PERSONA}')
-            peers = await AiService._peer_names(db, group, binding)
-            if peers:
-                parts.append(
-                    f'群里的{"、".join(peers)}和你是一伙的:不要互相拆台、不要重复他们刚说过的话,可以自然呼应。'
-                )
-            limit = f',不超过 {group.max_reply_chars} 字' if group.max_reply_chars else ''
-            parts.append(
-                f'要求:口语化、简短{limit};不要承认自己是 AI;不要在开头写自己的名字;不要输出括号动作描述;'
-                '只输出要发到群里的那一句话。'
-            )
-            system = '\n'.join(parts)
+            system = await AiService._group_system(db, binding, group)
         if after:
-            system += f'\n\n群里在这之后又有新消息,请针对「{sender_name}: {text}」这条自然接话。'
+            system += f'\n\n群里在这之后又有新消息,请针对{AiService._line(sender_name, text)}这条自然接话。'
         self_uid = await AiService._account_uid(db, binding.account_id)
+
+        def line(m: dict) -> str:
+            return AiService._line(m.get('sender', '?'), m.get('text', ''))
+
         messages = [{'role': 'system', 'content': system}]
         for m in context:
             if self_uid is not None and m.get('sid') == self_uid:
                 messages.append({'role': 'assistant', 'content': m.get('text', '')})
             else:
-                messages.append({'role': 'user', 'content': f'{m.get("sender", "?")}: {m.get("text", "")}'})
+                messages.append({'role': 'user', 'content': line(m)})
         if mode == 'warmup':
             messages.append({
                 'role': 'user',
@@ -425,9 +452,29 @@ class AiService:
                 f'{src.get("script_line", "")})',
             })
         else:
-            messages.append({'role': 'user', 'content': f'{sender_name}: {text}'})
-            messages += [{'role': 'user', 'content': f'{m.get("sender", "?")}: {m.get("text", "")}'} for m in after]
+            messages.append({'role': 'user', 'content': AiService._line(sender_name, text)})
+            messages += [{'role': 'user', 'content': line(m)} for m in after]
         return messages
+
+    @staticmethod
+    def _line(sender: str, text: str) -> str:
+        return f'[{sender}] {text}'
+
+    @staticmethod
+    def _strip_names(out: str, names: list[str]) -> str:
+        """去掉回复开头的 [名字] / @名字 / 名字: / 名字, 等称呼,只留正文。"""
+        names = sorted({n.strip().lstrip('@') for n in names if n and n.strip().lstrip('@')}, key=len, reverse=True)
+        if not names:
+            return out
+        alt = '|'.join(re.escape(n) for n in names)
+        pat = re.compile(rf'^\s*(?:\[(?:{alt})\]|@?(?:{alt})(?![A-Za-z0-9_]))[\s:：,，、!！~～]*', re.IGNORECASE)
+        cleaned = out
+        while True:
+            nxt = pat.sub('', cleaned, count=1)
+            if nxt == cleaned:
+                break
+            cleaned = nxt
+        return cleaned.strip() or out
 
     @staticmethod
     async def _account_uid(db: AsyncSession, account_id: int) -> int | None:
@@ -503,6 +550,13 @@ class AiService:
             return run
         if not ok:
             return await AiService._fail_run(db, run, conv, err or 'generate_failed')
+        if mode == 'reply':
+            seen = [*context, *(after or [])]
+            nicks = await AiService._member_nicks(db, group)
+            out = AiService._strip_names(
+                out,
+                [sender_name, binding.role_name or '', *nicks.values(), *(m.get('sender', '') for m in seen)],
+            )
         out, reason = AiService._gate(group, binding, out, mode)
         if reason:
             return await AiService._fail_run(db, run, conv, f'gate:{reason}')
@@ -580,8 +634,13 @@ class AiService:
             return 0
         managed = await AiService._managed_user_ids(db, account.tenant_id)
         is_ours = obj.sender_id is not None and obj.sender_id in managed
-        recent = await AiService._record_group_message(db, group, obj, is_ours=is_ours)
-        if recent is None or group.status != 'active' or obj.sender_is_bot:
+        # 克隆搬运件:发送者是本项目克隆号池里的号且目标路由指向本群。优先于
+        # is_ours 判定——克隆件按“外部内容”进上下文但永不触发接话,也不计入互聊链。
+        cloned = obj.sender_id is not None and await AiService._is_clone_sender(db, account, obj)
+        if cloned:
+            is_ours = False
+        recent = await AiService._record_group_message(db, group, obj, is_ours=is_ours, cloned=cloned)
+        if recent is None or group.status != 'active' or obj.sender_is_bot or cloned:
             return 0
         if is_ours and not AiService._chain_allowed(group, recent):
             return 0
@@ -604,26 +663,183 @@ class AiService:
         return bool(group.bot_chain_max) and chain <= group.bot_chain_max
 
     @staticmethod
+    async def _is_clone_sender(db: AsyncSession, account: TgTelegramAccount, obj: AiGroupEventParam) -> bool:
+        """上报消息是否为克隆搬运产物:发送者 TG 账号属于本项目某条已发布规则的
+        发送号池,且该规则有激活路由指向本群。发送号不监听,故不走 message_map。"""
+        sender_acct = (
+            await db.execute(
+                sa.select(TgTelegramAccount.id).where(
+                    TgTelegramAccount.tenant_id == account.tenant_id,
+                    TgTelegramAccount.project_id == account.project_id,
+                    TgTelegramAccount.telegram_user_id == obj.sender_id,
+                    TgTelegramAccount.deleted == 0,
+                )
+            )
+        ).scalar_one_or_none()
+        if sender_acct is None:
+            return False
+        rules = [
+            r
+            for r in await clone_rule_dao.get_all(db, tenant_id=account.tenant_id, project_id=account.project_id)
+            if r.status == 'published'
+            and r.enabled
+            and sender_acct in ({int(a) for a in (r.sender_account_ids or [])} or {r.account_id})
+        ]
+        if not rules:
+            return False
+        return (
+            await db.execute(
+                sa.select(TgCloneTarget.id)
+                .where(
+                    TgCloneTarget.rule_id.in_([r.id for r in rules]),
+                    TgCloneTarget.target_chat_id == obj.chat_id,
+                    TgCloneTarget.status == 'active',
+                    TgCloneTarget.deleted == 0,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none() is not None
+
+    @staticmethod
     async def _record_group_message(
-        db: AsyncSession, group: TgAiGroup, obj: AiGroupEventParam, *, is_ours: bool
+        db: AsyncSession, group: TgAiGroup, obj: AiGroupEventParam, *, is_ours: bool, cloned: bool = False
     ) -> list[dict] | None:
         """写入群缓存;同一条已记过(别的号先上报了)返回 None。"""
         recent = list(group.recent_messages or [])
         if any(m.get('mid') == obj.message_id for m in recent):
             return None
-        recent.append({
+        entry = {
             'sender': obj.sender_name or 'User',
             'text': (obj.text or '')[:500],
             'mid': obj.message_id,
             'sid': obj.sender_id,
             'ours': is_ours,
             'ts': int(timezone.now().timestamp()),
-        })
+        }
+        if cloned:
+            entry['cloned'] = True
+        recent.append(entry)
         group.recent_messages = recent[-100:]
-        group.last_message_at = timezone.now()
+        now = timezone.now()
+        group.last_message_at = now
+        if not cloned:
+            group.last_real_message_at = now
         db.add(group)
         await db.flush()
         return recent
+
+    @staticmethod
+    def _parse_transform(out: str) -> dict | None:
+        s = out.strip()
+        if s.startswith('```'):
+            s = re.sub(r'^```[a-zA-Z]*\s*', '', s)
+            s = re.sub(r'\s*```$', '', s)
+        try:
+            obj = json.loads(s)
+        except (ValueError, TypeError):
+            m = re.search(r'\{.*\}', s, flags=re.DOTALL)
+            if not m:
+                return None
+            try:
+                obj = json.loads(m.group(0))
+            except (ValueError, TypeError):
+                return None
+        return obj if isinstance(obj, dict) else None
+
+    @staticmethod
+    async def clone_transform(db: AsyncSession, *, rule_id: int, text: str) -> dict:
+        """克隆发送前变形闸:关键词粗拦 → AI 判广告 → AI 改写,一次模型调用完成。
+
+        模型调用失败抛错,worker 侧按 TRANSIENT 重试;模型返回不可解析时放行原文
+        (宁退化不误丢用户消息);广告判定为 drop。"""
+        rule = await clone_rule_dao.get(db, rule_id)
+        if rule is None:
+            return {'action': 'send', 'text': text, 'reason': 'rule_not_found'}
+        low = text.lower()
+        kws = [str(k).strip() for k in (rule.ad_keywords or []) if str(k).strip()]
+        if any(k.lower() in low for k in kws):
+            return {'action': 'drop', 'text': '', 'reason': 'keyword'}
+        need_ai = (rule.ad_block or 'off') == 'ai' or (rule.ai_rewrite or 'off') not in ('', 'off')
+        if not need_ai:
+            return {'action': 'send', 'text': text, 'reason': ''}
+        group = await AiService._clone_ai_group(db, rule)
+        api_key = AiService._decrypt(group.provider_key_enc) if group is not None else None
+        if group is None or not api_key or not group.provider_model:
+            return {'action': 'send', 'text': text, 'reason': 'no_provider'}
+        sys_prompt = AiService._transform_sys_prompt(rule)
+        ok, out, err = await openai_complete(
+            base_url=group.base_url or '',
+            api_key=api_key,
+            model=group.provider_model,
+            messages=[{'role': 'system', 'content': sys_prompt},
+                      {'role': 'user', 'content': AiService._transform_user_msg(rule, text)}],
+        )
+        if not ok:
+            raise errors.ServerError(msg=f'clone_transform 模型调用失败:{err}')
+        payload = AiService._parse_transform(out or '')
+        if payload is None:
+            return {'action': 'send', 'text': text, 'reason': 'unparseable'}
+        if payload.get('drop'):
+            return {'action': 'drop', 'text': '', 'reason': f"ai_ad:{payload.get('reason') or 'ad'}"[:60]}
+        new_text = str(payload.get('text') or '').strip() or text
+        return {'action': 'send', 'text': new_text, 'reason': ''}
+
+    # 发给模型的启发式信号(命中项列出,供模型参考而非硬判)
+    _AD_SIGNALS = (
+        ('t.me/群链接', re.compile(r't\.me/|telegram\.(me|dog)/', re.I)),
+        ('@用户名', re.compile(r'@[A-Za-z][A-Za-z0-9_]{3,}')),
+        ('http链接', re.compile(r'https?://', re.I)),
+        ('站外联系方式', re.compile(r'微信|wechat|qq号|vx[:：＝=]|whatsapp|飞机号|纸飞机|TG号|tg号|tele号', re.I)),
+        ('拉人/推广话术', re.compile(r'加我|私聊|私我|pm我|联系客服|接单|直推|扶持|团队收人|副业|兼职|日结|底薪|躺赚|免费领|进群|加群|进频道|点链接|扫码', re.I)),
+    )
+
+    @staticmethod
+    def _ad_signals(text: str) -> list[str]:
+        return [name for name, rx in AiService._AD_SIGNALS if rx.search(text)]
+
+    @staticmethod
+    def _transform_user_msg(rule: TgCloneRule, text: str) -> str:
+        if (rule.ad_block or 'off') != 'ai':
+            return text
+        sigs = AiService._ad_signals(text)
+        return (f'【检测信号:{",".join(sigs)}】\n' if sigs else '') + text
+
+    @staticmethod
+    def _transform_sys_prompt(rule: TgCloneRule) -> str:
+        tasks: list[str] = []
+        if (rule.ad_block or 'off') == 'ai':
+            tasks.append(
+                '判断它是不是广告/引流内容。广告特征(命中即判广告):'
+                '拉人进群/换群/进频道(t.me链接、二维码、群名片)、'
+                '留联系方式求加(微信/QQ/飞机号/@用户名配"加我私聊联系接单")、'
+                '担保商或代收代付的自我介绍推广、兼职/高薪/日结/躺赚/副业诱导、'
+                '推广机器人/频道/平台的卡片话术、刷屏式营销文案。'
+                '不是广告别误判:行情报价、砍价、担保流程问答、吐槽闲聊、表情梗、正常交易沟通'
+            )
+        if rule.ai_rewrite == 'light':
+            tasks.append('在保持原意和口语语气的前提下轻微改写:替换个别同义词、微调语序,长度不要变长')
+        elif rule.ai_rewrite == 'strong':
+            tasks.append('在保持原意的前提下换一种说法改写')
+        return (
+            '你是群消息广告过滤与处理助手。给你一条来自被克隆电报群的消息(消息前可能带【检测信号:…】是规则引擎扫出的特征,供你参考):'
+            + ';'.join(tasks)
+            + '。只输出 JSON {"drop": true|false, "reason": "drop理由(可空)", "text": "处理后文本"};'
+            '判定广告时 drop=true、text 为空串,否则 text 为处理后的文本(无需改写时原样返回)。'
+        )
+
+    @staticmethod
+    async def _clone_ai_group(db: AsyncSession, rule: TgCloneRule) -> TgAiGroup | None:
+        """变形闸的模型来源:规则绑定了 AI 群用它(D1 复用),否则按目标群匹配项目内 AI 群。"""
+        if rule.ai_group_id:
+            group = await ai_group_dao.get(db, int(rule.ai_group_id))
+            if group is not None:
+                return group
+        groups = await ai_group_dao.get_all(db, tenant_id=rule.tenant_id, project_id=rule.project_id)
+        target_chats = {t.target_chat_id for t in await clone_target_dao.get_active_by_rule(db, rule.id)}
+        return next(
+            (g for g in groups if any(AiService._chat_match(g.chat_id, c) for c in target_chats)),
+            None,
+        )
 
     @staticmethod
     async def _group_members(db: AsyncSession, group: TgAiGroup) -> list[TgAiBinding]:
@@ -733,6 +949,8 @@ class AiService:
             acc = accounts.get(b.account_id)
             if acc is None or (is_ours and acc.telegram_user_id == obj.sender_id):
                 continue
+            if b.member_state in DEAD_MEMBER_STATES:
+                continue
             if AiService._speaker_blocked(stats.get(b.id), group, now):
                 continue
             called = (bool(acc.username) and f'@{acc.username}'.lower() in text) or (
@@ -794,7 +1012,10 @@ class AiService:
         if not force:
             if not AiService.in_active_hours(g, now):
                 return False
-            last = max(x for x in (g.last_message_at, g.last_warmup_at, g.created_time) if x is not None)
+            # 冷场按真实活跃度算:克隆搬运刷屏不算数,否则搬运群永远判不冷、暖场永不发
+            last = max(
+                x for x in (g.last_real_message_at, g.last_warmup_at, g.created_time) if x is not None
+            )
             if now - last < timedelta(minutes=g.idle_warmup_min):
                 return False
         members = await AiService._group_members(db, g)
@@ -803,6 +1024,7 @@ class AiService:
             b
             for b in members
             if b.account_id in accounts
+            and b.member_state not in DEAD_MEMBER_STATES
             and b.random_prob > 0
             and not AiService._speaker_blocked(stats.get(b.id), g, now)
         ]
@@ -812,6 +1034,87 @@ class AiService:
         db.add(g)
         speaker = random.choices(pool, weights=[b.random_prob for b in pool], k=1)[0]
         return await AiService._start_member_run(db, g, speaker, mode='warmup')
+
+    @staticmethod
+    async def member_check_tick(db: AsyncSession) -> int:
+        """成员在群巡检(每10分钟):逐绑定用账号会话查 GetParticipant,
+        member_state 写回——被踢/被禁言/号冻结在成员列表直接可见,发言挑选也避开。"""
+        groups = (
+            (
+                await db.execute(
+                    sa.select(TgAiGroup).where(TgAiGroup.deleted == 0, TgAiGroup.status == 'active')
+                )
+            )
+            .scalars()
+            .all()
+        )
+        checked = 0
+        for g in groups:
+            members = [
+                b
+                for b in await ai_binding_dao.get_all(
+                    db, tenant_id=g.tenant_id, project_id=g.project_id
+                )
+                if b.group_id == g.id and b.status != 'deleted'
+            ]
+            if not members:
+                continue
+            accts = {
+                a.id: a
+                for a in (
+                    await db.execute(
+                        sa.select(TgTelegramAccount).where(
+                            TgTelegramAccount.id.in_([b.account_id for b in members])
+                        )
+                    )
+                ).scalars()
+            }
+            for b in members:
+                acct = accts.get(b.account_id)
+                if acct is None or acct.deleted:
+                    state, detail = 'session_dead', '账号已删除'
+                else:
+                    try:
+                        res = await check_chat_membership(acct, [g.chat_id])
+                    except errors.RequestError as exc:  # 会话/API凭据缺失
+                        state, detail, res = 'session_dead', str(exc)[:200], {}
+                    except Exception as exc:  # noqa: BLE001
+                        state, detail, res = 'check_failed', str(exc)[:200], {}
+                    else:
+                        state, detail = AiService._member_state_from(res, g.chat_id)
+                await ai_binding_dao.update_fields(
+                    db,
+                    b.id,
+                    {
+                        'member_state': state,
+                        'member_state_detail': detail,
+                        'member_state_at': timezone.now(),
+                    },
+                )
+                checked += 1
+        return checked
+
+    @staticmethod
+    def _member_state_from(res: dict, chat_id: int) -> tuple[str, str | None]:
+        if '__account__' in res:
+            st = res['__account__'].get('status')
+            return ('session_dead', '会话失效') if st == 'unauthorized' else ('check_failed', f'账号异常:{st}')
+        r = res.get(str(chat_id), {})
+        st = r.get('status', 'error')
+        detail = r.get('detail')
+        if st == 'member':
+            return 'ok', None
+        if st == 'muted':
+            return 'muted', detail or '被禁言/限制发言'
+        if st == 'banned':
+            return 'banned', '被该群封禁'
+        if st in ('kicked', 'not_member', 'no_access'):
+            return 'not_in_group', detail or '不在群里(被踢/退群)'
+        if st == 'flood_wait':
+            return 'check_failed', 'TG 限流,稍后重查'
+        if 'frozen' in (detail or '').lower():
+            return 'frozen', detail
+        return 'check_failed', detail or st
 
     @staticmethod
     async def script_step(db: AsyncSession, script_id: int, token: str) -> str:

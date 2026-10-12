@@ -37,6 +37,14 @@ async def tg_ai_warmup_tick() -> str:
 
 
 @shared_task
+async def tg_ai_member_check() -> str:
+    """成员在群巡检(每10分钟):绑定写回 被踢/禁言/号死 状态,成员列表可见。"""
+    async with async_db_session.begin() as db:
+        n = await AiService.member_check_tick(db)
+        return f'member_checked={n}'
+
+
+@shared_task
 async def tg_ai_script_step(script_id: int, token: str) -> str:
     """剧本执行一步(令牌不符/已停止即止)。"""
     async with async_db_session.begin() as db:

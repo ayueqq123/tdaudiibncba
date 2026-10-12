@@ -15,7 +15,7 @@ from backend.app.tg.crud.crud_clone_rule import clone_rule_dao, clone_rule_versi
 from backend.app.tg.crud.crud_project import project_dao
 from backend.app.tg.crud.crud_telegram_account import telegram_account_dao
 from backend.app.tg.crud.crud_tenant import tenant_dao
-from backend.app.tg.schema.ai import AiGroupEventParam
+from backend.app.tg.schema.ai import AiGroupEventParam, CloneTransformParam
 from backend.app.tg.schema.runtime_command import (
     AckRuntimeCommandParam,
     CreateRuntimeCommandParam,
@@ -177,12 +177,18 @@ async def pull_rules(
         if cur:
             account = await telegram_account_dao.get_by_scope(
                 db, r.tenant_id, r.project_id, r.account_id)
+            # worker 侧以账号 uuid 为运行时键(租约/事件/投递均按 uuid 关联)
+            pool_ids = (cur.snapshot or {}).get('rule', {}).get('sender_account_ids') or [r.account_id]
+            sender_uuids = []
+            for pid in pool_ids:
+                a = await telegram_account_dao.get_by_scope(db, r.tenant_id, r.project_id, int(pid))
+                sender_uuids.append(a.uuid if a else None)
             out.append({
                 'rule_id': r.id,
                 'version': cur.version,
                 'snapshot': cur.snapshot,
-                # worker 侧以账号 uuid 为运行时键(租约/事件/投递均按 uuid 关联)
                 'account_uuid': account.uuid if account else None,
+                'sender_account_uuids': sender_uuids,
             })
     return response_base.success(data=out)
 
@@ -219,6 +225,23 @@ async def ai_group_event(
 
 
 @router.post(
+    '/ai/clone_transform',
+    summary='Worker 克隆发送前变形闸(广告拦截+AI 改写)',
+    dependencies=[DependsWorkerAuth],
+)
+async def ai_clone_transform(
+    db: CurrentSession, obj: CloneTransformParam
+) -> ResponseSchemaModel[dict]:
+    """copy 模式发送前过闸:关键词粗拦→AI 判广告→AI 改写;drop 则丢弃。"""
+    try:
+        rule_id = int(obj.rule_id)
+    except (TypeError, ValueError):
+        raise errors.RequestError(msg='rule_id 无效')
+    data = await ai_service.clone_transform(db=db, rule_id=rule_id, text=obj.text or '')
+    return response_base.success(data=data)
+
+
+@router.post(
     '/accounts/{api_row_id}/status',
     summary='Worker 上报账号观测状态',
     dependencies=[DependsWorkerAuth],
@@ -240,7 +263,10 @@ async def report_account_status(
             'last_seen_at': timezone.now(),
         },
     )
-    return response_base.success(data={'ok': True})
+    new_listener = await clone_rule_service.failover_listener_if_dead(
+        db=db, account=account, status=obj.observed_status
+    )
+    return response_base.success(data={'ok': True, 'failover_to': new_listener})
 
 
 @router.post(

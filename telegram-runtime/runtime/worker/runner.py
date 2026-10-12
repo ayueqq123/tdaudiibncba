@@ -15,11 +15,16 @@ import asyncio
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from dataclasses import replace as dc_replace
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from runtime.delivery.executor import DeliveryExecutor, ResultStatus
+from runtime.delivery.executor import (
+    DeliveryExecutor,
+    DeliveryResult,
+    ResultStatus,
+)
 from runtime.delivery.model import (
     ErrorClass,
     JobStatus,
@@ -96,6 +101,7 @@ RulesProvider = Callable[[str], list[RuleSnapshot]]
 LiveProvider = Callable[[str], LiveAccount]
 PolicyProvider = Callable[[], PolicySnapshot]
 ApprovalProvider = Callable[[DeliveryJob], ApprovalRecord | None]
+PlanHintsProvider = Callable[[str, int], tuple[str | None, bool] | None]
 
 
 class _DictMappingView(MappingView):
@@ -103,13 +109,21 @@ class _DictMappingView(MappingView):
 
     def __init__(self, rows: list[MessageMap]):
         self._m = {(r.route_id, r.source_scope, r.source_chat_id,
-                    r.source_message_id): r.target_message_id for r in rows}
+                    r.source_message_id): r for r in rows}
 
     def find_target_message_id(self, route_id: str, source_scope: str,
                                source_chat_id: int,
                                source_message_id: int) -> int | None:
-        return self._m.get((route_id, source_scope, source_chat_id,
-                            source_message_id))
+        r = self._m.get((route_id, source_scope, source_chat_id,
+                         source_message_id))
+        return r.target_message_id if r is not None else None
+
+    def find_sender_account_id(self, route_id: str, source_scope: str,
+                               source_chat_id: int,
+                               source_message_id: int) -> str | None:
+        r = self._m.get((route_id, source_scope, source_chat_id,
+                         source_message_id))
+        return r.sender_account_id if r is not None else None
 
 
 @dataclass
@@ -120,6 +134,9 @@ class RunnerDeps:
     live: LiveProvider
     policy: PolicyProvider
     approvals: ApprovalProvider = lambda _job: None
+    # (rule_id, rule_version) -> (fetch_account_id, transform):池模式下投递 job
+    # 不存这两个字段,发送时从监听号的规则缓存找回;查不到=None(单号旧行为)
+    plan_hints: PlanHintsProvider = lambda _rid, _ver: None
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     clock: Callable[[], float] = time.time
     tenant_id: str = ""
@@ -175,6 +192,13 @@ class AccountRunner:
                 return None
             attempt_no = job.attempt_count
             plan = plan_from_job(job)
+            hints = d.plan_hints(plan.rule_id, plan.rule_version)
+            if hints is not None:
+                plan = dc_replace(
+                    plan,
+                    fetch_account_id=hints[0] or plan.account_id,
+                    transform=hints[1],
+                )
 
             live = d.live(self.account_id)
             decision = check(
@@ -203,11 +227,26 @@ class AccountRunner:
 
             await jobs.transition(job.id, "leased", "sending")
 
-            result = await d.executor.execute(
-                plan, live=live, policy=d.policy(), approval=d.approvals(job),
-                expected_generation=self.generation,
-                tenant_id=job.tenant_id, project_id=job.project_id,
-                now=d.clock())
+            target_ids: list[int] | None = None
+            if plan.kind in (PlanKind.EDIT, PlanKind.DELETE,
+                             PlanKind.TOMBSTONE):
+                target_ids = await MappingRepository(
+                    s).find_target_message_ids(
+                        job.route_id, job.source_scope, job.source_chat_id,
+                        job.source_message_id)
+
+            try:
+                result = await d.executor.execute(
+                    plan, live=live, policy=d.policy(),
+                    approval=d.approvals(job),
+                    expected_generation=self.generation,
+                    tenant_id=job.tenant_id, project_id=job.project_id,
+                    now=d.clock(), target_message_ids=target_ids)
+            except Exception as exc:  # noqa: BLE001 — 执行层异常必须落库,否则 job 永远卡 sending
+                result = DeliveryResult(
+                    plan=plan, status=ResultStatus.UNCERTAIN,
+                    error_class=ErrorClass.RESULT_UNKNOWN,
+                    error_detail=f"executor error: {exc}"[:300])
 
             await self._record(jobs, job, attempt_no, result)
             return job.id
@@ -268,7 +307,8 @@ class AccountRunner:
         await jobs.record_result(
             job, attempt_no=attempt_no,
             new_status=JobStatus.FAILED_PERMANENT.value,
-            error_class=err.value if err else None)
+            error_class=err.value if err else None,
+            request_ref=(result.error_detail or '')[:200] or None)
 
     async def run_once(self, *, limit: int = 200) -> None:
         """One poll round: drain inbox into jobs, then send while work is due."""

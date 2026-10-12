@@ -33,6 +33,7 @@ class CreateTgAccountParam(SchemaBase):
     telegram_user_id: int | None = None
     username: str | None = None
     secret_ref: str | None = None
+    desired_status: str = 'running'
     observed_status: str = 'imported_quarantine'
     last_error: str | None = None
 

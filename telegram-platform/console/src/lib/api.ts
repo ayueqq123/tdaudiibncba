@@ -137,6 +137,7 @@ export interface TgAccount {
   username?: string | null
   desired_status: string
   observed_status: string
+  last_error: string | null
   remark: string | null
 }
 export interface ApiCredential {
@@ -186,6 +187,11 @@ export interface CloneRule {
   tenant_id: number
   project_id: number
   account_id: number
+  sender_account_ids?: number[]
+  ai_rewrite?: 'off' | 'light' | 'strong'
+  ad_block?: 'off' | 'keyword' | 'ai'
+  ad_keywords?: string[]
+  ai_group_id?: number | null
   name: string
   mode: 'copy' | 'forward'
   sync_edit?: boolean
@@ -261,6 +267,8 @@ export const tgApi = {
   deleteProject: (id: number) => api.del(`${TG}/projects/${id}`),
   accounts: (params?: any) => api.get<TgAccount[]>(`${TG}/accounts`, params),
   updateAccount: (id: number, b: any) => api.put(`${TG}/accounts/${id}`, b),
+  deleteAccount: (id: number) => api.del(`${TG}/accounts/${id}`),
+  deleteFrozenAccounts: () => api.post<{ deleted: number }>(`${TG}/accounts/delete-frozen`),
   importAccounts: (tenantId: number, projectId: number, file: File) => {
     const f = new FormData()
     f.append('tenant_id', String(tenantId))
@@ -384,6 +392,9 @@ export interface AiMember {
   status: string
   account_label: string
   account_running: boolean
+  member_state: string | null
+  member_state_detail: string | null
+  member_state_at: string | null
 }
 
 export interface AiGroupMessage {

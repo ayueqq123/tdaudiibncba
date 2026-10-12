@@ -84,6 +84,18 @@ async def delete_account(
 
 
 @router.post(
+    '/delete-frozen',
+    summary='一键删除冻结账号',
+    dependencies=[Depends(RequestPermission('tg:account:del')), DependsRBAC],
+)
+async def delete_frozen_accounts(
+    db: CurrentSessionTransaction, request: Request
+) -> ResponseSchemaModel[dict]:
+    count = await account_service.delete_frozen(db=db, request=request)
+    return response_base.success(data={'deleted': count})
+
+
+@router.post(
     '/login/start',
     summary='验证码登录:发送验证码',
     dependencies=[Depends(RequestPermission('tg:account:import')), DependsRBAC],

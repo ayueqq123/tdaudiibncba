@@ -20,6 +20,7 @@ from backend.app.tg.schema.import_batch import CreateImportBatchParam
 from backend.app.tg.schema.telegram_account import CreateTgAccountParam, UpdateTgAccountParam
 from backend.common.exception import errors
 from backend.core.conf import settings
+from backend.database.redis import redis_client
 from backend.utils.timezone import timezone
 
 # 验证通过但尚未人工启用的账号默认进入隔离态(§5.1.1)
@@ -65,16 +66,35 @@ async def _run_import_cli(package_path: str) -> dict[str, Any]:
     return json.loads(stdout.decode())
 
 
-_LOGIN_PENDING: dict[str, dict[str, Any]] = {}
+# pending 登录会话存 Redis(不进内存 dict):control-api 重启/多进程不丢,
+# 否则收码期间后端一重启,第二步就报"登录会话已过期"。
 _LOGIN_TTL_S = 600
+_LOGIN_KEY = 'fba:tg_login:pending:{lid}'
+
+
+async def _pending_save(lid: str, data: dict[str, Any]) -> None:
+    await redis_client.set(_LOGIN_KEY.format(lid=lid), json.dumps(data), ex=_LOGIN_TTL_S)
+
+
+async def _pending_get(lid: str) -> dict[str, Any] | None:
+    raw = await redis_client.get(_LOGIN_KEY.format(lid=lid))
+    return json.loads(raw) if raw else None
+
+
+async def _pending_pop(lid: str) -> None:
+    await redis_client.delete(_LOGIN_KEY.format(lid=lid))
 
 
 def _purge_pending() -> None:
-    now = timezone.now().timestamp()
-    for lid, st in list(_LOGIN_PENDING.items()):
-        if st['expires'] < now:
-            Path(st['session_path']).unlink(missing_ok=True)
-            _LOGIN_PENDING.pop(lid, None)
+    """孤儿 session 文件清扫:redis TTL 到期后 .pending 目录下的文件没用了。"""
+    pending_dir = Path(settings.TG_IMPORT_STORAGE_DIR) / '.pending'
+    cutoff = timezone.now().timestamp() - _LOGIN_TTL_S
+    for f in pending_dir.glob('*.session') if pending_dir.exists() else []:
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 async def _run_runtime_cli(module: str, args: list[str], stdin_payload: dict | None = None) -> dict[str, Any]:
@@ -158,6 +178,24 @@ async def join_chat_refs(account: TgTelegramAccount, refs: list[str | int]) -> d
     return out['results']
 
 
+async def check_chat_membership(account: TgTelegramAccount, chat_ids: list[int]) -> dict[str, dict]:
+    """查账号在一批群里的成员身份/发言权限。返回 {chat_id_str: {status,can_post,detail}}。
+
+    status: member|muted|banned|kicked|not_member|no_access|flood_wait|error;
+    会话失效时返回 {'__account__': {'status': 'unauthorized'}}。"""
+    if not settings.TG_RUNTIME_DIR or not settings.TG_RUNTIME_PYTHON:
+        return {}
+    session_path, api_id, api_hash = account_session_cli_args(account)
+    out = await _run_runtime_cli(
+        'runtime.account.check_membership',
+        ['--session', session_path, '--api-id', api_id, '--api-hash', api_hash],
+        {'chat_ids': chat_ids},
+    )
+    if not out.get('ok'):
+        return {'__account__': {'status': (out.get('error') or {}).get('status', 'error')}}
+    return out.get('results') or {}
+
+
 async def resolve_user_refs(account: TgTelegramAccount, users: list[str]) -> dict[str, dict]:
     """用账号会话把 @username 解析成 Telegram 用户 ID。返回 {ref: {ok,user_id,is_bot}|{ok:false,error}}。"""
     if not settings.TG_RUNTIME_DIR or not settings.TG_RUNTIME_PYTHON:
@@ -180,6 +218,7 @@ JOIN_ERR = {
     'join_approval_pending': '该群需要管理员审批才能进群',
     'not_member': '账号不在该群内,纯数字 ID 无法自动进群——请改用邀请链接(t.me/+xxx)或公开链接(t.me/用户名)',
     'resolve_failed': '链接无法解析到群',
+    'account_frozen': '监听号已被 Telegram 冻结,无法进群/解析——请更换监听账号',
     'bad_ref': '群标识无法识别',
     'unauthorized': '账号会话已失效,请重新登录',
     'flood_wait': '进群操作过于频繁,请稍后重试',
@@ -274,6 +313,15 @@ class AccountService:
         return await telegram_account_dao.delete(db, pk)
 
     @staticmethod
+    async def delete_frozen(*, db: AsyncSession, request: Request) -> int:
+        """一键清理冻结账号(软删,限定调用者可见范围)"""
+        accounts = await AccountService.get_all(db=db, request=request, status='frozen')
+        count = 0
+        for account in accounts:
+            count += await telegram_account_dao.delete(db, account.id)
+        return count
+
+    @staticmethod
     async def login_start(*, db: AsyncSession, request: Request, obj) -> dict[str, Any]:
         """验证码登录第一步:发送验证码。pending 会话存内存(TTL 10min)。"""
         await AccountService._check_scope(db, request, obj.tenant_id, obj.project_id)
@@ -304,7 +352,7 @@ class AccountService:
             if status == 'flood_wait':
                 raise errors.RequestError(msg=f'操作频繁,请 {err.get("seconds", 60)} 秒后重试')
             raise errors.RequestError(msg=_LOGIN_ERR.get(status, err.get('detail', '发送验证码失败')))
-        _LOGIN_PENDING[login_id] = {
+        await _pending_save(login_id, {
             'session_path': session_path,
             'tenant_id': obj.tenant_id,
             'project_id': obj.project_id,
@@ -315,15 +363,14 @@ class AccountService:
             'device': obj.device,
             'app_version': obj.app_version,
             'phone_code_hash': result['phone_code_hash'],
-            'expires': timezone.now().timestamp() + _LOGIN_TTL_S,
-        }
+        })
         return {'login_id': login_id, 'ttl': _LOGIN_TTL_S}
 
     @staticmethod
     async def login_complete(*, db: AsyncSession, request: Request, obj) -> dict[str, Any]:
         """验证码登录第二步:提交验证码 → 落 session+meta → 建账号。"""
         _purge_pending()
-        st = _LOGIN_PENDING.get(obj.login_id)
+        st = await _pending_get(obj.login_id)
         if st is None:
             raise errors.RequestError(msg='登录会话已过期,请重新发起')
         if st['user_id'] != request.user.id and not request.user.is_superuser:
@@ -359,7 +406,7 @@ class AccountService:
         existing = await telegram_account_dao.get_by_tg_user(db, uid) if uid else None
         if existing is not None:
             Path(st['session_path']).unlink(missing_ok=True)
-            _LOGIN_PENDING.pop(obj.login_id, None)
+            await _pending_pop(obj.login_id)
             raise errors.RequestError(msg=f'该 Telegram 身份已存在账号 id={existing.id}')
         login_dir = Path(settings.TG_IMPORT_STORAGE_DIR) / f'login-{uuid.uuid4().hex}'
         login_dir.mkdir(parents=True, exist_ok=True)
@@ -387,7 +434,7 @@ class AccountService:
                 observed_status='imported_quarantine',
             ),
         )
-        _LOGIN_PENDING.pop(obj.login_id, None)
+        await _pending_pop(obj.login_id)
         return {'account_id': account.id, 'username': result.get('username'), 'telegram_user_id': uid}
 
     @staticmethod
