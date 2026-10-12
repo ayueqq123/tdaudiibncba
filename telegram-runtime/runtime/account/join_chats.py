@@ -142,8 +142,12 @@ async def _resolve_one(client, ref: str | int) -> dict:
     except tg_errors.FloodWaitError as exc:
         return {'ok': False, 'error': {'status': 'flood_wait', 'seconds': exc.seconds}}
     except Exception as exc:  # noqa: BLE001 — ValueError/not-found etc.
+        detail = str(exc)[:200]
+        if 'frozen' in detail.lower():
+            # 监听号被 TG 冻结,任何写方法不可用——提示换号而不是误报"链接无法解析"
+            return {'ok': False, 'error': {'status': 'account_frozen', 'detail': detail}}
         status = 'not_member' if kind == 'chat_id' else 'resolve_failed'
-        return {'ok': False, 'error': {'status': status, 'detail': str(exc)[:200]}}
+        return {'ok': False, 'error': {'status': status, 'detail': detail}}
 
 
 async def _resolve_user(client, ref: str) -> dict:

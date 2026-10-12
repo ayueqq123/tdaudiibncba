@@ -218,6 +218,7 @@ JOIN_ERR = {
     'join_approval_pending': '该群需要管理员审批才能进群',
     'not_member': '账号不在该群内,纯数字 ID 无法自动进群——请改用邀请链接(t.me/+xxx)或公开链接(t.me/用户名)',
     'resolve_failed': '链接无法解析到群',
+    'account_frozen': '监听号已被 Telegram 冻结,无法进群/解析——请更换监听账号',
     'bad_ref': '群标识无法识别',
     'unauthorized': '账号会话已失效,请重新登录',
     'flood_wait': '进群操作过于频繁,请稍后重试',
