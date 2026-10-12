@@ -16,6 +16,7 @@ import logging
 import os
 import tempfile
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -48,6 +49,20 @@ from runtime.worker.control_client import ControlClient, SessionBundle
 log = logging.getLogger(__name__)
 
 _RPC_TIMEOUT_S = 120.0
+_SENDER_BOT_CACHE_MAX = 50_000
+_SENDER_BOT: OrderedDict[int, bool] = OrderedDict()
+
+
+def _record_sender_bot(sender_id: int | None, sender) -> bool:
+    is_bot = bool(getattr(sender, "bot", False)) or (
+        (getattr(sender, "username", None) or "").lower().endswith("bot")
+    )
+    if type(sender_id) is int and sender_id > 0:
+        _SENDER_BOT[sender_id] = is_bot
+        _SENDER_BOT.move_to_end(sender_id)
+        if len(_SENDER_BOT) > _SENDER_BOT_CACHE_MAX:
+            _SENDER_BOT.popitem(last=False)
+    return is_bot
 
 
 class LiveRegistry:
@@ -413,6 +428,10 @@ def make_ingest_handler(session_factory, account_id: str, tenant_id: str,
 
     async def on_update(event) -> None:
         try:
+            if isinstance(event, (events.NewMessage.Event, events.MessageEdited.Event)):
+                message = getattr(event, "message", None)
+                if message is not None:
+                    await _resolve_sender_bot(message)
             for raw in _to_raws(event):
                 src_event = normalizer.normalize(raw, account_id)
                 async with session_factory() as s:
@@ -468,18 +487,34 @@ def _sender_id(msg) -> int | None:
     return utils.get_peer_id(from_id) if from_id is not None else None
 
 
+async def _resolve_sender_bot(msg) -> None:
+    sender_id = None
+    try:
+        sender_id = _sender_id(msg)
+        if type(sender_id) is not int or sender_id <= 0 or sender_id in _SENDER_BOT:
+            return
+        sender = getattr(msg, "sender", None)
+        if sender is None:
+            sender = await asyncio.wait_for(msg.get_sender(), timeout=5)
+        if sender is None:
+            log.debug("could not resolve sender bot status sender_id=%s: no sender",
+                      sender_id)
+            return
+        _record_sender_bot(sender_id, sender)
+    except Exception:
+        log.debug("could not resolve sender bot status sender_id=%s",
+                  sender_id, exc_info=True)
+
+
 def _sender_is_bot(msg) -> bool:
-    """True when the author is a bot account (cached sender entity, or a
-    `...bot` username as fallback) or the message was sent via an inline bot."""
+    """True when the author is a bot account or sent via an inline bot."""
     if getattr(msg, "via_bot_id", None):
         return True
+    sender_id = _sender_id(msg)
     sender = getattr(msg, "sender", None)
-    if sender is None:
-        return False
-    if getattr(sender, "bot", False):
-        return True
-    username = getattr(sender, "username", None) or ""
-    return username.lower().endswith("bot")
+    if sender is not None:
+        return _record_sender_bot(sender_id, sender)
+    return _SENDER_BOT.get(sender_id, False)
 
 
 _MEDIA_ATTRS: tuple[tuple[str, str], ...] = (
