@@ -157,6 +157,40 @@ def test_rule_publish_flow(
     assert resp.json()['code'] == 200
 
 
+def test_same_source_can_target_multiple_destinations(
+    client: TestClient, token_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tid, pid, aid = _mk_tenant_project_account(client, token_headers, 'multi-target', monkeypatch, tmp_path)
+    resp = client.post(
+        '/tg/clone-rules',
+        headers=token_headers,
+        json={
+            'tenant_id': tid,
+            'project_id': pid,
+            'account_id': aid,
+            'name': '多目标规则',
+            'mode': 'copy',
+        },
+    )
+    assert resp.json()['code'] == 200, resp.text
+    rid = client.get('/tg/clone-rules', headers=token_headers, params={'project_id': pid}).json()['data'][0]['id']
+
+    for target_chat_id in (2001, 2002):
+        resp = client.post(
+            f'/tg/clone-rules/{rid}/targets',
+            headers=token_headers,
+            json={'source_chat_id': 1001, 'target_chat_id': target_chat_id},
+        )
+        assert resp.json()['code'] == 200, resp.text
+
+    duplicate = client.post(
+        f'/tg/clone-rules/{rid}/targets',
+        headers=token_headers,
+        json={'source_chat_id': 1001, 'target_chat_id': 2002},
+    )
+    assert duplicate.json()['code'] == 400, duplicate.text
+
+
 def test_rule_mutation_issues_reload_config(
     client: TestClient, token_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
