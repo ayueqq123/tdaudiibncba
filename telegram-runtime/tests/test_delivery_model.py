@@ -64,6 +64,9 @@ def test_classify_error_actions():
     assert classify_error(ErrorClass.STORAGE_DOWN).worker_halts
     assert classify_error(ErrorClass.PERMISSION_BLOCKED).next_status is JobStatus.BLOCKED
     assert classify_error(ErrorClass.CONTENT_INVALID).next_status is JobStatus.FAILED_PERMANENT
+    filtered = classify_error(ErrorClass.FILTERED)
+    assert filtered.next_status is JobStatus.FAILED_PERMANENT
+    assert not filtered.worker_halts and not filtered.retryable
 
 
 def test_backoff_exponential_and_capped():

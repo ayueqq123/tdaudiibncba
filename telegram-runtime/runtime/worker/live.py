@@ -268,7 +268,7 @@ class TelethonTransport(SendTransport):
             return text
         r = await self.resolver.clone_transform(plan.rule_id, text)
         if r.get("action") == "drop":
-            raise TransportError(TransportErrorKind.CONTENT,
+            raise TransportError(TransportErrorKind.FILTERED,
                                  f"dropped:{r.get('reason') or 'filtered'}")
         return str(r.get("text") or text)
 

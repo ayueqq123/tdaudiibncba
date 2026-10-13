@@ -1,6 +1,7 @@
 """Tests for SendPolicy gate + DeliveryExecutor with a fake transport."""
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,7 @@ from runtime.delivery.policy import (
     ApprovalRecord,
     Decision,
     LiveAccount,
+    PolicyCheckable,
     PolicySnapshot,
     SendState,
     check,
@@ -25,7 +27,7 @@ from runtime.planner.model import (
     DeliveryPlan,
     PlanKind,
 )
-from runtime.delivery.policy import PolicyCheckable
+from runtime.worker.live import TelethonTransport
 
 
 def _job(**kw):
@@ -104,12 +106,13 @@ class FakeTransport:
         self.calls.append(("delete", plan.route_id, tuple(ids)))
 
 
-def _plan(kind=PlanKind.SEND, requires_approval=False):
+def _plan(kind=PlanKind.SEND, requires_approval=False, transform=False):
     return DeliveryPlan(
         kind=kind, rule_id="r1", rule_version=1, route_id="rt1", account_id="a1",
         source_scope="peer", source_chat_id=100, source_message_id=1, revision=1,
         target_chat_id=200, target_topic_id=None, mode=CloneMode.COPY,
         payload_ref="ref", payload_hash="h1", requires_approval=requires_approval,
+        transform=transform,
     )
 
 
@@ -157,6 +160,29 @@ def test_executor_permission_blocked():
     r = asyncio.run(DeliveryExecutor(t).execute(_plan(), **_exec_kwargs()))
     assert r.status is ResultStatus.BLOCKED
     assert r.error_class is ErrorClass.PERMISSION_BLOCKED
+
+
+def test_transform_drop_is_classified_as_filtered():
+    class DropResolver:
+        async def clone_transform(self, rule_id, text):
+            return {"action": "drop", "reason": "ad"}
+
+    class TransformingTransport(FakeTransport):
+        async def send(self, plan):
+            self.calls.append(("send", plan.route_id))
+            return await TelethonTransport._transform(
+                SimpleNamespace(resolver=DropResolver()), plan, "advertisement"
+            )
+
+    result = asyncio.run(
+        DeliveryExecutor(TransformingTransport()).execute(
+            _plan(transform=True), **_exec_kwargs()
+        )
+    )
+
+    assert result.status is ResultStatus.FAILED
+    assert result.error_class is ErrorClass.FILTERED
+    assert result.error_detail == "dropped:ad"
 
 
 def test_executor_edit_and_delete():

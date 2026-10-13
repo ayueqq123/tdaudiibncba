@@ -29,6 +29,7 @@ class TransportErrorKind(enum.Enum):
     TRANSIENT = "transient"
     RESULT_UNKNOWN = "result_unknown"
     PERMISSION = "permission"
+    FILTERED = "filtered"
     CONTENT = "content"
     AUTH = "auth"
 
@@ -78,6 +79,7 @@ _ERROR_CLASS_MAP = {
     TransportErrorKind.TRANSIENT: ErrorClass.TRANSIENT,
     TransportErrorKind.RESULT_UNKNOWN: ErrorClass.RESULT_UNKNOWN,
     TransportErrorKind.PERMISSION: ErrorClass.PERMISSION_BLOCKED,
+    TransportErrorKind.FILTERED: ErrorClass.FILTERED,
     TransportErrorKind.CONTENT: ErrorClass.CONTENT_INVALID,
     TransportErrorKind.AUTH: ErrorClass.AUTH_DEAD,
 }
@@ -140,6 +142,7 @@ class DeliveryExecutor:
                 ErrorClass.FLOOD_WAIT: ResultStatus.RETRYABLE,
                 ErrorClass.TRANSIENT: ResultStatus.RETRYABLE,
                 ErrorClass.PERMISSION_BLOCKED: ResultStatus.BLOCKED,
+                ErrorClass.FILTERED: ResultStatus.FAILED,
                 ErrorClass.CONTENT_INVALID: ResultStatus.FAILED,
                 ErrorClass.RESULT_UNKNOWN: ResultStatus.UNCERTAIN,
                 ErrorClass.AUTH_DEAD: ResultStatus.FAILED,
