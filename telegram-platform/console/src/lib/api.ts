@@ -269,6 +269,7 @@ export const tgApi = {
   updateAccount: (id: number, b: any) => api.put(`${TG}/accounts/${id}`, b),
   deleteAccount: (id: number) => api.del(`${TG}/accounts/${id}`),
   deleteFrozenAccounts: () => api.post<{ deleted: number }>(`${TG}/accounts/delete-frozen`),
+  deleteBannedAccounts: () => api.post<{ deleted: number }>(`${TG}/accounts/delete-banned`),
   importAccounts: (tenantId: number, projectId: number, file: File) => {
     const f = new FormData()
     f.append('tenant_id', String(tenantId))
