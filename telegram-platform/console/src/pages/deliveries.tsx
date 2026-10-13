@@ -28,7 +28,8 @@ const rawLabel = (s: string) => RAW_LABELS[s] || s
 const statusBadge = (s: string) => groupOf(s)?.[2] || 'secondary'
 const ERR_LABELS: Record<string, string> = {
   flood_wait: '限流等待', transient: '临时错误', result_unknown: '结果未知', auth_dead: '账号登录失效',
-  permission: '无权限/被移出', content_invalid: '内容不支持', storage_down: '数据库不可用', cache_down: '缓存不可用',
+  permission: '无权限/被移出', content_invalid: '内容不支持', filtered: '广告过滤拦截',
+  storage_down: '数据库不可用', cache_down: '缓存不可用',
 }
 const errLabel = (s?: string | null) => (s ? ERR_LABELS[s] || s : '-')
 /** 北京时间 datetime-local 值 → UTC ISO */

@@ -43,6 +43,7 @@ ERR_LABELS = {
     'auth_dead': '账号登录失效',
     'permission': '无权限或已被移出群',
     'content_invalid': '消息内容不支持',
+    'filtered': '已被广告/AI 过滤拦截',
     'storage_down': '数据库不可用',
     'cache_down': '缓存不可用',
 }
@@ -208,6 +209,10 @@ class AlertService:
                         TgDeliveryJob.account_id.in_(uuids),
                         TgDeliveryJob.status.in_(list(DELIVERY_BAD)),
                         TgDeliveryJob.updated_at >= since,
+                        sa.or_(
+                            TgDeliveryJob.last_error_class.is_(None),
+                            TgDeliveryJob.last_error_class != 'filtered',
+                        ),
                     )
                     .group_by(TgDeliveryJob.account_id, TgDeliveryJob.status, TgDeliveryJob.last_error_class)
                 )
@@ -244,7 +249,8 @@ class AlertService:
         )
         if tenants is not None:
             ai_q = ai_q.where(TgAiRun.tenant_id.in_(tenants))
-        alerts.extend({
+        alerts.extend(
+            {
                 'key': f'ai:{r.id}:{(r.last_error or "")[:40]}',
                 'level': 'warning' if _is_gate(r.last_error) else 'error',
                 'category': 'ai',
@@ -254,7 +260,9 @@ class AlertService:
                 'count': r.n,
                 'last_at': r.last_at,
                 'link': '/ai-bindings',
-            } for r in (await db.execute(ai_q)).all())
+            }
+            for r in (await db.execute(ai_q)).all()
+        )
 
         alerts.sort(key=lambda x: x['last_at'] or now - timedelta(days=3650), reverse=True)
         acks: dict[str, TgAlertAck] = {}
