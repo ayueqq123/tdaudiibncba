@@ -313,13 +313,17 @@ class AccountService:
         return await telegram_account_dao.delete(db, pk)
 
     @staticmethod
-    async def delete_frozen(*, db: AsyncSession, request: Request) -> int:
-        """一键清理冻结账号(软删,限定调用者可见范围)"""
-        accounts = await AccountService.get_all(db=db, request=request, status='frozen')
+    async def delete_by_status(*, db: AsyncSession, request: Request, status: str) -> int:
+        """按观测状态清理账号(软删,限定调用者可见范围)"""
+        accounts = await AccountService.get_all(db=db, request=request, status=status)
         count = 0
         for account in accounts:
             count += await telegram_account_dao.delete(db, account.id)
         return count
+
+    @staticmethod
+    async def delete_frozen(*, db: AsyncSession, request: Request) -> int:
+        return await AccountService.delete_by_status(db=db, request=request, status='frozen')
 
     @staticmethod
     async def login_start(*, db: AsyncSession, request: Request, obj) -> dict[str, Any]:
@@ -352,18 +356,21 @@ class AccountService:
             if status == 'flood_wait':
                 raise errors.RequestError(msg=f'操作频繁,请 {err.get("seconds", 60)} 秒后重试')
             raise errors.RequestError(msg=_LOGIN_ERR.get(status, err.get('detail', '发送验证码失败')))
-        await _pending_save(login_id, {
-            'session_path': session_path,
-            'tenant_id': obj.tenant_id,
-            'project_id': obj.project_id,
-            'user_id': request.user.id,
-            'phone': obj.phone,
-            'api_id': obj.api_id,
-            'api_hash': obj.api_hash,
-            'device': obj.device,
-            'app_version': obj.app_version,
-            'phone_code_hash': result['phone_code_hash'],
-        })
+        await _pending_save(
+            login_id,
+            {
+                'session_path': session_path,
+                'tenant_id': obj.tenant_id,
+                'project_id': obj.project_id,
+                'user_id': request.user.id,
+                'phone': obj.phone,
+                'api_id': obj.api_id,
+                'api_hash': obj.api_hash,
+                'device': obj.device,
+                'app_version': obj.app_version,
+                'phone_code_hash': result['phone_code_hash'],
+            },
+        )
         return {'login_id': login_id, 'ttl': _LOGIN_TTL_S}
 
     @staticmethod

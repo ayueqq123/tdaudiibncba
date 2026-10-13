@@ -107,6 +107,7 @@ class ErrorClass(enum.Enum):
     RESULT_UNKNOWN = "result_unknown"     # request may have been accepted
     AUTH_DEAD = "auth_dead"               # session revoked / account banned
     PERMISSION_BLOCKED = "permission"     # target permission/topic/protected
+    FILTERED = "filtered"                 # deliberately dropped by a content filter
     CONTENT_INVALID = "content_invalid"   # unsupported/illegal content
     STORAGE_DOWN = "storage_down"         # postgres unavailable
     CACHE_DOWN = "cache_down"             # redis unavailable
@@ -135,6 +136,8 @@ def classify_error(err: ErrorClass, *, flood_wait_until: float | None = None) ->
     if err is ErrorClass.PERMISSION_BLOCKED:
         return ErrorAction(JobStatus.BLOCKED, worker_halts=False, retryable=False)
     if err is ErrorClass.CONTENT_INVALID:
+        return ErrorAction(JobStatus.FAILED_PERMANENT, worker_halts=False, retryable=False)
+    if err is ErrorClass.FILTERED:
         return ErrorAction(JobStatus.FAILED_PERMANENT, worker_halts=False, retryable=False)
     if err is ErrorClass.STORAGE_DOWN:
         return ErrorAction(None, worker_halts=True, retryable=False)

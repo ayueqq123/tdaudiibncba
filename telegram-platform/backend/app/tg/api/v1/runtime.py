@@ -6,6 +6,7 @@ import secrets
 from typing import Annotated
 
 import anyio
+import sqlalchemy as sa
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 from starlette.authentication import UnauthenticatedUser
@@ -15,6 +16,7 @@ from backend.app.tg.crud.crud_clone_rule import clone_rule_dao, clone_rule_versi
 from backend.app.tg.crud.crud_project import project_dao
 from backend.app.tg.crud.crud_telegram_account import telegram_account_dao
 from backend.app.tg.crud.crud_tenant import tenant_dao
+from backend.app.tg.model import TgCloneTarget
 from backend.app.tg.schema.ai import AiGroupEventParam, CloneTransformParam
 from backend.app.tg.schema.runtime_command import (
     AckRuntimeCommandParam,
@@ -103,8 +105,7 @@ async def pull_session(
         raise errors.RequestError(msg='账号未处于运行期望态')
     # realpath 解析符号链接,确保 secret_ref 不能逃出导入存储目录
     base = await anyio.Path(settings.TG_IMPORT_STORAGE_DIR).resolve()
-    session_path = await anyio.Path(
-        os.path.join(str(base), account.secret_ref)).resolve()
+    session_path = await anyio.Path(os.path.join(str(base), account.secret_ref)).resolve()
     if os.path.commonpath([str(base), str(session_path)]) != str(base):
         raise errors.RequestError(msg='非法会话引用')
     if not await session_path.is_file():
@@ -175,20 +176,42 @@ async def pull_rules(
             continue
         cur = await clone_rule_version_dao.get_by_rule_version(db, r.id, r.current_version)
         if cur:
-            account = await telegram_account_dao.get_by_scope(
-                db, r.tenant_id, r.project_id, r.account_id)
+            account = await telegram_account_dao.get_by_scope(db, r.tenant_id, r.project_id, r.account_id)
             # worker 侧以账号 uuid 为运行时键(租约/事件/投递均按 uuid 关联)
             pool_ids = (cur.snapshot or {}).get('rule', {}).get('sender_account_ids') or [r.account_id]
+
+            targets = list(
+                (
+                    await db.execute(
+                        sa.select(TgCloneTarget).where(
+                            TgCloneTarget.rule_id == r.id,
+                            TgCloneTarget.deleted == 0,
+                        )
+                    )
+                ).scalars()
+            )
+
             sender_uuids = []
+            sender_uuid_by_id = {}
             for pid in pool_ids:
                 a = await telegram_account_dao.get_by_scope(db, r.tenant_id, r.project_id, int(pid))
-                sender_uuids.append(a.uuid if a else None)
+                sender_uuid = a.uuid if a else None
+                sender_uuids.append(sender_uuid)
+                sender_uuid_by_id[int(pid)] = sender_uuid
+            route_sender_uuids = {}
+            for target in targets:
+                eligible = [
+                    p for p in pool_ids if int(p) == r.account_id or int(p) in (target.joined_account_ids or [])
+                ]
+                route_pool = eligible or pool_ids
+                route_sender_uuids[target.route_id] = [sender_uuid_by_id[int(pid)] for pid in route_pool]
             out.append({
                 'rule_id': r.id,
                 'version': cur.version,
                 'snapshot': cur.snapshot,
                 'account_uuid': account.uuid if account else None,
                 'sender_account_uuids': sender_uuids,
+                'route_sender_account_uuids': route_sender_uuids,
             })
     return response_base.success(data=out)
 
@@ -211,16 +234,12 @@ async def pull_commands(
     summary='Worker 上报群消息触发 AI 生成(炒群)',
     dependencies=[DependsWorkerAuth],
 )
-async def ai_group_event(
-    db: CurrentSessionTransaction, obj: AiGroupEventParam
-) -> ResponseSchemaModel[dict]:
+async def ai_group_event(db: CurrentSessionTransaction, obj: AiGroupEventParam) -> ResponseSchemaModel[dict]:
     """openai 引擎绑定按 chat_id 匹配→逐绑定 trigger→生成→候选→审批。"""
     account = await telegram_account_dao.get(db, obj.api_row_id)
     if account is None:
         raise errors.NotFoundError(msg='账号不存在')
-    n = await ai_service.handle_group_event(
-        db=db, obj=obj, account=account, username=account.username
-    )
+    n = await ai_service.handle_group_event(db=db, obj=obj, account=account, username=account.username)
     return response_base.success(data={'triggered': n})
 
 
@@ -229,9 +248,7 @@ async def ai_group_event(
     summary='Worker 克隆发送前变形闸(广告拦截+AI 改写)',
     dependencies=[DependsWorkerAuth],
 )
-async def ai_clone_transform(
-    db: CurrentSession, obj: CloneTransformParam
-) -> ResponseSchemaModel[dict]:
+async def ai_clone_transform(db: CurrentSession, obj: CloneTransformParam) -> ResponseSchemaModel[dict]:
     """copy 模式发送前过闸:关键词粗拦→AI 判广告→AI 改写;drop 则丢弃。"""
     try:
         rule_id = int(obj.rule_id)

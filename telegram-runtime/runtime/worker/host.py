@@ -83,11 +83,19 @@ def rules_from_snapshot(
                 else ApprovalPolicy.RULE_AUTHORIZED)
     # 发送号池 uuid(控制面已把行 ID 解成 uuid);剔除已上报死亡的号,空=仅监听号发送
     sender_uuids = tuple(u for u in (row.get("sender_account_uuids") or []) if u and u not in dead)
+    route_sender_uuids = row.get("route_sender_account_uuids") or {}
     transform = bool(rule.get("transform"))
     out: list[RuleSnapshot] = []
     for t in snap.get("targets") or []:
+        route_id = str(t["route_id"])
+        route_sender_ids = (
+            (route_sender_uuids[route_id] or [])
+            if route_id in route_sender_uuids
+            else sender_uuids
+        )
+        route_sender_ids = tuple(u for u in route_sender_ids if u and u not in dead)
         route = RouteTarget(
-            route_id=str(t["route_id"]),
+            route_id=route_id,
             target_chat_id=int(t["target_chat_id"]),
             target_topic_id=t.get("target_topic_id"),
         )
@@ -102,7 +110,7 @@ def rules_from_snapshot(
                 sync_delete=bool(rule.get("sync_delete", True)),
                 approval_policy=approval,
                 filters=(t.get("filters") or {},),
-                sender_account_ids=sender_uuids,
+                sender_account_ids=route_sender_ids,
                 transform=transform,
             ))
     return out

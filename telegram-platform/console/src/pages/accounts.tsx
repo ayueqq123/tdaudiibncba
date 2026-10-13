@@ -111,9 +111,12 @@ export default function AccountsPage() {
   const [startAllBusy, setStartAllBusy] = useState(false)
   const [delFrozenOpen, setDelFrozenOpen] = useState(false)
   const [delFrozenBusy, setDelFrozenBusy] = useState(false)
+  const [delBannedOpen, setDelBannedOpen] = useState(false)
+  const [delBannedBusy, setDelBannedBusy] = useState(false)
   const [delTarget, setDelTarget] = useState<TgAccount | null>(null)
   const [delAccountBusy, setDelAccountBusy] = useState(false)
   const frozenCount = rows.filter((r) => r.observed_status === 'frozen').length
+  const bannedCount = rows.filter((r) => r.observed_status === 'banned').length
   async function deleteFrozen() {
     setDelFrozenBusy(true)
     try {
@@ -125,6 +128,19 @@ export default function AccountsPage() {
     } finally {
       setDelFrozenBusy(false)
       load()
+    }
+  }
+  async function deleteBanned() {
+    setDelBannedBusy(true)
+    try {
+      const r = await tgApi.deleteBannedAccounts()
+      toast.success(`已删除 ${r.deleted} 个禁言账号`)
+      setDelBannedOpen(false)
+      load()
+    } catch (e: any) {
+      toast.error(e?.detail || '删除失败')
+    } finally {
+      setDelBannedBusy(false)
     }
   }
   async function deleteAccount() {
@@ -272,6 +288,33 @@ export default function AccountsPage() {
                 </Button>
                 <Button variant="destructive" onClick={deleteFrozen} disabled={delFrozenBusy || !frozenCount}>
                   {delFrozenBusy ? '删除中…' : `删除 ${frozenCount} 个冻结账号`}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+          <Dialog open={delBannedOpen} onOpenChange={setDelBannedOpen}>
+            <DialogTrigger asChild>
+              <Button variant="outline" disabled={!bannedCount || delBannedBusy}>
+                <Trash2 className="h-4 w-4" /> 清除禁言账号
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>一键删除禁言账号</DialogTitle>
+              </DialogHeader>
+              <p className="text-sm text-muted-foreground">
+                将删除当前 {bannedCount} 个状态为"已禁言"的账号,删除后不可恢复。正常账号不受影响。
+              </p>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDelBannedOpen(false)} disabled={delBannedBusy}>
+                  取消
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={deleteBanned}
+                  disabled={delBannedBusy || !bannedCount}
+                >
+                  {delBannedBusy ? '删除中…' : `删除 ${bannedCount} 个禁言账号`}
                 </Button>
               </DialogFooter>
             </DialogContent>

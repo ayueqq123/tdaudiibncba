@@ -28,14 +28,6 @@ async def get_api_credentials(
     return response_base.success(data=data)
 
 
-@router.get('/{pk}', summary='获取 Telegram 账号详情', dependencies=[DependsJwtAuth])
-async def get_account(
-    db: CurrentSession, request: Request, pk: Annotated[int, Path(description='账号 ID')]
-) -> ResponseSchemaModel[GetTgAccountDetail]:
-    data = await account_service.get(db=db, request=request, pk=pk)
-    return response_base.success(data=data)
-
-
 @router.get('', summary='获取 Telegram 账号列表', dependencies=[DependsJwtAuth])
 async def get_accounts(
     db: CurrentSession,
@@ -47,6 +39,34 @@ async def get_accounts(
     data = await account_service.get_all(
         db=db, request=request, tenant_id=tenant_id, project_id=project_id, status=status
     )
+    return response_base.success(data=data)
+
+
+@router.post(
+    '/delete-frozen',
+    summary='一键删除冻结账号',
+    dependencies=[Depends(RequestPermission('tg:account:del')), DependsRBAC],
+)
+async def delete_frozen_accounts(db: CurrentSessionTransaction, request: Request) -> ResponseSchemaModel[dict]:
+    count = await account_service.delete_frozen(db=db, request=request)
+    return response_base.success(data={'deleted': count})
+
+
+@router.post(
+    '/delete-banned',
+    summary='一键删除禁言账号',
+    dependencies=[Depends(RequestPermission('tg:account:del')), DependsRBAC],
+)
+async def delete_banned_accounts(db: CurrentSessionTransaction, request: Request) -> ResponseSchemaModel[dict]:
+    count = await account_service.delete_by_status(db=db, request=request, status='banned')
+    return response_base.success(data={'deleted': count})
+
+
+@router.get('/{pk}', summary='获取 Telegram 账号详情', dependencies=[DependsJwtAuth])
+async def get_account(
+    db: CurrentSession, request: Request, pk: Annotated[int, Path(description='账号 ID')]
+) -> ResponseSchemaModel[GetTgAccountDetail]:
+    data = await account_service.get(db=db, request=request, pk=pk)
     return response_base.success(data=data)
 
 
@@ -84,25 +104,11 @@ async def delete_account(
 
 
 @router.post(
-    '/delete-frozen',
-    summary='一键删除冻结账号',
-    dependencies=[Depends(RequestPermission('tg:account:del')), DependsRBAC],
-)
-async def delete_frozen_accounts(
-    db: CurrentSessionTransaction, request: Request
-) -> ResponseSchemaModel[dict]:
-    count = await account_service.delete_frozen(db=db, request=request)
-    return response_base.success(data={'deleted': count})
-
-
-@router.post(
     '/login/start',
     summary='验证码登录:发送验证码',
     dependencies=[Depends(RequestPermission('tg:account:import')), DependsRBAC],
 )
-async def login_start(
-    db: CurrentSession, request: Request, obj: LoginStartParam
-) -> ResponseSchemaModel[dict]:
+async def login_start(db: CurrentSession, request: Request, obj: LoginStartParam) -> ResponseSchemaModel[dict]:
     data = await account_service.login_start(db=db, request=request, obj=obj)
     return response_base.success(data=data)
 

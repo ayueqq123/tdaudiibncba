@@ -19,7 +19,7 @@ from runtime.worker.control_client import (
     PendingCommand,
     SessionBundle,
 )
-from runtime.worker.host import WorkerHostMain
+from runtime.worker.host import WorkerHostMain, rules_from_snapshot
 from runtime.worker.live import PayloadResolver
 from runtime.worker.runner import plan_from_job
 
@@ -102,6 +102,57 @@ async def _connect(bundle):
 
 def _bundle():
     return SessionBundle(session_bytes=b"x", api_id=1, api_hash="h")
+
+
+def _snapshot_row(targets, **sender_fields):
+    row = {
+        'rule_id': 7,
+        'version': 3,
+        'snapshot': {
+            'rule': {'id': 7, 'account_id': 5, 'mode': 'copy'},
+            'targets': targets,
+        },
+        'sender_account_uuids': ['global-1', 'global-dead'],
+    }
+    row.update(sender_fields)
+    return row
+
+
+def test_rules_from_snapshot_uses_per_route_sender_pools():
+    row = _snapshot_row(
+        [
+            {'route_id': 'rt1', 'source_chat_id': 100, 'target_chat_id': 200},
+            {'route_id': 'rt2', 'source_chat_id': 101, 'target_chat_id': 201},
+        ],
+        route_sender_account_uuids={
+            'rt1': ['route-1', 'dead'],
+            'rt2': ['route-2'],
+        },
+    )
+
+    snapshots = rules_from_snapshot(row, 'listener', dead={'dead'})
+
+    pools = {snapshot.targets[0].route_id: snapshot.sender_account_ids for snapshot in snapshots}
+    assert pools == {'rt1': ('route-1',), 'rt2': ('route-2',)}
+
+
+def test_rules_from_snapshot_falls_back_when_route_pool_is_missing():
+    row = _snapshot_row([{'route_id': 'rt1', 'source_chat_id': 100, 'target_chat_id': 200}])
+
+    snapshots = rules_from_snapshot(row, 'listener', dead={'global-dead'})
+
+    assert {snapshot.sender_account_ids for snapshot in snapshots} == {('global-1',)}
+
+
+def test_rules_from_snapshot_empty_after_dead_filter_is_listener_only():
+    row = _snapshot_row(
+        [{'route_id': 'rt1', 'source_chat_id': 100, 'target_chat_id': 200}],
+        route_sender_account_uuids={'rt1': ['dead']},
+    )
+
+    snapshots = rules_from_snapshot(row, 'listener', dead={'dead'})
+
+    assert {snapshot.sender_account_ids for snapshot in snapshots} == {()}
 
 
 async def test_assign_heartbeat_release(factory):
