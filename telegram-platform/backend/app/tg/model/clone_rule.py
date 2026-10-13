@@ -31,15 +31,9 @@ class TgCloneRule(Base):
     status: Mapped[str] = mapped_column(
         sa.String(16), default='draft', index=True, comment='规则状态(draft/published/disabled)'
     )
-    ai_rewrite: Mapped[str] = mapped_column(
-        sa.String(16), default='off', comment='克隆文本改写(off/light/strong)'
-    )
-    ad_block: Mapped[str] = mapped_column(
-        sa.String(16), default='off', comment='广告拦截(off/keyword/ai)'
-    )
-    ad_keywords: Mapped[list] = mapped_column(
-        sa.JSON, default_factory=list, comment='广告关键词列表'
-    )
+    ai_rewrite: Mapped[str] = mapped_column(sa.String(16), default='off', comment='克隆文本改写(off/light/strong)')
+    ad_block: Mapped[str] = mapped_column(sa.String(16), default='off', comment='广告拦截(off/keyword/ai)')
+    ad_keywords: Mapped[list] = mapped_column(sa.JSON, default_factory=list, comment='广告关键词列表')
     ai_group_id: Mapped[int | None] = mapped_column(
         sa.BigInteger, default=None, comment='复用的 AI 群配置(模型 key 来源;空=按目标群自动匹配)'
     )
@@ -95,14 +89,20 @@ class TgCloneTarget(Base):
     status: Mapped[str] = mapped_column(sa.String(16), default='active', index=True, comment='状态(active/retired)')
     remark: Mapped[str | None] = mapped_column(sa.String(512), default=None, comment='备注')
     joined_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近完成进群时间')
-    health_reason: Mapped[str | None] = mapped_column(
-        sa.String(255), default=None, comment='路线失效原因(NULL=正常)'
-    )
+    health_reason: Mapped[str | None] = mapped_column(sa.String(255), default=None, comment='路线失效原因(NULL=正常)')
     joined_account_ids: Mapped[list] = mapped_column(
         sa.JSON, default_factory=list, comment='已完成进目标群的池内账号ID列表'
     )
 
     __table_args__ = (
-        sa.UniqueConstraint('rule_id', 'source_chat_id', 'source_topic_id', 'deleted', name='uk_tg_target_src_deleted'),
+        sa.UniqueConstraint(
+            'rule_id',
+            'source_chat_id',
+            'source_topic_id',
+            'target_chat_id',
+            'target_topic_id',
+            'deleted',
+            name='uk_tg_target_route_deleted',
+        ),
         {'comment': 'TG 平台 Clone 目标表'},
     )
