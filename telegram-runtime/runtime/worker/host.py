@@ -81,6 +81,9 @@ def rules_from_snapshot(
     approval = (ApprovalPolicy.MESSAGE_REVIEW
                 if rule.get("approval_policy") == "message_review"
                 else ApprovalPolicy.RULE_AUTHORIZED)
+    delay_min_s = max(0, int(rule.get("delay_min_s") or 0))
+    delay_max_s = max(0, int(rule.get("delay_max_s") or 0))
+    delay_max_s = max(delay_max_s, delay_min_s)
     # 发送号池 uuid(控制面已把行 ID 解成 uuid);剔除已上报死亡的号,空=仅监听号发送
     sender_uuids = tuple(u for u in (row.get("sender_account_uuids") or []) if u and u not in dead)
     route_sender_uuids = row.get("route_sender_account_uuids") or {}
@@ -108,6 +111,8 @@ def rules_from_snapshot(
                 targets=(route,), mode=mode,
                 sync_edit=bool(rule.get("sync_edit", True)),
                 sync_delete=bool(rule.get("sync_delete", True)),
+                delay_min_s=delay_min_s,
+                delay_max_s=delay_max_s,
                 approval_policy=approval,
                 filters=(t.get("filters") or {},),
                 sender_account_ids=route_sender_ids,
