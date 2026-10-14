@@ -41,6 +41,8 @@ class TgCloneRule(Base):
     sender_account_ids: Mapped[list] = mapped_column(
         sa.JSON, default_factory=list, comment='发送号池(行ID列表);空=仅监听号发送'
     )
+    delay_min_s: Mapped[int] = mapped_column(default=0, comment='搬运延时下限(秒)')
+    delay_max_s: Mapped[int] = mapped_column(default=0, comment='搬运延时上限(秒)')
 
 
 class TgCloneRuleVersion(Base):
@@ -92,6 +94,9 @@ class TgCloneTarget(Base):
     health_reason: Mapped[str | None] = mapped_column(sa.String(255), default=None, comment='路线失效原因(NULL=正常)')
     joined_account_ids: Mapped[list] = mapped_column(
         sa.JSON, default_factory=list, comment='已完成进目标群的池内账号ID列表'
+    )
+    sender_status: Mapped[dict] = mapped_column(
+        sa.JSON, default_factory=dict, comment='号池账号在目标群的检测结果{acc_id:{status,can_post,checked_at}}'
     )
 
     __table_args__ = (

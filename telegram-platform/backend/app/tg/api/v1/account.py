@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Path, Query, Request, UploadFile
 
@@ -8,6 +8,7 @@ from backend.app.tg.schema.telegram_account import (
     GetTgAccountDetail,
     LoginCompleteParam,
     LoginStartParam,
+    SetAccountUsageParam,
     UpdateTgAccountParam,
 )
 from backend.app.tg.service.account_service import account_service
@@ -60,6 +61,18 @@ async def delete_frozen_accounts(db: CurrentSessionTransaction, request: Request
 async def delete_banned_accounts(db: CurrentSessionTransaction, request: Request) -> ResponseSchemaModel[dict]:
     count = await account_service.delete_by_status(db=db, request=request, status='banned')
     return response_base.success(data={'deleted': count})
+
+
+@router.post(
+    '/usage',
+    summary='批量设置账号用途',
+    dependencies=[Depends(RequestPermission('tg:account:edit')), DependsRBAC],
+)
+async def set_account_usage(
+    db: CurrentSessionTransaction, request: Request, obj: SetAccountUsageParam
+) -> ResponseSchemaModel[dict]:
+    data = await account_service.set_usage(db=db, request=request, account_ids=obj.account_ids, usage=obj.usage)
+    return response_base.success(data=data)
 
 
 @router.get('/{pk}', summary='获取 Telegram 账号详情', dependencies=[DependsJwtAuth])
@@ -137,8 +150,9 @@ async def import_accounts(
     tenant_id: Annotated[int, Form(description='租户 ID')],
     project_id: Annotated[int, Form(description='项目 ID')],
     file: Annotated[UploadFile, File(description='session 包 zip')],
+    usage: Annotated[Literal['ai', 'clone'] | None, Form(description='账号用途')] = None,
 ) -> ResponseSchemaModel[GetImportBatchDetail]:
     data = await account_service.import_zip(
-        db=db, request=request, tenant_id=tenant_id, project_id=project_id, file=file
+        db=db, request=request, tenant_id=tenant_id, project_id=project_id, file=file, usage=usage
     )
     return response_base.success(data=data)
