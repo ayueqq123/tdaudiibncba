@@ -33,7 +33,7 @@ const EMPTY_FORM = {
   account_id: '', name: '', mode: 'copy',
   sender_account_ids: [] as number[],
   ai_rewrite: 'off', ad_block: 'off', ad_keywords: '', ai_group_id: 'auto',
-  sync_edit: true, sync_delete: true,
+  sync_edit: true, sync_delete: true, delay_min_s: '0', delay_max_s: '0',
   source_chats: [''] as string[], target_chats: [''] as string[],
   sender_user_ids: '', blocked_sender_ids: '', exclude_bots: false,
   media_kinds: [] as string[], remark: '',
@@ -44,6 +44,10 @@ const senderText = (f: any, key: string) => (f[`${key}_refs`] || f[key] || []).j
 const chatLabel = (ref: string | null | undefined, id: number) => (ref && ref !== String(id) ? `${ref}(${id})` : String(id))
 
 const activeTarget = (r: CloneRule) => (r.targets || []).find((t) => t.status === 'active' || !t.status)
+const senderStatusLabel = (status?: string) =>
+  status === 'member' ? '已进群' : status === 'muted' ? '被禁言' :
+  status === 'banned' || status === 'kicked' ? '被踢/封禁' :
+  status === 'not_member' ? '未进群' : status === 'unauthorized' ? '登录失效' : '检测失败'
 
 function filterSummary(t: CloneTarget): string {
   const f = t.filters
@@ -100,10 +104,18 @@ export default function RulesPage() {
   }
 
   const isRunning = (r: CloneRule) => r.enabled && r.current_version > 0
+  const selectableAccounts = accounts.filter(
+    (a) => a.usage !== 'ai' || a.id === Number(form.account_id) || form.sender_account_ids.includes(a.id),
+  )
 
   async function doSave() {
     const acc = accounts.find((a) => a.id === +form.account_id)
     if (!form.name) return toast.warning('名称必填')
+    const delayMin = Number(form.delay_min_s)
+    const delayMax = Number(form.delay_max_s)
+    if (!form.delay_min_s.trim() || !form.delay_max_s.trim() ||
+      ![delayMin, delayMax].every((n) => Number.isInteger(n) && n >= 0 && n <= 3600) || delayMin > delayMax)
+      return toast.warning('延时范围须为 0–3600 的整数,且最小值不能大于最大值')
     if (!editRule && !acc) return toast.warning('请选择执行账号')
     const formSrcs: string[] = [
       ...new Set<string>(form.source_chats.map((s: string) => s.trim()).filter((s: string) => Boolean(s))),
@@ -137,6 +149,8 @@ export default function RulesPage() {
       sync_delete: form.sync_delete,
       remark: form.remark || null,
       sender_account_ids: form.sender_account_ids,
+      delay_min_s: delayMin,
+      delay_max_s: delayMax,
       ai_rewrite: form.ai_rewrite,
       ad_block: form.ad_block,
       ad_keywords: parseSenders(form.ad_keywords),
@@ -239,6 +253,8 @@ export default function RulesPage() {
       remark: r.remark || '',
       source_chats: srcs.length ? srcs : [''],
       target_chats: dsts.length ? dsts : [''],
+      delay_min_s: String(r.delay_min_s ?? 0),
+      delay_max_s: String(r.delay_max_s ?? 0),
       sender_user_ids: senderText(f, 'sender_user_ids'),
       blocked_sender_ids: senderText(f, 'blocked_sender_ids'),
       exclude_bots: !!f.exclude_bots,
@@ -272,9 +288,15 @@ export default function RulesPage() {
     try {
       const res = await tgApi.checkRule(r.id)
       const bad = res.filter((x) => !x.ok)
-      if (bad.length) toast.error(`${bad.length} 条路线失效:${bad[0].reason}。点运行会用链接重新进群`)
-      else toast.success('账号都在群里,路线正常')
-      load()
+      const blocked = new Set<string>()
+      for (const route of res) {
+        for (const [id, sender] of Object.entries(route.senders || {})) {
+          if (sender.can_post !== true) blocked.add(id)
+        }
+      }
+      if (bad.length) toast.error(`${bad.length} 条路线失效:${bad[0].reason}；${blocked.size} 个池号至少有目标群不能发`)
+      else toast.success(`路线正常；${blocked.size} 个池号至少有目标群不能发`)
+      await load()
     } catch (e: any) {
       toast.error(e?.detail || '检测失败')
     } finally {
@@ -362,7 +384,7 @@ export default function RulesPage() {
                           <SelectValue placeholder="选择账号" />
                         </SelectTrigger>
                         <SelectContent>
-                          {accounts.map((a) => (
+                          {selectableAccounts.map((a) => (
                             <SelectItem key={a.id} value={String(a.id)}>
                               {a.username ? '@' + a.username : a.phone || String(a.telegram_user_id || a.id)}
                             </SelectItem>
@@ -383,19 +405,19 @@ export default function RulesPage() {
                           setForm({
                             ...form,
                             sender_account_ids:
-                              form.sender_account_ids.length === accounts.length
+                              form.sender_account_ids.length === selectableAccounts.length
                                 ? []
-                                : accounts.map((a) => a.id),
+                                : selectableAccounts.map((a) => a.id),
                           })
                         }
                       >
-                        {form.sender_account_ids.length === accounts.length && accounts.length > 0
+                        {form.sender_account_ids.length === selectableAccounts.length && selectableAccounts.length > 0
                           ? '清空'
                           : '全选'}
                       </Button>
                     </div>
                     <div className="grid max-h-32 grid-cols-2 gap-1.5 overflow-y-auto rounded-md border p-2 sm:grid-cols-3">
-                      {accounts.map((a) => {
+                      {selectableAccounts.map((a) => {
                         const on = form.sender_account_ids.includes(a.id)
                         const st = a.observed_status
                         const dead = st && DEAD_STATUS.has(st)
@@ -415,6 +437,17 @@ export default function RulesPage() {
                             />
                             {a.username ? '@' + a.username : a.phone || String(a.telegram_user_id || a.id)}
                             {dead && <Badge variant="destructive" className="px-1 py-0 text-[10px]">{STATUS_LABEL[st!] || st}</Badge>}
+                            {(() => {
+                              const targets = (editRule?.targets || []).filter((t) => t.status === 'active' || !t.status)
+                              if (!targets.length) return null
+                              const joined = targets.filter((t) => (t.joined_account_ids || []).includes(a.id)).length
+                              const title = targets.map((t) => {
+                                const entry = t.sender_status?.[String(a.id)]
+                                const label = entry ? senderStatusLabel(entry.status) : joined && (t.joined_account_ids || []).includes(a.id) ? '已进群' : '未进群'
+                                return `${t.target_chat_ref || t.target_chat_id}: ${label}`
+                              }).join('\n')
+                              return <span title={title}><Badge variant={joined === targets.length ? 'success' : joined ? 'warning' : 'secondary'} className="px-1 py-0 text-[10px]">{joined ? `已进 ${joined}/${targets.length}` : '未进群'}</Badge></span>
+                            })()}
                           </label>
                         )
                       })}
@@ -422,6 +455,17 @@ export default function RulesPage() {
                     <p className="text-xs text-muted-foreground">
                       只有监听号进源群;发送号只需进目标群,源消息由监听号代取
                     </p>
+                    <p className="text-xs text-muted-foreground">没进群的号点"运行"会自动进群;进不去的号不会往该群发。点规则卡片"检测"刷新进群状态。</p>
+                  </div>
+                </section>
+
+                <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="flex flex-col gap-1.5 sm:col-span-2">
+                    <Label>延时搬运(秒,随机区间;0=立即)</Label>
+                    <div className="flex gap-2">
+                      <Input type="number" min="0" max="3600" step="1" aria-label="最小延时秒数" value={form.delay_min_s} onChange={(e) => setForm({ ...form, delay_min_s: e.target.value })} />
+                      <Input type="number" min="0" max="3600" step="1" aria-label="最大延时秒数" value={form.delay_max_s} onChange={(e) => setForm({ ...form, delay_max_s: e.target.value })} />
+                    </div>
                   </div>
                 </section>
 
@@ -678,6 +722,7 @@ export default function RulesPage() {
                     <Badge variant={r.mode === 'copy' ? 'default' : 'warning'}>
                       {r.mode === 'copy' ? '复制重发' : '官方转发'}
                     </Badge>
+                    {(r.delay_max_s || 0) > 0 && <Badge variant="outline">{r.delay_min_s === r.delay_max_s ? `延时 ${r.delay_min_s}s` : `延时 ${r.delay_min_s}–${r.delay_max_s}s`}</Badge>}
                     {r.ai_rewrite && r.ai_rewrite !== 'off' && (
                       <Badge variant="outline">AI改写</Badge>
                     )}

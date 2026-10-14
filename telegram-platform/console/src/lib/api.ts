@@ -135,6 +135,7 @@ export interface TgAccount {
   telegram_user_id: number | null
   phone: string | null
   username?: string | null
+  usage?: 'ai' | 'clone' | null
   desired_status: string
   observed_status: string
   last_error: string | null
@@ -179,6 +180,8 @@ export interface CloneTarget {
   target_chat_ref?: string | null
   health?: string | null
   status: string
+  joined_account_ids?: number[]
+  sender_status?: Record<string, { status: string; can_post?: boolean | null; checked_at?: string }>
   filters?: Record<string, any> | null
   remark: string | null
 }
@@ -188,6 +191,8 @@ export interface CloneRule {
   project_id: number
   account_id: number
   sender_account_ids?: number[]
+  delay_min_s?: number
+  delay_max_s?: number
   ai_rewrite?: 'off' | 'light' | 'strong'
   ad_block?: 'off' | 'keyword' | 'ai'
   ad_keywords?: string[]
@@ -267,14 +272,17 @@ export const tgApi = {
   deleteProject: (id: number) => api.del(`${TG}/projects/${id}`),
   accounts: (params?: any) => api.get<TgAccount[]>(`${TG}/accounts`, params),
   updateAccount: (id: number, b: any) => api.put(`${TG}/accounts/${id}`, b),
+  setAccountUsage: (ids: number[], usage: 'ai' | 'clone' | null) =>
+    api.post<{ updated: number }>(`${TG}/accounts/usage`, { account_ids: ids, usage }),
   deleteAccount: (id: number) => api.del(`${TG}/accounts/${id}`),
   deleteFrozenAccounts: () => api.post<{ deleted: number }>(`${TG}/accounts/delete-frozen`),
   deleteBannedAccounts: () => api.post<{ deleted: number }>(`${TG}/accounts/delete-banned`),
-  importAccounts: (tenantId: number, projectId: number, file: File) => {
+  importAccounts: (tenantId: number, projectId: number, file: File, usage?: 'ai' | 'clone') => {
     const f = new FormData()
     f.append('tenant_id', String(tenantId))
     f.append('project_id', String(projectId))
     f.append('file', file)
+    if (usage) f.append('usage', usage)
     return api.postForm<ImportBatch>(`${TG}/accounts/import`, f)
   },
   imports: () => api.get<ImportBatch[]>(`${TG}/imports`),
@@ -287,7 +295,7 @@ export const tgApi = {
   addTarget: (id: number, b: any) => api.post(`${TG}/clone-rules/${id}/targets`, b),
   updateTarget: (id: number, targetId: number, b: any) => api.put(`${TG}/clone-rules/${id}/targets/${targetId}`, b),
   checkRule: (id: number) =>
-    api.post<{ target_id: number; ok: boolean; reason: string | null }[]>(`${TG}/clone-rules/${id}/check`, {}),
+    api.post<{ target_id: number; ok: boolean; reason: string | null; senders?: Record<string, { status: string; can_post?: boolean | null }> }[]>(`${TG}/clone-rules/${id}/check`, {}),
   retireTarget: (id: number, targetId: number) => api.del(`${TG}/clone-rules/${id}/targets/${targetId}`),
   publishRule: (id: number, expectedVersion: number) =>
     api.post(`${TG}/clone-rules/${id}/publish`, { expected_version: expectedVersion }),
@@ -305,7 +313,7 @@ export const tgApi = {
   commands: () => api.get<RuntimeCommand[]>(`${TG}/runtime/commands`),
   issueCommand: (accountId: number, b: any) => api.post(`${TG}/runtime/accounts/${accountId}/commands`, b),
   apiCredentials: () => api.get<ApiCredential[]>(`${TG}/accounts/api-credentials`),
-  loginStart: (b: { tenant_id: number; project_id: number; phone: string; api_id: number; api_hash: string; device?: string; app_version?: string }) =>
+  loginStart: (b: { tenant_id: number; project_id: number; phone: string; api_id: number; api_hash: string; usage?: 'ai' | 'clone'; device?: string; app_version?: string }) =>
     api.post<{ login_id: string; ttl: number }>(`${TG}/accounts/login/start`, b),
   loginComplete: (b: { login_id: string; code: string; password?: string }) =>
     api.post<{ account_id?: number; need_password?: boolean; username?: string }>(`${TG}/accounts/login/complete`, b),

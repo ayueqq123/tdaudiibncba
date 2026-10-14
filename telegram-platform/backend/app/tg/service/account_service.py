@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import anyio
+
 from fastapi import Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,7 +19,12 @@ from backend.app.tg.crud.crud_project import project_dao
 from backend.app.tg.crud.crud_telegram_account import telegram_account_dao
 from backend.app.tg.model import TgImportBatch, TgTelegramAccount
 from backend.app.tg.schema.import_batch import CreateImportBatchParam
-from backend.app.tg.schema.telegram_account import CreateTgAccountParam, UpdateTgAccountParam
+from backend.app.tg.schema.telegram_account import (
+    CreateTgAccountParam,
+    LoginCompleteParam,
+    LoginStartParam,
+    UpdateTgAccountParam,
+)
 from backend.common.exception import errors
 from backend.core.conf import settings
 from backend.database.redis import redis_client
@@ -90,11 +97,15 @@ def _purge_pending() -> None:
     pending_dir = Path(settings.TG_IMPORT_STORAGE_DIR) / '.pending'
     cutoff = timezone.now().timestamp() - _LOGIN_TTL_S
     for f in pending_dir.glob('*.session') if pending_dir.exists() else []:
-        try:
-            if f.stat().st_mtime < cutoff:
-                f.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _purge_pending_file(f, cutoff)
+
+
+def _purge_pending_file(path: Path, cutoff: float) -> None:
+    try:
+        if path.stat().st_mtime < cutoff:
+            path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 async def _run_runtime_cli(module: str, args: list[str], stdin_payload: dict | None = None) -> dict[str, Any]:
@@ -305,6 +316,16 @@ class AccountService:
         return await telegram_account_dao.update(db, pk, obj)
 
     @staticmethod
+    async def set_usage(
+        *, db: AsyncSession, request: Request, account_ids: list[int], usage: str | None
+    ) -> dict[str, int]:
+        updated = 0
+        for account_id in dict.fromkeys(account_ids):
+            account = await AccountService.get(db=db, request=request, pk=account_id)
+            updated += await telegram_account_dao.update(db, account.id, {'usage': usage})
+        return {'updated': updated}
+
+    @staticmethod
     async def delete(*, db: AsyncSession, request: Request, pk: int) -> int:
         account = await telegram_account_dao.get(db, pk)
         if not account:
@@ -326,7 +347,7 @@ class AccountService:
         return await AccountService.delete_by_status(db=db, request=request, status='frozen')
 
     @staticmethod
-    async def login_start(*, db: AsyncSession, request: Request, obj) -> dict[str, Any]:
+    async def login_start(*, db: AsyncSession, request: Request, obj: LoginStartParam) -> dict[str, Any]:
         """验证码登录第一步:发送验证码。pending 会话存内存(TTL 10min)。"""
         await AccountService._check_scope(db, request, obj.tenant_id, obj.project_id)
         _purge_pending()
@@ -350,7 +371,7 @@ class AccountService:
             args += ['--app-version', obj.app_version]
         result = await _run_login_cli('send', args)
         if not result.get('ok'):
-            Path(session_path).unlink(missing_ok=True)
+            await anyio.Path(session_path).unlink(missing_ok=True)
             err = result.get('error') or {}
             status = err.get('status')
             if status == 'flood_wait':
@@ -364,6 +385,7 @@ class AccountService:
                 'project_id': obj.project_id,
                 'user_id': request.user.id,
                 'phone': obj.phone,
+                'usage': obj.usage,
                 'api_id': obj.api_id,
                 'api_hash': obj.api_hash,
                 'device': obj.device,
@@ -374,7 +396,7 @@ class AccountService:
         return {'login_id': login_id, 'ttl': _LOGIN_TTL_S}
 
     @staticmethod
-    async def login_complete(*, db: AsyncSession, request: Request, obj) -> dict[str, Any]:
+    async def login_complete(*, db: AsyncSession, request: Request, obj: LoginCompleteParam) -> dict[str, Any]:
         """验证码登录第二步:提交验证码 → 落 session+meta → 建账号。"""
         _purge_pending()
         st = await _pending_get(obj.login_id)
@@ -412,7 +434,7 @@ class AccountService:
         uid = result.get('user_id')
         existing = await telegram_account_dao.get_by_tg_user(db, uid) if uid else None
         if existing is not None:
-            Path(st['session_path']).unlink(missing_ok=True)
+            await anyio.Path(st['session_path']).unlink(missing_ok=True)
             await _pending_pop(obj.login_id)
             raise errors.RequestError(msg=f'该 Telegram 身份已存在账号 id={existing.id}')
         login_dir = Path(settings.TG_IMPORT_STORAGE_DIR) / f'login-{uuid.uuid4().hex}'
@@ -439,6 +461,7 @@ class AccountService:
                 username=result.get('username'),
                 secret_ref=str(session_dst.relative_to(settings.TG_IMPORT_STORAGE_DIR)),
                 observed_status='imported_quarantine',
+                usage=st.get('usage'),
             ),
         )
         await _pending_pop(obj.login_id)
@@ -446,7 +469,13 @@ class AccountService:
 
     @staticmethod
     async def import_zip(
-        *, db: AsyncSession, request: Request, tenant_id: int, project_id: int, file: UploadFile
+        *,
+        db: AsyncSession,
+        request: Request,
+        tenant_id: int,
+        project_id: int,
+        file: UploadFile,
+        usage: str | None = None,
     ) -> TgImportBatch:
         """上传 zip → 存盘 → runtime CLI 验证 → 落库(账号 + 批次审计)。
 
@@ -524,6 +553,7 @@ class AccountService:
                             username=r.get('username'),
                             secret_ref=str(session_dst.relative_to(settings.TG_IMPORT_STORAGE_DIR)),
                             observed_status=item_status,
+                            usage=usage,
                             last_error=r.get('detail'),
                         ),
                     )

@@ -140,9 +140,13 @@ class ClonePlanner:
             rule.approval_policy is ApprovalPolicy.MESSAGE_REVIEW
             and kind is PlanKind.SEND
         )
-
         plans = []
         for route in rule.targets:
+            delay_s = (
+                random.uniform(rule.delay_min_s, rule.delay_max_s)
+                if kind is PlanKind.SEND and rule.delay_max_s > 0
+                else 0.0
+            )
             reply_target = None
             if event.reply_to_source_id is not None:
                 reply_target = self._mapping.find_target_message_id(
@@ -169,6 +173,7 @@ class ClonePlanner:
                     requires_approval=requires_approval,
                     reply_to_target_message_id=reply_target,
                     grouped_id=event.grouped_id,
+                    delay_s=delay_s,
                     fetch_account_id=rule.account_id,
                     transform=rule.transform and kind is not PlanKind.DELETE,
                 )

@@ -236,7 +236,7 @@ function GroupSettings({
               </SelectTrigger>
               <SelectContent>
                 {accounts
-                  .filter((a) => !scope || (a.tenant_id === scope.tenant_id && a.project_id === scope.project_id))
+                  .filter((a) => (!scope || (a.tenant_id === scope.tenant_id && a.project_id === scope.project_id)) && (a.usage !== 'clone' || String(a.id) === form.join_account_id))
                   .map((a) => (
                     <SelectItem key={a.id} value={String(a.id)}>
                       {accLabel(a)}
@@ -949,7 +949,7 @@ function MembersTab({
               <div className="sm:col-span-2">
                 <Field label="账号(可多选,共用下方人设)" hint={group.chat_ref ? '添加时会自动用链接进群' : undefined}>
                   <div className="max-h-44 overflow-y-auto rounded-md border p-1">
-                    {free.map((a) => {
+                    {free.filter((a) => a.usage !== 'clone' || form.account_ids.includes(String(a.id))).map((a) => {
                       const id = String(a.id)
                       const checked = form.account_ids.includes(id)
                       return (
@@ -1396,7 +1396,7 @@ function PrivateReplyDialog({
                 <SelectValue placeholder="选择账号" />
               </SelectTrigger>
               <SelectContent>
-                {accounts.map((a) => (
+                {accounts.filter((a) => a.usage !== 'clone' || String(a.id) === accountId).map((a) => (
                   <SelectItem key={a.id} value={String(a.id)}>
                     {accLabel(a)}
                     {rows.some((r) => r.account_id === a.id && r.enabled) ? '(已开启)' : ''}

@@ -38,6 +38,7 @@ const statusLabel: Record<string, string> = {
   banned: '已禁言',
   frozen: '已冻结',
 }
+const usageLabel = (usage?: string | null) => usage === 'ai' ? 'AI 用' : usage === 'clone' ? '克隆用' : '未分组'
 
 export default function AccountsPage() {
   const [rows, setRows] = useState<TgAccount[]>([])
@@ -54,6 +55,12 @@ export default function AccountsPage() {
   const [lf, setLf] = useState({ phone: '', api_id: '', api_hash: '', code: '', password: '' })
   const [creds, setCreds] = useState<ApiCredential[]>([])
   const [credIdx, setCredIdx] = useState('')
+  const [loginUsage, setLoginUsage] = useState('none')
+  const [importUsage, setImportUsage] = useState('none')
+  const [usageFilter, setUsageFilter] = useState('all')
+  const [selectedIds, setSelectedIds] = useState<number[]>([])
+  const [bulkUsage, setBulkUsage] = useState('none')
+  const [usageBusy, setUsageBusy] = useState(false)
 
   function pickCred(idx: string) {
     setCredIdx(idx)
@@ -200,6 +207,7 @@ export default function AccountsPage() {
         phone: lf.phone.trim(),
         api_id: Number(lf.api_id.trim()),
         api_hash: lf.api_hash.trim(),
+        usage: loginUsage === 'none' ? undefined : loginUsage as 'ai' | 'clone',
       })
       setLoginId(r.login_id)
       setLoginStep('code')
@@ -249,7 +257,7 @@ export default function AccountsPage() {
     setImporting(true)
     try {
       const ws = await tgApi.ensureWorkspace()
-      await tgApi.importAccounts(ws.tenant_id, ws.project_id, file)
+      await tgApi.importAccounts(ws.tenant_id, ws.project_id, file, importUsage === 'none' ? undefined : importUsage as 'ai' | 'clone')
       toast.success('导入完成,去"Session 导入"页看分级结果')
       setOpen(false)
       setFile(null)
@@ -260,6 +268,25 @@ export default function AccountsPage() {
       setImporting(false)
     }
   }
+
+  async function saveUsage() {
+    setUsageBusy(true)
+    try {
+      const result = await tgApi.setAccountUsage(selectedIds, bulkUsage === 'none' ? null : bulkUsage as 'ai' | 'clone')
+      toast.success(`已设置 ${result.updated} 个账号用途`)
+      setSelectedIds([])
+      await load()
+    } catch (e: any) {
+      toast.error(e?.detail || '设置用途失败')
+    } finally {
+      setUsageBusy(false)
+    }
+  }
+
+  const visibleRows = rows.filter((r) =>
+    usageFilter === 'all' ||
+    (usageFilter === 'ungrouped' ? !r.usage : r.usage === usageFilter),
+  )
 
   return (
     <div>
@@ -361,6 +388,17 @@ export default function AccountsPage() {
                   <Label>zip 文件</Label>
                   <Input ref={fileRef} type="file" accept=".zip" onChange={(e) => setFile(e.target.files?.[0] || null)} />
                 </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label>用途</Label>
+                  <Select value={importUsage} onValueChange={setImportUsage}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">未分组</SelectItem>
+                      <SelectItem value="ai">AI 用</SelectItem>
+                      <SelectItem value="clone">克隆用</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setOpen(false)}>
@@ -409,6 +447,17 @@ export default function AccountsPage() {
                   <div className="flex flex-col gap-1.5">
                     <Label>手机号(带国家码)</Label>
                     <Input placeholder="+86138xxxxxxxx" value={lf.phone} onChange={(e) => setLf({ ...lf, phone: e.target.value })} />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>用途</Label>
+                    <Select value={loginUsage} onValueChange={setLoginUsage}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">未分组</SelectItem>
+                        <SelectItem value="ai">AI 用</SelectItem>
+                        <SelectItem value="clone">克隆用</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                   {creds.length > 0 && (
                     <div className="flex flex-col gap-1.5">
@@ -475,14 +524,42 @@ export default function AccountsPage() {
           </Button>
         </div>
       </div>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <Select value={usageFilter} onValueChange={setUsageFilter}>
+          <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部用途</SelectItem>
+            <SelectItem value="ai">AI 用</SelectItem>
+            <SelectItem value="clone">克隆用</SelectItem>
+            <SelectItem value="ungrouped">未分组</SelectItem>
+          </SelectContent>
+        </Select>
+        {selectedIds.length > 0 && (
+          <>
+            <Select value={bulkUsage} onValueChange={setBulkUsage}>
+              <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">未分组</SelectItem>
+                <SelectItem value="ai">AI 用</SelectItem>
+                <SelectItem value="clone">克隆用</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button onClick={saveUsage} disabled={usageBusy}>
+              {usageBusy ? '设置中…' : '设置用途'}
+            </Button>
+          </>
+        )}
+      </div>
       <div className="rounded-md border">
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead><input type="checkbox" aria-label="全选" checked={visibleRows.length > 0 && visibleRows.every((r) => selectedIds.includes(r.id))} onChange={(e) => setSelectedIds(e.target.checked ? [...new Set([...selectedIds, ...visibleRows.map((r) => r.id)])] : selectedIds.filter((id) => !visibleRows.some((r) => r.id === id)))} /></TableHead>
               <TableHead>ID</TableHead>
               <TableHead>TG UID</TableHead>
               <TableHead>手机号</TableHead>
               <TableHead>用户名</TableHead>
+              <TableHead>用途</TableHead>
               <TableHead>期望</TableHead>
               <TableHead>实际</TableHead>
               <TableHead>备注</TableHead>
@@ -490,12 +567,14 @@ export default function AccountsPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map((r) => (
+            {visibleRows.map((r) => (
               <TableRow key={r.id}>
+                <TableCell><input type="checkbox" aria-label={`选择账号 ${r.id}`} checked={selectedIds.includes(r.id)} onChange={(e) => setSelectedIds(e.target.checked ? [...selectedIds, r.id] : selectedIds.filter((id) => id !== r.id))} /></TableCell>
                 <TableCell>{r.id}</TableCell>
                 <TableCell className="font-mono text-xs">{r.telegram_user_id ?? '-'}</TableCell>
                 <TableCell>{r.phone || '-'}</TableCell>
                 <TableCell>{r.username ? `@${r.username}` : '-'}</TableCell>
+                <TableCell><Badge variant="outline">{usageLabel(r.usage)}</Badge></TableCell>
                 <TableCell>
                   <Badge variant={r.desired_status === 'running' ? 'success' : 'secondary'}>{r.desired_status === 'running' ? '运行' : '停止'}</Badge>
                 </TableCell>
@@ -529,10 +608,10 @@ export default function AccountsPage() {
                 </TableCell>
               </TableRow>
             ))}
-            {!rows.length && (
+            {visibleRows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
-                  暂无账号,点右上"导入 Session 包"开始
+                <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
+                  {rows.length ? '暂无符合用途的账号' : '暂无账号,点右上"导入 Session 包"开始'}
                 </TableCell>
               </TableRow>
             )}

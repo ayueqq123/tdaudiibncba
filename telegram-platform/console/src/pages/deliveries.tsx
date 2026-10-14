@@ -20,7 +20,7 @@ const RAW_LABELS: Record<string, string> = {
   pending: '排队', waiting_approval: '等待审批', ready: '待发送', leased: '已领取', retry_wait: '等待重试',
   sending: '发送中', succeeded: '已送达', reconciled_succeeded: '核验已送达',
   blocked: '无权限', failed_permanent: '发送失败', dead_letter: '已放弃', confirmed_not_sent: '确认未发出',
-  cancelled: '已取消', expired: '已过期', uncertain: '结果不确定', manual_review: '待人工核查',
+  cancelled: '已取消(源消息已删)', expired: '已过期', uncertain: '结果不确定', manual_review: '待人工核查',
 }
 const groupOf = (s: string) => GROUPS.find((g) => g[3].includes(s))
 const statusLabel = (s: string) => groupOf(s)?.[1] || s

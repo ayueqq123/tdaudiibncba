@@ -1,14 +1,14 @@
 """Tests for runtime.planner.ClonePlanner. Pure logic, no network."""
 
-import pytest
+from dataclasses import replace
 
 from runtime.planner.model import (
     ApprovalPolicy,
     CloneMode,
     EventKind,
     PlanKind,
-    RuleSnapshot,
     RouteTarget,
+    RuleSnapshot,
     SourceEvent,
 )
 from runtime.planner.planner import ClonePlanner
@@ -54,6 +54,23 @@ def test_create_fans_out_per_route():
     assert all(x.kind is PlanKind.SEND for x in p)
     assert all(x.rule_version == 3 for x in p)
     assert len({x.idempotency_key for x in p}) == 2
+
+
+def test_send_delay_is_randomized_per_plan_and_disabled_by_default(monkeypatch):
+    draws = iter([5, 12])
+    monkeypatch.setattr("runtime.planner.planner.random.uniform", lambda *_: next(draws))
+    planner = ClonePlanner(DictMapping())
+    delayed = planner.plan(_event(), [_rule(delay_min_s=5, delay_max_s=12)])
+    assert len(delayed) == 2
+    assert [plan.delay_s for plan in delayed] == [5, 12]
+    assert all(replace(plan, delay_s=0).idempotency_key == plan.idempotency_key for plan in delayed)
+
+    immediate = planner.plan(_event(), [_rule()])
+    assert all(plan.delay_s == 0 for plan in immediate)
+
+    edit = planner.plan(_event(kind=EventKind.EDIT), [_rule(delay_min_s=5, delay_max_s=12)])
+    delete = planner.plan(_event(kind=EventKind.DELETE), [_rule(delay_min_s=5, delay_max_s=12)])
+    assert all(plan.delay_s == 0 for plan in edit + delete)
 
 
 def test_wrong_account_or_chat_skipped():

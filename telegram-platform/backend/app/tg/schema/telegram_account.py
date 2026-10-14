@@ -35,6 +35,7 @@ class CreateTgAccountParam(SchemaBase):
     secret_ref: str | None = None
     desired_status: str = 'running'
     observed_status: str = 'imported_quarantine'
+    usage: str | None = None
     last_error: str | None = None
 
 
@@ -52,6 +53,7 @@ class LoginStartParam(SchemaBase):
     phone: str = Field(description='手机号(带国家码,如 +86138xxxxxxxx)')
     api_id: int = Field(description='my.telegram.org 申请的 api_id')
     api_hash: str = Field(description='api_hash')
+    usage: Literal['ai', 'clone'] | None = None
     device: str | None = Field(None, description='设备型号(可选)')
     app_version: str | None = Field(None, description='App 版本(可选)')
 
@@ -87,7 +89,13 @@ class GetTgAccountDetail(TgTelegramAccountSchemaBase):
     username: str | None = Field(None, description='Telegram 用户名')
     desired_status: str = Field(description='期望状态')
     observed_status: str = Field(description='观测状态')
+    usage: str | None = None
     last_seen_at: datetime | None = Field(None, description='最近在线探测时间')
     last_error: str | None = Field(None, description='最近错误摘要')
     created_time: datetime = Field(description='创建时间')
     updated_time: datetime | None = Field(None, description='更新时间')
+
+
+class SetAccountUsageParam(SchemaBase):
+    account_ids: list[int] = Field(min_length=1)
+    usage: Literal['ai', 'clone'] | None = None

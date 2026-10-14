@@ -155,6 +155,19 @@ def test_rules_from_snapshot_empty_after_dead_filter_is_listener_only():
     assert {snapshot.sender_account_ids for snapshot in snapshots} == {()}
 
 
+def test_rules_from_snapshot_parses_and_clamps_delay():
+    row = _snapshot_row(
+        [{'route_id': 'rt1', 'source_chat_id': 100, 'target_chat_id': 200}],
+    )
+    row['snapshot']['rule'].update(delay_min_s=-2, delay_max_s=5)
+    snapshots = rules_from_snapshot(row, 'listener')
+    assert {(s.delay_min_s, s.delay_max_s) for s in snapshots} == {(0, 5)}
+
+    row['snapshot']['rule'].update(delay_min_s=12, delay_max_s=4)
+    snapshots = rules_from_snapshot(row, 'listener')
+    assert {(s.delay_min_s, s.delay_max_s) for s in snapshots} == {(12, 12)}
+
+
 async def test_assign_heartbeat_release(factory):
     control = FakeControl()
     control.accounts.append(_assignment())

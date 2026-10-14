@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from runtime.planner.model import DeliveryPlan, SourceEvent
+from runtime.delivery.model import JobStatus
+from runtime.planner.model import CloneMode, DeliveryPlan, PlanKind, SourceEvent
 
 from .models import (
     AccountLease,
@@ -114,8 +115,82 @@ class EventInboxRepository:
         an idempotency-key conflict into a skip instead of a batch abort."""
         for row in rows:
             for plan in plans_for(row):
+                now = _utcnow()
+                if plan.kind is PlanKind.EDIT and plan.mode is CloneMode.COPY:
+                    pending_send = await self.s.execute(
+                        select(DeliveryJob.id)
+                        .where(
+                            DeliveryJob.route_id == plan.route_id,
+                            DeliveryJob.source_scope == plan.source_scope,
+                            DeliveryJob.source_chat_id == plan.source_chat_id,
+                            DeliveryJob.source_message_id == plan.source_message_id,
+                            DeliveryJob.kind == PlanKind.SEND.value,
+                            DeliveryJob.status == JobStatus.READY.value,
+                            DeliveryJob.next_attempt_at > now,
+                        )
+                        .limit(1)
+                    )
+                    if pending_send.scalar_one_or_none():
+                        continue
+                if plan.kind is PlanKind.DELETE:
+                    await self.s.execute(
+                        update(DeliveryJob)
+                        .where(
+                            DeliveryJob.route_id == plan.route_id,
+                            DeliveryJob.source_scope == plan.source_scope,
+                            DeliveryJob.source_chat_id == plan.source_chat_id,
+                            DeliveryJob.source_message_id == plan.source_message_id,
+                            DeliveryJob.kind == PlanKind.SEND.value,
+                            DeliveryJob.status.in_([
+                                JobStatus.READY.value,
+                                JobStatus.RETRY_WAIT.value,
+                            ]),
+                        )
+                        .values(
+                            status=JobStatus.CANCELLED.value,
+                            last_error_class="source_deleted",
+                        )
+                    )
                 job = _job_from_plan(plan, tenant_id=tenant_id,
                                      project_id=project_id)
+                if plan.kind is PlanKind.SEND and plan.delay_s > 0:
+                    due = now + timedelta(seconds=plan.delay_s)
+                    album_due = None
+                    if plan.grouped_id is not None:
+                        album_due = await self.s.execute(
+                            select(DeliveryJob.next_attempt_at)
+                            .where(
+                                DeliveryJob.route_id == plan.route_id,
+                                DeliveryJob.source_scope == plan.source_scope,
+                                DeliveryJob.source_chat_id == plan.source_chat_id,
+                                DeliveryJob.grouped_id == plan.grouped_id,
+                                DeliveryJob.kind == PlanKind.SEND.value,
+                                DeliveryJob.status.in_([
+                                    JobStatus.READY.value,
+                                    JobStatus.WAITING_APPROVAL.value,
+                                ]),
+                                DeliveryJob.next_attempt_at.is_not(None),
+                            )
+                            .limit(1)
+                        )
+                        album_due = album_due.scalar_one_or_none()
+                    if album_due is not None:
+                        due = _aware(album_due)
+                    else:
+                        floor = await self.s.execute(
+                            select(func.max(DeliveryJob.next_attempt_at))
+                            .where(
+                                DeliveryJob.route_id == plan.route_id,
+                                DeliveryJob.kind == PlanKind.SEND.value,
+                                DeliveryJob.status == JobStatus.READY.value,
+                                DeliveryJob.attempt_count == 0,
+                                DeliveryJob.next_attempt_at > now,
+                            )
+                        )
+                        floor = _aware(floor.scalar_one_or_none())
+                        if floor is not None:
+                            due = max(due, floor + timedelta(seconds=1))
+                    job.next_attempt_at = due
                 try:
                     async with self.s.begin_nested():
                         self.s.add(job)
