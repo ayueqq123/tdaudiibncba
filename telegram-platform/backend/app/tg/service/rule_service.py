@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from datetime import timedelta
 from itertools import starmap
@@ -36,6 +37,8 @@ from backend.app.tg.service.command_service import runtime_command_service
 from backend.common.exception import errors
 from backend.database.db import uuid4_str
 from backend.utils.timezone import timezone
+
+logger = logging.getLogger(__name__)
 
 
 def _snapshot(rule: TgCloneRule, targets: list) -> dict:
@@ -400,26 +403,101 @@ class CloneRuleService:
                 continue
             account = await telegram_account_dao.get(db, acc_id)
             if not account:
-                raise errors.NotFoundError(msg=f'发送账号 {acc_id} 不存在')
+                detail = f'发送账号 {acc_id} 不存在'
+                CloneRuleService._mark_pool_join_failure(db, need, acc_id, detail, timezone.now().isoformat())
+                logger.warning('Sender account %s is missing; skipping auto-join', acc_id)
+                continue
             uniq = list(dict.fromkeys(t.target_chat_ref or str(t.target_chat_id) for t in need))
-            results = await join_chat_refs(account, uniq)
+            try:
+                results = await join_chat_refs(account, uniq)
+            except errors.RequestError as exc:
+                detail = str(exc.msg or exc)[:200]
+                CloneRuleService._mark_pool_join_failure(db, need, acc_id, detail, timezone.now().isoformat())
+                logger.warning('Sender account %s could not start auto-join: %s', acc_id, detail)
+                continue
+            checked_at = timezone.now().isoformat()
             for t in need:
                 ref = t.target_chat_ref or str(t.target_chat_id)
-                chat_id = CloneRuleService._resolve_or_raise(results, ref, '目标群')
-                if t.target_chat_id != chat_id:
-                    t.target_chat_id = chat_id
-                ids = list(t.joined_account_ids or [])
-                if acc_id not in ids:
-                    ids.append(acc_id)
-                t.joined_account_ids = ids
-                sender_status = dict(t.sender_status or {})
-                sender_status[str(acc_id)] = {
-                    'status': 'member',
-                    'can_post': None,
-                    'checked_at': timezone.now().isoformat(),
-                }
-                t.sender_status = sender_status
-                db.add(t)
+                CloneRuleService._record_pool_join_result(db, t, acc_id, ref, results.get(ref), checked_at)
+
+    @staticmethod
+    def _mark_pool_join_failure(
+        db: AsyncSession,
+        targets: list[TgCloneTarget],
+        acc_id: int,
+        detail: str,
+        checked_at: str,
+    ) -> None:
+        for target in targets:
+            CloneRuleService._store_pool_join_status(
+                db,
+                target,
+                acc_id,
+                status='join_failed',
+                can_post=False,
+                checked_at=checked_at,
+                detail=detail,
+            )
+
+    @staticmethod
+    def _record_pool_join_result(
+        db: AsyncSession, target: TgCloneTarget, acc_id: int, ref: str, result: dict | None, checked_at: str
+    ) -> None:
+        if result and result.get('ok'):
+            chat_id = int(result['chat_id'])
+            if target.target_chat_id != chat_id:
+                target.target_chat_id = chat_id
+            CloneRuleService._store_pool_join_status(
+                db, target, acc_id, status='member', can_post=None, checked_at=checked_at
+            )
+            return
+
+        err_status = ((result or {}).get('error') or {}).get('status', 'resolve_failed')
+        status = (
+            'frozen'
+            if err_status == 'account_frozen'
+            else 'flood_wait'
+            if err_status == 'flood_wait'
+            else 'join_failed'
+        )
+        can_post = None if status == 'flood_wait' else False
+        CloneRuleService._store_pool_join_status(
+            db,
+            target,
+            acc_id,
+            status=status,
+            can_post=can_post,
+            checked_at=checked_at,
+            detail=JOIN_ERR.get(err_status, '进群失败'),
+        )
+        logger.warning('Sender account %s failed to join target %s: %s', acc_id, ref, err_status)
+
+    @staticmethod
+    def _store_pool_join_status(
+        db: AsyncSession,
+        target: TgCloneTarget,
+        acc_id: int,
+        *,
+        status: str,
+        can_post: bool | None,
+        checked_at: str,
+        detail: str | None = None,
+    ) -> None:
+        sender_status = dict(target.sender_status or {})
+        entry = {'status': status, 'can_post': can_post, 'checked_at': checked_at}
+        if detail is not None:
+            entry['detail'] = detail[:200]
+        sender_status[str(acc_id)] = entry
+        target.sender_status = sender_status
+
+        joined = list(target.joined_account_ids or [])
+        if status == 'member':
+            if acc_id not in joined:
+                joined.append(acc_id)
+        elif status in {'frozen', 'join_failed'}:
+            joined = [joined_id for joined_id in joined if joined_id != acc_id]
+        target.joined_account_ids = joined
+        db.add(target)
 
     @staticmethod
     async def mark_chat_lost(*, db: AsyncSession, account_id: int, chat_id: int, reason: str) -> int:

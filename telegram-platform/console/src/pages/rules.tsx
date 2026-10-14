@@ -47,7 +47,9 @@ const activeTarget = (r: CloneRule) => (r.targets || []).find((t) => t.status ==
 const senderStatusLabel = (status?: string) =>
   status === 'member' ? '已进群' : status === 'muted' ? '被禁言' :
   status === 'banned' || status === 'kicked' ? '被踢/封禁' :
-  status === 'not_member' ? '未进群' : status === 'unauthorized' ? '登录失效' : '检测失败'
+  status === 'not_member' ? '未进群' : status === 'unauthorized' ? '登录失效' :
+  status === 'frozen' ? '账号冻结' : status === 'join_failed' ? '进群失败' :
+  status === 'flood_wait' ? '限流稍后重试' : '检测失败'
 
 function filterSummary(t: CloneTarget): string {
   const f = t.filters
@@ -444,7 +446,7 @@ export default function RulesPage() {
                               const title = targets.map((t) => {
                                 const entry = t.sender_status?.[String(a.id)]
                                 const label = entry ? senderStatusLabel(entry.status) : joined && (t.joined_account_ids || []).includes(a.id) ? '已进群' : '未进群'
-                                return `${t.target_chat_ref || t.target_chat_id}: ${label}`
+                                return `${t.target_chat_ref || t.target_chat_id}: ${label}${entry?.detail ? ` (${entry.detail})` : ''}`
                               }).join('\n')
                               return <span title={title}><Badge variant={joined === targets.length ? 'success' : joined ? 'warning' : 'secondary'} className="px-1 py-0 text-[10px]">{joined ? `已进 ${joined}/${targets.length}` : '未进群'}</Badge></span>
                             })()}
