@@ -181,7 +181,7 @@ export interface CloneTarget {
   health?: string | null
   status: string
   joined_account_ids?: number[]
-  sender_status?: Record<string, { status: string; can_post?: boolean | null; checked_at?: string }>
+  sender_status?: Record<string, { status: string; can_post?: boolean | null; checked_at?: string; detail?: string }>
   filters?: Record<string, any> | null
   remark: string | null
 }
