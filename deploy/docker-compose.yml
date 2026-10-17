@@ -151,6 +151,9 @@ services:
     volumes:
       - fba_log:/app/backend/log:rw
       - ./.env:/app/backend/.env:ro
+      # AI 成员在群巡检要用账号 session 调 runtime.account.check_membership
+      - tg_imports:/var/lib/tg-imports:rw
+      - ../telegram-runtime:/srv/telegram-runtime:ro
     tmpfs:
       - /tmp
     depends_on:
