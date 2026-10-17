@@ -740,6 +740,7 @@ function MembersTab({
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState<MemberForm>(MEMBER_DEFAULT)
   const [saving, setSaving] = useState(false)
+  const [purging, setPurging] = useState(false)
   const [personas, setPersonas] = useState<AiPersona[]>([])
 
   useEffect(() => {
@@ -856,6 +857,35 @@ function MembersTab({
     }
   }
 
+  const purgeDead = async () => {
+    if (
+      !confirm(
+        '会先重新检测本群所有成员的在群状态，再把 被禁言 / 被群封禁 / 账号冻结 / 会话失效或已删除 的号移出本群任务（不会删除 TG 账号）。继续？',
+      )
+    ) {
+      return
+    }
+    setPurging(true)
+    try {
+      const result = await tgApi.purgeDeadAiMembers(group.id)
+      if (result.removed.length === 0) {
+        toast.success(`已检测 ${result.checked} 个，没有需要移出的号`)
+      } else {
+        const labels = result.removed
+          .slice(0, 5)
+          .map((member) => `${member.account_label}（${memberStateText(member.state)}）`)
+          .join('、')
+        const more = result.removed.length > 5 ? ` 等${result.removed.length}个` : ''
+        toast.success(`已检测 ${result.checked} 个，移出 ${result.removed.length} 个：${labels}${more}`)
+      }
+    } catch (e) {
+      toast.error(errMsg(e, '清理失败'))
+    } finally {
+      reload()
+      setPurging(false)
+    }
+  }
+
   const free = accounts.filter(
     (a) =>
       a.tenant_id === group.tenant_id &&
@@ -867,10 +897,16 @@ function MembersTab({
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">活跃度 0 = 只在被 @ 或被回复时说话;100 = 每条都想接(仍受并发区间限制)</p>
-        <Button size="sm" onClick={openNew}>
-          <Plus className="mr-1 h-4 w-4" />
-          添加成员
-        </Button>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" disabled={purging} onClick={() => void purgeDead()}>
+            <Trash2 className="mr-1 h-4 w-4" />
+            {purging ? '检测中...' : '清理禁言/销号'}
+          </Button>
+          <Button size="sm" onClick={openNew}>
+            <Plus className="mr-1 h-4 w-4" />
+            添加成员
+          </Button>
+        </div>
       </div>
       <Card>
         <CardContent className="p-0">

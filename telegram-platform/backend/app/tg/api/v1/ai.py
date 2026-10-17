@@ -18,6 +18,7 @@ from backend.app.tg.schema.ai import (
     GetAiMemberDetail,
     GetAiPersonaDetail,
     GetAiPrivateReplyDetail,
+    GetAiPurgeResult,
     GetAiRunDetail,
     GetAiScriptDetail,
     SetAutoApproveParam,
@@ -221,6 +222,13 @@ async def get_members(
     db: CurrentSession, request: Request, pk: GroupId
 ) -> ResponseSchemaModel[list[GetAiMemberDetail]]:
     return response_base.success(data=await ai_group_service.list_members(db=db, request=request, pk=pk))
+
+
+@router.post('/groups/{pk}/members/purge-dead', summary='一键移出禁言/销号成员', dependencies=EDIT)
+async def purge_dead_members(
+    db: CurrentSessionTransaction, request: Request, pk: GroupId
+) -> ResponseSchemaModel[GetAiPurgeResult]:
+    return response_base.success(data=await ai_group_service.purge_dead_members(db=db, request=request, pk=pk))
 
 
 @router.post('/groups/{pk}/members', summary='添加成员(会自动进群)', dependencies=EDIT)

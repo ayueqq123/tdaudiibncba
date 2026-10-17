@@ -333,6 +333,18 @@ class GetAiMemberDetail(SchemaBase):
     member_state_at: datetime | None = None
 
 
+class GetAiPurgedMember(SchemaBase):
+    id: int
+    account_id: int
+    account_label: str
+    state: str
+
+
+class GetAiPurgeResult(SchemaBase):
+    checked: int
+    removed: list[GetAiPurgedMember]
+
+
 class AiPersonaParam(SchemaBase):
     tenant_id: int
     project_id: int
