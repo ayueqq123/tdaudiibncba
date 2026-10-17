@@ -33,10 +33,12 @@ from backend.app.tg.schema.ai import (
     GetAiGroupDetail,
     GetAiGroupRunDetail,
     GetAiMemberDetail,
+    GetAiPurgeResult,
+    GetAiPurgedMember,
     UpdateAiGroupParam,
 )
 from backend.app.tg.service.account_service import JOIN_ERR, join_chat_refs
-from backend.app.tg.service.ai_service import AiService, _provider_cipher
+from backend.app.tg.service.ai_service import PURGEABLE_MEMBER_STATES, AiService, _provider_cipher
 from backend.common.exception import errors
 from backend.database.db import uuid4_str
 from backend.utils.timezone import timezone
@@ -78,6 +80,14 @@ class AiGroupService:
     async def _members(db: AsyncSession, group: TgAiGroup) -> list[TgAiBinding]:
         rows = await ai_binding_dao.get_all(db, tenant_id=group.tenant_id, project_id=group.project_id)
         return [b for b in rows if b.group_id == group.id]
+
+    @staticmethod
+    async def _accounts_for_members(db: AsyncSession, members: list[TgAiBinding]) -> dict[int, TgTelegramAccount]:
+        account_ids = list(dict.fromkeys(b.account_id for b in members))
+        if not account_ids:
+            return {}
+        rows = (await db.execute(sa.select(TgTelegramAccount).where(TgTelegramAccount.id.in_(account_ids)))).scalars()
+        return {account.id: account for account in rows}
 
     @staticmethod
     async def _detail(db: AsyncSession, group: TgAiGroup) -> GetAiGroupDetail:
@@ -242,6 +252,27 @@ class AiGroupService:
                 )
             )
         return out
+
+    @staticmethod
+    async def purge_dead_members(*, db: AsyncSession, request: Request, pk: int) -> GetAiPurgeResult:
+        group = await AiGroupService.get_group(db, request, pk)
+        members = [b for b in await AiGroupService._members(db, group) if b.status != 'deleted']
+        accounts = await AiGroupService._accounts_for_members(db, members)
+        removed = []
+        for binding in members:
+            account = accounts.get(binding.account_id)
+            state = await AiService.refresh_member_state(db, group, binding, account)
+            if state in PURGEABLE_MEMBER_STATES:
+                await ai_binding_dao.delete(db, binding.id)
+                removed.append(
+                    GetAiPurgedMember(
+                        id=binding.id,
+                        account_id=binding.account_id,
+                        account_label=_account_label(account),
+                        state=state,
+                    )
+                )
+        return GetAiPurgeResult(checked=len(members), removed=removed)
 
     @staticmethod
     def _member_fields(obj: AiMemberParam) -> dict:

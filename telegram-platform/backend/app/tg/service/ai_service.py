@@ -80,6 +80,7 @@ def _norm(s: str) -> str:
 _PUNCT_TO_SPACE = str.maketrans(dict.fromkeys('，。、；：,;:', ' '))
 # 巡检确认发不了言的状态:被踢/禁言/封禁/号死/冻结,发言挑选直接跳过
 DEAD_MEMBER_STATES = frozenset(('not_in_group', 'muted', 'banned', 'session_dead', 'frozen'))
+PURGEABLE_MEMBER_STATES = frozenset(('muted', 'banned', 'session_dead', 'frozen'))
 
 
 def _strip_punct(s: str) -> str:
@@ -1071,28 +1072,38 @@ class AiService:
             }
             for b in members:
                 acct = accts.get(b.account_id)
-                if acct is None or acct.deleted:
-                    state, detail = 'session_dead', '账号已删除'
-                else:
-                    try:
-                        res = await check_chat_membership(acct, [g.chat_id])
-                    except errors.RequestError as exc:  # 会话/API凭据缺失
-                        state, detail, res = 'session_dead', str(exc)[:200], {}
-                    except Exception as exc:  # noqa: BLE001
-                        state, detail, res = 'check_failed', str(exc)[:200], {}
-                    else:
-                        state, detail = AiService._member_state_from(res, g.chat_id)
-                await ai_binding_dao.update_fields(
-                    db,
-                    b.id,
-                    {
-                        'member_state': state,
-                        'member_state_detail': detail,
-                        'member_state_at': timezone.now(),
-                    },
-                )
+                await AiService.refresh_member_state(db, g, b, acct)
                 checked += 1
         return checked
+
+    @staticmethod
+    async def refresh_member_state(
+        db: AsyncSession,
+        group: TgAiGroup,
+        binding: TgAiBinding,
+        acct: TgTelegramAccount | None,
+    ) -> str:
+        if acct is None or acct.deleted:
+            state, detail = 'session_dead', '账号已删除'
+        else:
+            try:
+                res = await check_chat_membership(acct, [group.chat_id])
+            except errors.RequestError as exc:  # 会话/API凭据缺失
+                state, detail = 'session_dead', str(exc)[:200]
+            except Exception as exc:
+                state, detail = 'check_failed', str(exc)[:200]
+            else:
+                state, detail = AiService._member_state_from(res, group.chat_id)
+        await ai_binding_dao.update_fields(
+            db,
+            binding.id,
+            {
+                'member_state': state,
+                'member_state_detail': detail,
+                'member_state_at': timezone.now(),
+            },
+        )
+        return state
 
     @staticmethod
     def _member_state_from(res: dict, chat_id: int) -> tuple[str, str | None]:

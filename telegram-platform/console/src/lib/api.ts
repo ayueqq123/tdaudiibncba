@@ -332,6 +332,11 @@ export const tgApi = {
   aiGroupWarmup: (id: number) => api.post<{ started: boolean }>(`${TG}/ai/groups/${id}/warmup`, {}),
   aiMembers: (id: number) => api.get<AiMember[]>(`${TG}/ai/groups/${id}/members`),
   addAiMember: (id: number, b: any) => api.post(`${TG}/ai/groups/${id}/members`, b),
+  purgeDeadAiMembers: (id: number) =>
+    api.post<{
+      checked: number
+      removed: { id: number; account_id: number; account_label: string; state: string }[]
+    }>(`${TG}/ai/groups/${id}/members/purge-dead`),
   updateAiMember: (id: number, mid: number, b: any) => api.put(`${TG}/ai/groups/${id}/members/${mid}`, b),
   deleteAiMember: (id: number, mid: number) => api.del(`${TG}/ai/groups/${id}/members/${mid}`),
   aiScripts: (id: number) => api.get<AiScript[]>(`${TG}/ai/groups/${id}/scripts`),
