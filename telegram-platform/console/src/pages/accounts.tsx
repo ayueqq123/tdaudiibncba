@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Play, RefreshCw, Smartphone, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
-import { tgApi, type ApiCredential, type TgAccount } from '@/lib/api'
+import { tgApi, type ApiCredential, type CloneRule, type TgAccount } from '@/lib/api'
+import { buildCloneUsage, usageDetail, usageShort } from '@/lib/clone-usage'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
@@ -61,6 +62,7 @@ export default function AccountsPage() {
   const [selectedIds, setSelectedIds] = useState<number[]>([])
   const [bulkUsage, setBulkUsage] = useState('none')
   const [usageBusy, setUsageBusy] = useState(false)
+  const [cloneRules, setCloneRules] = useState<CloneRule[]>([])
 
   function pickCred(idx: string) {
     setCredIdx(idx)
@@ -77,6 +79,11 @@ export default function AccountsPage() {
     try {
       const acc = await tgApi.accounts()
       setRows(acc)
+      tgApi
+        .rules()
+        .then((rs) => Promise.all(rs.map((x) => tgApi.rule(x.id).catch(() => x))))
+        .then(setCloneRules)
+        .catch(() => {})
     } catch (e: any) {
       toast.error(e?.detail || '加载失败')
     } finally {
@@ -283,9 +290,11 @@ export default function AccountsPage() {
     }
   }
 
+  const cloneUsage = buildCloneUsage(cloneRules)
   const visibleRows = rows.filter((r) =>
     usageFilter === 'all' ||
-    (usageFilter === 'ungrouped' ? !r.usage : r.usage === usageFilter),
+    (usageFilter === 'clone_free' ? r.usage === 'clone' && !cloneUsage.get(r.id)?.length :
+      usageFilter === 'ungrouped' ? !r.usage : r.usage === usageFilter),
   )
 
   return (
@@ -531,6 +540,7 @@ export default function AccountsPage() {
             <SelectItem value="all">全部用途</SelectItem>
             <SelectItem value="ai">AI 用</SelectItem>
             <SelectItem value="clone">克隆用</SelectItem>
+            <SelectItem value="clone_free">未使用的克隆号</SelectItem>
             <SelectItem value="ungrouped">未分组</SelectItem>
           </SelectContent>
         </Select>
@@ -560,6 +570,7 @@ export default function AccountsPage() {
               <TableHead>手机号</TableHead>
               <TableHead>用户名</TableHead>
               <TableHead>用途</TableHead>
+              <TableHead>克隆规则/群</TableHead>
               <TableHead>期望</TableHead>
               <TableHead>实际</TableHead>
               <TableHead>备注</TableHead>
@@ -575,6 +586,17 @@ export default function AccountsPage() {
                 <TableCell>{r.phone || '-'}</TableCell>
                 <TableCell>{r.username ? `@${r.username}` : '-'}</TableCell>
                 <TableCell><Badge variant="outline">{usageLabel(r.usage)}</Badge></TableCell>
+                <TableCell>
+                  {(() => {
+                    const list = cloneUsage.get(r.id) || []
+                    if (!list.length) return <span className="text-xs text-muted-foreground">空闲</span>
+                    return (
+                      <div className="flex max-w-64 flex-wrap gap-1" title={usageDetail(list)}>
+                        {list.map((u) => <Badge key={`${u.ruleId}-${u.role}`} variant="warning" className="px-1 py-0 text-[10px]">{usageShort(u)}</Badge>)}
+                      </div>
+                    )
+                  })()}
+                </TableCell>
                 <TableCell>
                   <Badge variant={r.desired_status === 'running' ? 'success' : 'secondary'}>{r.desired_status === 'running' ? '运行' : '停止'}</Badge>
                 </TableCell>
@@ -610,7 +632,7 @@ export default function AccountsPage() {
             ))}
             {visibleRows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={10} className="py-8 text-center text-muted-foreground">
+                <TableCell colSpan={11} className="py-8 text-center text-muted-foreground">
                   {rows.length ? '暂无符合用途的账号' : '暂无账号,点右上"导入 Session 包"开始'}
                 </TableCell>
               </TableRow>

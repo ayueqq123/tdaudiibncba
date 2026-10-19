@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { buildCloneUsage, usageDetail, usageShort } from '@/lib/clone-usage'
 
 const MEDIA_KINDS: [string, string][] = [
   ['text', '文字'], ['photo', '图片'], ['video', '视频'], ['gif', 'GIF'], ['voice', '语音'],
@@ -78,6 +79,9 @@ export default function RulesPage() {
   const [verRule, setVerRule] = useState<CloneRule | null>(null)
 
   const [checking, setChecking] = useState<number | null>(null)
+  const [poolSearch, setPoolSearch] = useState('')
+  const [poolFilter, setPoolFilter] = useState('all')
+  const [randomN, setRandomN] = useState('')
 
   async function load() {
     setLoading(true)
@@ -109,6 +113,32 @@ export default function RulesPage() {
   const selectableAccounts = accounts.filter(
     (a) => a.usage !== 'ai' || a.id === Number(form.account_id) || form.sender_account_ids.includes(a.id),
   )
+  const otherUsage = buildCloneUsage(rows.filter((r) => r.id !== editRule?.id))
+  const isFree = (id: number) => !otherUsage.get(id)?.length
+  const accName = (a: TgAccount) => (a.username ? '@' + a.username : a.phone || String(a.telegram_user_id || a.id))
+  const poolAccounts = selectableAccounts
+    .filter((a) => {
+      const q = poolSearch.trim().toLowerCase()
+      if (q && ![a.username, a.phone, String(a.telegram_user_id || ''), String(a.id)].some((v) => (v || '').toLowerCase().includes(q))) return false
+      if (poolFilter === 'free') return isFree(a.id)
+      if (poolFilter === 'mine') return form.sender_account_ids.includes(a.id)
+      if (poolFilter === 'other') return !isFree(a.id)
+      return true
+    })
+    .map((a, i) => ({ a, i }))
+    .sort((x, y) => Number(!isFree(x.a.id)) - Number(!isFree(y.a.id)) || x.i - y.i)
+    .map((x) => x.a)
+  function pickRandomFree() {
+    const n = Number(randomN)
+    if (!n || n < 1) return toast.error('填要勾几个')
+    const pool = selectableAccounts.filter(
+      (a) => isFree(a.id) && !form.sender_account_ids.includes(a.id) && a.id !== Number(form.account_id) && !(a.observed_status && DEAD_STATUS.has(a.observed_status)),
+    )
+    const picked = [...pool].sort(() => Math.random() - 0.5).slice(0, n).map((a) => a.id)
+    if (!picked.length) return toast.error('没有空闲号了')
+    setForm({ ...form, sender_account_ids: [...form.sender_account_ids, ...picked] })
+    toast.success(picked.length < n ? `空闲号只有 ${picked.length} 个,已全部勾上` : `已勾 ${picked.length} 个空闲号`)
+  }
 
   async function doSave() {
     const acc = accounts.find((a) => a.id === +form.account_id)
@@ -418,8 +448,25 @@ export default function RulesPage() {
                           : '全选'}
                       </Button>
                     </div>
-                    <div className="grid max-h-32 grid-cols-2 gap-1.5 overflow-y-auto rounded-md border p-2 sm:grid-cols-3">
-                      {selectableAccounts.map((a) => {
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Input className="h-8 w-40" placeholder="搜 @用户名/手机号" value={poolSearch} onChange={(e) => setPoolSearch(e.target.value)} />
+                      <Select value={poolFilter} onValueChange={setPoolFilter}>
+                        <SelectTrigger className="h-8 w-36"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">全部</SelectItem>
+                          <SelectItem value="free">空闲</SelectItem>
+                          <SelectItem value="mine">本规则已勾</SelectItem>
+                          <SelectItem value="other">其他规则在用</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Input className="h-8 w-16" type="number" min={1} placeholder="N" value={randomN} onChange={(e) => setRandomN(e.target.value)} />
+                      <Button type="button" variant="outline" size="sm" className="h-8" onClick={pickRandomFree}>随机勾 N 个空闲号</Button>
+                      <span className="text-xs text-muted-foreground">
+                        已勾 {form.sender_account_ids.length} · 空闲 {selectableAccounts.filter((a) => isFree(a.id)).length}
+                      </span>
+                    </div>
+                    <div className="grid max-h-72 grid-cols-1 gap-1.5 overflow-y-auto rounded-md border p-2 sm:grid-cols-2">
+                      {poolAccounts.map((a) => {
                         const on = form.sender_account_ids.includes(a.id)
                         const st = a.observed_status
                         const dead = st && DEAD_STATUS.has(st)
@@ -437,18 +484,29 @@ export default function RulesPage() {
                                 })
                               }
                             />
-                            {a.username ? '@' + a.username : a.phone || String(a.telegram_user_id || a.id)}
+                            {accName(a)}
                             {dead && <Badge variant="destructive" className="px-1 py-0 text-[10px]">{STATUS_LABEL[st!] || st}</Badge>}
                             {(() => {
+                              const others = otherUsage.get(a.id) || []
+                              const otherBadge = others.length ? (
+                                <span title={usageDetail(others)}>
+                                  <Badge variant="warning" className="px-1 py-0 text-[10px]">
+                                    {usageShort(others[0])}{others.length > 1 ? ` +${others.length - 1}` : ''}
+                                  </Badge>
+                                </span>
+                              ) : null
                               const targets = (editRule?.targets || []).filter((t) => t.status === 'active' || !t.status)
-                              if (!targets.length) return null
+                              if (!targets.length || !on) return otherBadge || <Badge variant="outline" className="px-1 py-0 text-[10px]">空闲</Badge>
                               const joined = targets.filter((t) => (t.joined_account_ids || []).includes(a.id)).length
                               const title = targets.map((t) => {
                                 const entry = t.sender_status?.[String(a.id)]
                                 const label = entry ? senderStatusLabel(entry.status) : joined && (t.joined_account_ids || []).includes(a.id) ? '已进群' : '未进群'
                                 return `${t.target_chat_ref || t.target_chat_id}: ${label}${entry?.detail ? ` (${entry.detail})` : ''}`
                               }).join('\n')
-                              return <span title={title}><Badge variant={joined === targets.length ? 'success' : joined ? 'warning' : 'secondary'} className="px-1 py-0 text-[10px]">{joined ? `已进 ${joined}/${targets.length}` : '未进群'}</Badge></span>
+                              return <>
+                                <span title={title}><Badge variant={joined === targets.length ? 'success' : 'secondary'} className="px-1 py-0 text-[10px]">{joined ? `本规则 已进 ${joined}/${targets.length}` : '本规则 未进群'}</Badge></span>
+                                {otherBadge}
+                              </>
                             })()}
                           </label>
                         )
@@ -718,9 +776,21 @@ export default function RulesPage() {
                       <Badge variant="secondary">未运行</Badge>
                     )}
                     <Badge variant="outline">{accLabel(r.account_id)}</Badge>
-                    {(r.sender_account_ids || []).length > 0 && (
-                      <Badge variant="outline">号池×{(r.sender_account_ids || []).length}</Badge>
-                    )}
+                    {(r.sender_account_ids || []).length > 0 && (() => {
+                      const pool = r.sender_account_ids || []
+                      const targets = (r.targets || []).filter((t) => t.status === 'active' || !t.status)
+                      const inAll = (id: number) => targets.length > 0 && targets.every((t) => (t.joined_account_ids || []).includes(id))
+                      const joined = pool.filter(inAll)
+                      const missing = pool.filter((id) => !inAll(id))
+                      const title = `号池: ${pool.map(accLabel).join(', ')}` + (missing.length ? `\n未进全部目标群: ${missing.map(accLabel).join(', ')}` : '')
+                      return (
+                        <span title={title}>
+                          <Badge variant={targets.length && missing.length ? 'warning' : 'outline'}>
+                            号池 {pool.length} 个{targets.length ? ` · 已进群 ${joined.length}/${pool.length}` : ''}
+                          </Badge>
+                        </span>
+                      )
+                    })()}
                     <Badge variant={r.mode === 'copy' ? 'default' : 'warning'}>
                       {r.mode === 'copy' ? '复制重发' : '官方转发'}
                     </Badge>
