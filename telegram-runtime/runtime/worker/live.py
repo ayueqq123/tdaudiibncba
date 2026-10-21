@@ -162,6 +162,32 @@ def _classify(exc: Exception) -> TransportErrorKind:
     return TransportErrorKind.TRANSIENT
 
 
+def _sniff_media_bytes(data: bytes) -> tuple[str | None, str | None]:
+    """按字节魔数识别下载结果的格式,返回 (ext, mime)。
+
+    文档缺文件名且 mime 映射不出扩展名(或 octet-stream)时兜底——保住图片
+    走 photo 发送,而不是落地成 media.bin 文件。"""
+    if data[:3] == b'\xff\xd8\xff':
+        return '.jpg', 'image/jpeg'
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return '.png', 'image/png'
+    if data[:6] in (b'GIF87a', b'GIF89a'):
+        return '.gif', 'image/gif'
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return '.webp', 'image/webp'
+    if data[4:8] == b'ftyp':
+        return '.mp4', 'video/mp4'
+    if data[:4] == b'OggS':
+        return '.ogg', 'audio/ogg'
+    if data[:2] == b'\x1f\x8b':
+        return '.tgs', 'application/x-tgsticker'
+    if data[:4] == b'PK\x03\x04':
+        return '.zip', 'application/zip'
+    if data.startswith(b'BEGIN:VCARD'):
+        return '.vcf', 'text/vcard'
+    return None, None
+
+
 class TelethonTransport(SendTransport):
     """Per-account live transport. Chat ids use Telethon's marked form
     (-100...); rules and this layer share that convention."""
@@ -249,18 +275,38 @@ class TelethonTransport(SendTransport):
         media = getattr(src, "media", None)
         if media is None:
             return None, None, None
+        if isinstance(media, tl.MessageMediaContact):
+            # 名片:download_media 只能取到 vCard 文本,重发落地成
+            # media.bin 文件;改用原生 InputMediaContact 保住名片形态。
+            return tl.InputMediaContact(
+                phone_number=media.phone_number,
+                first_name=media.first_name,
+                last_name=media.last_name,
+                vcard=media.vcard,
+            ), None, None
         if fetcher is self:
             return media, None, None
         data = await fetcher._call(lambda: src.download_media(file=bytes))
         if data is None:
             return None, None, None
-        f = getattr(src, 'file', None)
-        name = getattr(f, 'name', None) or (f'media{f.ext}' if getattr(f, 'ext', None) else 'media.bin')
-        buf = io.BytesIO(data)
-        buf.name = name
         doc = getattr(src, 'document', None)
         attrs = list(getattr(doc, 'attributes', None) or [])
         mime = getattr(doc, 'mime_type', None)
+        f = getattr(src, 'file', None)
+        name = getattr(f, 'name', None)
+        if name is None:
+            ext = getattr(f, 'ext', None)
+            # 缺文件名且 mime 映射不出扩展名(或 octet-stream 兜底 .bin)时,
+            # 用字节魔数嗅探真实格式——否则图片/贴纸等会落地成 media.bin 文件。
+            if ext in (None, '.bin') or mime in (None, 'application/octet-stream'):
+                sniff_ext, sniff_mime = _sniff_media_bytes(data)
+                if sniff_ext is not None:
+                    ext = sniff_ext
+                if sniff_mime is not None and mime in (None, 'application/octet-stream'):
+                    mime = sniff_mime
+            name = f'media{ext}' if ext else 'media.bin'
+        buf = io.BytesIO(data)
+        buf.name = name
         return buf, attrs, mime
 
     async def _transform(self, plan: DeliveryPlan, text: str) -> str:
