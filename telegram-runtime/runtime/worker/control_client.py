@@ -67,21 +67,33 @@ class ControlClient:
     def __init__(self, base_url: str, token: str, *, timeout_s: float = 15.0):
         if not token:
             raise ValueError("RUNTIME_WORKER_TOKEN is empty")
+        # pool 超时要短:连接池耗尽时快速失败,而不是无限等空闲连接
+        # 把请求卡死在外层循环里
         self._http = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             headers={"x-worker-token": token},
-            timeout=timeout_s,
+            timeout=httpx.Timeout(timeout_s, pool=3.0, connect=5.0),
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
         )
 
     async def close(self) -> None:
         await self._http.aclose()
 
     async def _get(self, path: str) -> Any:
-        r = await self._http.get(path)
+        try:
+            r = await self._http.get(path)
+        except httpx.HTTPError as exc:
+            # 传输层错误(超时/连接池耗尽/断网)统一成 ControlApiError,
+            # 否则调用方的 except ControlApiError 接不住,异常会逃逸并
+            # 杀死 host 里的轮询循环(曾导致连接池耗尽后投递整体停摆)
+            raise ControlApiError(f"transport: {exc!r}") from exc
         return self._unwrap(r)
 
     async def _post(self, path: str, body: dict[str, Any]) -> Any:
-        r = await self._http.post(path, json=body)
+        try:
+            r = await self._http.post(path, json=body)
+        except httpx.HTTPError as exc:
+            raise ControlApiError(f"transport: {exc!r}") from exc
         return self._unwrap(r)
 
     @staticmethod
