@@ -336,7 +336,13 @@ class TelethonTransport(SendTransport):
         # copy mode: re-send the source message's own content(经监听号回取)
         src = await self._fetch_source(plan, fetcher)
         entity = await self._entity(plan.target_chat_id)
-        text = await self._transform(plan, getattr(src, "text", None) or "")
+        # AI 变形闸只拦纯文字消息;带媒体(图片/文件/名片/贴纸)的消息
+        # 直接透传——caption 不过 AI,避免误判和媒体消息被拖慢
+        raw_text = getattr(src, "text", None) or ""
+        if getattr(src, "media", None) is None:
+            text = await self._transform(plan, raw_text)
+        else:
+            text = raw_text
         file, attrs, mime = await self._media_file(src, fetcher)
         if file is None:
             msg = await self._call(lambda: self.client.send_message(
@@ -353,7 +359,11 @@ class TelethonTransport(SendTransport):
         fetcher = fetcher or self
         src = await self._fetch_source(plan, fetcher)
         entity = await self._entity(plan.target_chat_id)
-        text = await self._transform(plan, getattr(src, "text", None) or "")
+        raw_text = getattr(src, "text", None) or ""
+        if getattr(src, "media", None) is None:
+            text = await self._transform(plan, raw_text)
+        else:
+            text = raw_text
         file, attrs, mime = await self._media_file(src, fetcher)
         # edit_message 不接 attributes;用原文件名已能保住媒体类型
         await self._call(lambda: self.client.edit_message(
