@@ -73,7 +73,10 @@ class ControlClient:
             base_url=base_url.rstrip("/"),
             headers={"x-worker-token": token},
             timeout=httpx.Timeout(timeout_s, pool=3.0, connect=5.0),
-            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+            # max_connections 压太低会把池打满:ai/event 和 clone_transform
+            # 走 DeepSeek 单次要数秒,50 坑位秒光→后续请求 PoolTimeout;
+            # 池等待上限仍由 timeout.pool=3s 控制,连接多≠慢
+            limits=httpx.Limits(max_connections=200, max_keepalive_connections=50),
         )
 
     async def close(self) -> None:
