@@ -1,5 +1,9 @@
 """RuntimeController transitions + heartbeat lease semantics."""
 
+from collections import OrderedDict
+from types import SimpleNamespace
+
+import httpx
 import pytest
 
 from runtime.account.lease_heartbeat import HeartbeatState, LeaseHeartbeat
@@ -10,6 +14,9 @@ from runtime.control.controller import (
     RuntimeCommand,
     RuntimeController,
 )
+from runtime.ingest.normalizer import ChatClass
+from runtime.worker import live
+from runtime.worker.control_client import ControlClient
 
 
 def cmd(t, account="a1", **kw):
@@ -120,3 +127,82 @@ async def test_heartbeat_renew_error_is_lost():
     await hb.run()
     assert hb.state is HeartbeatState.LOST
     assert lost[0].startswith("renew_error:")
+
+
+@pytest.fixture
+def ai_event_claims(monkeypatch):
+    monkeypatch.setattr(live, "_AI_EVENT_CLAIMED", OrderedDict())
+
+
+def _ai_event():
+    event = SimpleNamespace(message=SimpleNamespace(message="hello", sender=None))
+    raw = SimpleNamespace(
+        chat_id=100, message_id=200, sender_id=300,
+        topic_id=None, reply_to_message_id=None,
+        chat_class=ChatClass.BROADCAST, sender_is_bot=False,
+    )
+    return event, raw
+
+
+class FakeControl:
+    def __init__(self, fail_first=False):
+        self.calls = []
+        self.fail_first = fail_first
+
+    async def notify_ai_event(self, payload):
+        self.calls.append(payload)
+        if self.fail_first and len(self.calls) == 1:
+            raise RuntimeError("control unavailable")
+
+
+@pytest.mark.asyncio
+async def test_ai_event_deduplicates_by_tenant_project_chat_message(ai_event_claims):
+    event, raw = _ai_event()
+    control = FakeControl()
+
+    await live._report_ai_event(event, raw, control, 7, "tenant-a", "project-a")
+    await live._report_ai_event(event, raw, control, 8, "tenant-a", "project-a")
+    await live._report_ai_event(event, raw, control, 7, "tenant-a", "project-b")
+
+    assert len(control.calls) == 2
+    assert control.calls[0]["api_row_id"] == 7
+    assert control.calls[1]["api_row_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_ai_event_failed_notify_can_retry(ai_event_claims):
+    event, raw = _ai_event()
+    control = FakeControl(fail_first=True)
+
+    await live._report_ai_event(event, raw, control, 7, "tenant-a", "project-a")
+    await live._report_ai_event(event, raw, control, 8, "tenant-a", "project-a")
+
+    assert [call["api_row_id"] for call in control.calls] == [7, 8]
+
+
+@pytest.mark.asyncio
+async def test_control_client_routes_ai_events_to_separate_pool():
+    requests = {"main": [], "ai": []}
+
+    def transport(name):
+        def handle(request):
+            requests[name].append(request.url.path)
+            return httpx.Response(200, json={"data": {}})
+        return httpx.MockTransport(handle)
+
+    client = ControlClient("https://control.example", "token")
+    await client.close()
+    client._http = httpx.AsyncClient(
+        base_url="https://control.example", transport=transport("main"))
+    client._ai_http = httpx.AsyncClient(
+        base_url="https://control.example", transport=transport("ai"))
+    try:
+        await client.notify_ai_event({"message_id": 1})
+        await client.clone_transform("rule", "hello")
+    finally:
+        await client.close()
+
+    assert requests == {
+        "main": ["/ai/clone_transform"],
+        "ai": ["/ai/event"],
+    }

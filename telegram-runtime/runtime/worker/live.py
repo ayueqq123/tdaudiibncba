@@ -52,6 +52,8 @@ _RPC_TIMEOUT_S = 120.0
 _SENDER_BOT_CACHE_MAX = 50_000
 _SENDER_BOT: OrderedDict[int, bool] = OrderedDict()
 
+_AI_EVENT_CLAIMED_MAX = 20_000
+_AI_EVENT_CLAIMED: OrderedDict[tuple[str, str, int, int], None] = OrderedDict()
 
 def _record_sender_bot(sender_id: int | None, sender) -> bool:
     is_bot = bool(getattr(sender, "bot", False)) or (
@@ -494,7 +496,8 @@ def make_ingest_handler(session_factory, account_id: str, tenant_id: str,
                     await EventInboxRepository(s).ingest(
                         src_event, tenant_id=tenant_id, project_id=project_id)
                 if control is not None and api_row_id is not None and raw.kind is EventKind.CREATE:
-                    await _report_ai_event(event, raw, control, api_row_id)
+                    await _report_ai_event(event, raw, control, api_row_id,
+                                           tenant_id, project_id)
         except Exception:
             log.exception("ingest failed account=%s", account_id)
 
@@ -511,13 +514,21 @@ def _display_name(sender) -> str | None:
     return nick or getattr(sender, "username", None)
 
 
-async def _report_ai_event(event, raw, control, api_row_id: int) -> None:
+async def _report_ai_event(event, raw, control, api_row_id: int,
+                           tenant_id: str, project_id: str) -> None:
     """Best-effort group-message report for AI 炒群 (worker -> control plane)."""
     msg = getattr(event, "message", None)
     text = ((getattr(msg, "message", None) or "")).strip()
     if not text:
         return
     sender = getattr(msg, "sender", None)
+    key = (tenant_id, project_id, raw.chat_id, raw.message_id)
+    if key in _AI_EVENT_CLAIMED:
+        return
+    _AI_EVENT_CLAIMED[key] = None
+    _AI_EVENT_CLAIMED.move_to_end(key)
+    if len(_AI_EVENT_CLAIMED) > _AI_EVENT_CLAIMED_MAX:
+        _AI_EVENT_CLAIMED.popitem(last=False)
     name = _display_name(sender) or str(raw.sender_id or "User")
     try:
         await control.notify_ai_event({
@@ -531,6 +542,7 @@ async def _report_ai_event(event, raw, control, api_row_id: int) -> None:
         })
     except Exception:
         log.warning("ai event notify failed", exc_info=True)
+        _AI_EVENT_CLAIMED.pop(key, None)
 
 
 def _sender_id(msg) -> int | None:

@@ -69,17 +69,26 @@ class ControlClient:
             raise ValueError("RUNTIME_WORKER_TOKEN is empty")
         # pool 超时要短:连接池耗尽时快速失败,而不是无限等空闲连接
         # 把请求卡死在外层循环里
+        base_url = base_url.rstrip("/")
+        headers = {"x-worker-token": token}
+        timeout = httpx.Timeout(timeout_s, pool=3.0, connect=5.0)
         self._http = httpx.AsyncClient(
-            base_url=base_url.rstrip("/"),
-            headers={"x-worker-token": token},
-            timeout=httpx.Timeout(timeout_s, pool=3.0, connect=5.0),
-            # max_connections 压太低会把池打满:ai/event 和 clone_transform
-            # 走 DeepSeek 单次要数秒,50 坑位秒光→后续请求 PoolTimeout;
-            # 池等待上限仍由 timeout.pool=3s 控制,连接多≠慢
+            base_url=base_url,
+            headers=headers,
+            timeout=timeout,
+            # 主池承载克隆变形和控制面拉取请求。
             limits=httpx.Limits(max_connections=200, max_keepalive_connections=50),
         )
 
+        self._ai_http = httpx.AsyncClient(
+            base_url=base_url,
+            headers=headers,
+            timeout=timeout,
+            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+        )
+
     async def close(self) -> None:
+        await self._ai_http.aclose()
         await self._http.aclose()
 
     async def _get(self, path: str) -> Any:
@@ -92,9 +101,10 @@ class ControlClient:
             raise ControlApiError(f"transport: {exc!r}") from exc
         return self._unwrap(r)
 
-    async def _post(self, path: str, body: dict[str, Any]) -> Any:
+    async def _post(self, path: str, body: dict[str, Any], *,
+                    http: httpx.AsyncClient | None = None) -> Any:
         try:
-            r = await self._http.post(path, json=body)
+            r = await (http or self._http).post(path, json=body)
         except httpx.HTTPError as exc:
             raise ControlApiError(f"transport: {exc!r}") from exc
         return self._unwrap(r)
@@ -168,7 +178,7 @@ class ControlClient:
 
     async def notify_ai_event(self, payload: dict[str, Any]) -> None:
         """Best-effort group-message report for AI 炒群 triggers (fire-and-forget)."""
-        await self._post("/ai/event", payload)
+        await self._post("/ai/event", payload, http=self._ai_http)
 
     async def clone_transform(self, rule_id: str, text: str) -> dict[str, Any]:
         """copy 克隆发送前过变形闸:控制面按 rule_id 读实时配置做
