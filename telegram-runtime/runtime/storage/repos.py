@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -273,6 +273,7 @@ class DeliveryJobRepository:
         """Atomic conditional update: first due ready job for the account goes
         READY -> LEASED and records the attempt row (same tx, §6.4 boundary 3)."""
         await self._reclaim_stale_sending(account_id)
+        await self._promote_due_retries(account_id)
         now = _utcnow()
         stmt = (
             select(DeliveryJob)
@@ -326,6 +327,22 @@ class DeliveryJobRepository:
                    DeliveryAttempt.finished_at.is_(None))
             .values(result_status="abandoned", finished_at=_utcnow()))
         await self.s.commit()
+
+    async def _promote_due_retries(self, account_id: str) -> None:
+        """到期且无 flood wait 的重试 job 重新入队。"""
+        now = _utcnow()
+        res = await self.s.execute(
+            update(DeliveryJob)
+            .where(DeliveryJob.account_id == account_id,
+                   DeliveryJob.status == "retry_wait",
+                   or_(DeliveryJob.next_attempt_at.is_(None),
+                       DeliveryJob.next_attempt_at <= now),
+                   or_(DeliveryJob.flood_wait_until.is_(None),
+                       DeliveryJob.flood_wait_until <= now))
+            .values(status="ready")
+        )
+        if res.rowcount:
+            await self.s.commit()
 
     async def transition(self, job_id: str, src: str, dst: str, *,
                          next_attempt_at: datetime | None = None,

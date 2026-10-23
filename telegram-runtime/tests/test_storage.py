@@ -142,6 +142,59 @@ def test_claim_respects_next_attempt_and_flood(session: AsyncSession):
     assert asyncio.run(repo.claim_next("a1", worker_generation=1)) is None
 
 
+async def test_claim_promotes_due_retry_wait_and_increments_attempt(session):
+    repo = DeliveryJobRepository(session)
+    job_id = await repo.create_from_plan(_plan(), tenant_id="t", project_id="p")
+    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert await repo.transition(job_id, "ready", "retry_wait",
+                                 next_attempt_at=past)
+
+    job = await repo.claim_next("a1", worker_generation=1)
+
+    assert job is not None
+    assert job.status == "leased"
+    assert job.attempt_count == 1
+
+
+async def test_claim_does_not_promote_retry_wait_before_next_attempt(session):
+    repo = DeliveryJobRepository(session)
+    job_id = await repo.create_from_plan(_plan(), tenant_id="t", project_id="p")
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    assert await repo.transition(job_id, "ready", "retry_wait",
+                                 next_attempt_at=future)
+
+    assert await repo.claim_next("a1", worker_generation=1) is None
+    job = await session.get(DeliveryJob, job_id)
+    assert job is not None and job.status == "retry_wait"
+
+
+async def test_claim_does_not_promote_retry_wait_during_flood_wait(session):
+    repo = DeliveryJobRepository(session)
+    job_id = await repo.create_from_plan(_plan(), tenant_id="t", project_id="p")
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    assert await repo.transition(job_id, "ready", "retry_wait",
+                                 flood_wait_until=future)
+
+    assert await repo.claim_next("a1", worker_generation=1) is None
+    job = await session.get(DeliveryJob, job_id)
+    assert job is not None and job.status == "retry_wait"
+
+
+async def test_claim_only_promotes_retry_wait_for_requested_account(session):
+    repo = DeliveryJobRepository(session)
+    plan = _plan()
+    other_account_plan = DeliveryPlan(**{**plan.__dict__, "account_id": "a2"})
+    job_id = await repo.create_from_plan(
+        other_account_plan, tenant_id="t", project_id="p")
+    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert await repo.transition(job_id, "ready", "retry_wait",
+                                 next_attempt_at=past)
+
+    assert await repo.claim_next("a1", worker_generation=1) is None
+    job = await session.get(DeliveryJob, job_id)
+    assert job is not None and job.status == "retry_wait"
+
+
 async def test_drain_schedules_delayed_send_and_claim_skips_it(session: AsyncSession):
     jobs = await _drain_plans(
         session,
