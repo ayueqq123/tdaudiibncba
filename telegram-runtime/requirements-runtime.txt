@@ -4,3 +4,7 @@ SQLAlchemy[asyncio]==2.0.44
 asyncpg==0.30.0
 cryptography==45.0.7
 aiosqlite==0.21.0  # 测试用 sqlite 异步驱动
+# 媒体去水印(§4.3 copy-mode 投递链可选能力;缺包时降级透传)
+opencv-python-headless==4.10.0.84
+numpy==2.2.6
+rapidocr_onnxruntime==1.2.3

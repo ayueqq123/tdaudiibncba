@@ -16,7 +16,7 @@ from runtime.planner.model import (
     SourceEvent,
 )
 from runtime.storage.db import create_schema, make_engine, make_session_factory
-from runtime.storage.models import DeliveryJob
+from runtime.storage.models import DeliveryAttempt, DeliveryJob
 from runtime.storage.repos import (
     DeliveryJobRepository,
     EventInboxRepository,
@@ -129,6 +129,56 @@ def test_claim_is_atomic_and_records_attempt(session: AsyncSession):
     assert asyncio.run(repo.transition(job.id, "leased", "ready"))
     job2 = asyncio.run(repo.claim_next("a1", worker_generation=3))
     assert job2.attempt_count == 2
+
+
+async def _make_stale_sending_job(session, kind):
+    from sqlalchemy import update
+
+    repo = DeliveryJobRepository(session)
+    job_id = await repo.create_from_plan(
+        _plan(kind=kind), tenant_id="t", project_id="p")
+    assert job_id is not None
+    job = await repo.claim_next("a1", worker_generation=1)
+    assert job is not None and job.id == job_id
+    assert await repo.transition(job.id, "leased", "sending")
+    stale_at = datetime.now(timezone.utc) - timedelta(minutes=6)
+    await session.execute(
+        update(DeliveryJob)
+        .where(DeliveryJob.id == job_id)
+        .values(updated_at=stale_at)
+    )
+    await session.commit()
+    return repo, job
+
+
+async def test_stale_send_becomes_uncertain_and_is_not_reclaimed(session):
+    from sqlalchemy import select
+
+    repo, job = await _make_stale_sending_job(session, PlanKind.SEND)
+
+    assert await repo.claim_next("a1", worker_generation=1) is None
+    await session.refresh(job)
+    assert job.status == "uncertain"
+    assert job.last_error_class == "result_unknown"
+    attempt = (await session.execute(
+        select(DeliveryAttempt).where(DeliveryAttempt.job_id == job.id)
+    )).scalar_one()
+    assert attempt.result_status == "abandoned"
+    assert attempt.error_class == "result_unknown"
+    assert attempt.finished_at is not None
+
+
+async def test_stale_edit_returns_ready_and_can_be_claimed_again(session):
+    repo, job = await _make_stale_sending_job(session, PlanKind.EDIT)
+
+    await repo._reclaim_stale_sending("a1")
+    await session.refresh(job)
+    assert job.status == "ready"
+
+    claimed = await repo.claim_next("a1", worker_generation=1)
+    assert claimed is not None
+    assert claimed.id == job.id
+    assert claimed.status == "leased"
 
 
 def test_claim_respects_next_attempt_and_flood(session: AsyncSession):

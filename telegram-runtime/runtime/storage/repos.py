@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,9 @@ def _aware(dt: datetime | None) -> datetime | None:
 # 变换/审批耗时,否则会把正常在飞的 job 错杀重发。
 _SENDING_STALE_S = 300.0
 
+# album 成员 job 的缓冲时长:等同一 grouped_id 的兄弟消息落地后合并发送
+_ALBUM_SETTLE_S = 2.0
+
 
 class EventInboxRepository:
     """§6.4 boundary 1: one tx = source_message revision + dedup'd event row."""
@@ -52,51 +55,64 @@ class EventInboxRepository:
     async def ingest(self, event: SourceEvent, *, tenant_id: str, project_id: str,
                      ingest_seq: int = 0) -> bool:
         """Returns False when the event duplicates an existing inbox row."""
-        stmt = select(SourceMessage).where(
-            SourceMessage.tenant_id == tenant_id,
-            SourceMessage.project_id == project_id,
-            SourceMessage.source_scope == event.source_scope,
-            SourceMessage.source_chat_id == event.source_chat_id,
-            SourceMessage.source_message_id == event.source_message_id,
+        event_id = (
+            f"{event.source_scope}:{event.source_chat_id}:"
+            f"{event.source_message_id}:{event.kind.value}:{event.revision}"
         )
-        source = (await self.s.execute(stmt)).scalar_one_or_none()
-        if source is None:
-            source = SourceMessage(
-                tenant_id=tenant_id, project_id=project_id,
-                source_scope=event.source_scope, source_chat_id=event.source_chat_id,
-                source_message_id=event.source_message_id,
-                latest_revision=event.revision, grouped_id=event.grouped_id,
-                content_hash=event.payload_hash,
+        for attempt in range(3):
+            stmt = select(SourceMessage).where(
+                SourceMessage.tenant_id == tenant_id,
+                SourceMessage.project_id == project_id,
+                SourceMessage.source_scope == event.source_scope,
+                SourceMessage.source_chat_id == event.source_chat_id,
+                SourceMessage.source_message_id == event.source_message_id,
             )
-            self.s.add(source)
-        else:
-            if event.revision > source.latest_revision:
-                source.latest_revision = event.revision
-                if event.payload_hash:
-                    source.content_hash = event.payload_hash
-            if event.kind.value == "delete":
-                source.tombstone = True
+            source = (await self.s.execute(stmt)).scalar_one_or_none()
+            if source is None:
+                source = SourceMessage(
+                    tenant_id=tenant_id, project_id=project_id,
+                    source_scope=event.source_scope, source_chat_id=event.source_chat_id,
+                    source_message_id=event.source_message_id,
+                    latest_revision=event.revision, grouped_id=event.grouped_id,
+                    content_hash=event.payload_hash,
+                )
+                self.s.add(source)
+            else:
+                if event.revision > source.latest_revision:
+                    source.latest_revision = event.revision
+                    if event.payload_hash:
+                        source.content_hash = event.payload_hash
+                if event.kind.value == "delete":
+                    source.tombstone = True
 
-        self.s.add(EventInbox(
-            event_id=f"{event.source_scope}:{event.source_chat_id}:"
-                     f"{event.source_message_id}:{event.kind.value}:{event.revision}",
-            source_scope=event.source_scope, source_chat_id=event.source_chat_id,
-            source_message_id=event.source_message_id, kind=event.kind.value,
-            revision=event.revision, account_id=event.account_id,
-            payload_ref=event.payload_ref, payload_hash=event.payload_hash,
-            grouped_id=event.grouped_id, topic_id=event.topic_id,
-            reply_to_source_id=event.reply_to_source_id,
-            protected=event.protected, source_sender_id=event.sender_id,
-            source_media_kind=event.media_kind,
-            source_sender_bot=event.sender_is_bot,
-            ingest_seq=ingest_seq,
-        ))
-        try:
-            await self.s.commit()
-        except IntegrityError:
-            await self.s.rollback()
-            return False
-        return True
+            self.s.add(EventInbox(
+                event_id=event_id,
+                source_scope=event.source_scope, source_chat_id=event.source_chat_id,
+                source_message_id=event.source_message_id, kind=event.kind.value,
+                revision=event.revision, account_id=event.account_id,
+                payload_ref=event.payload_ref, payload_hash=event.payload_hash,
+                grouped_id=event.grouped_id, topic_id=event.topic_id,
+                reply_to_source_id=event.reply_to_source_id,
+                protected=event.protected, source_sender_id=event.sender_id,
+                source_media_kind=event.media_kind,
+                source_sender_bot=event.sender_is_bot,
+                ingest_seq=ingest_seq,
+            ))
+            try:
+                await self.s.commit()
+            except IntegrityError:
+                await self.s.rollback()
+                duplicate = await self.s.execute(
+                    select(EventInbox.event_id).where(
+                        EventInbox.event_id == event_id,
+                        EventInbox.account_id == event.account_id)
+                )
+                if duplicate.first() is not None:
+                    return False
+                if attempt == 2:
+                    raise
+                continue
+            return True
 
 
     async def next_unprocessed(self, *, limit: int = 200) -> list[EventInbox]:
@@ -153,8 +169,13 @@ class EventInboxRepository:
                     )
                 job = _job_from_plan(plan, tenant_id=tenant_id,
                                      project_id=project_id)
-                if plan.kind is PlanKind.SEND and plan.delay_s > 0:
-                    due = now + timedelta(seconds=plan.delay_s)
+                # album 成员留短缓冲等兄弟落地,runner 才能整组合并发送;
+                # 没配延时的单条消息不受影响
+                if plan.kind is PlanKind.SEND and (
+                        plan.delay_s > 0 or plan.grouped_id is not None):
+                    due = now + timedelta(
+                        seconds=plan.delay_s if plan.delay_s > 0
+                        else _ALBUM_SETTLE_S)
                     album_due = None
                     if plan.grouped_id is not None:
                         album_due = await self.s.execute(
@@ -306,26 +327,93 @@ class DeliveryJobRepository:
             return job
         return None
 
+    async def claim_album_siblings(
+        self, job: DeliveryJob, *, worker_generation: int
+    ) -> list[DeliveryJob]:
+        """同 album 的就绪兄弟 job 一并 leased(同 route/scope/chat/grouped/
+        account/kind=send,到期且未 flood、非审批),供整组合并成一条相册消息。"""
+        now = _utcnow()
+        rows = (
+            await self.s.execute(
+                select(DeliveryJob)
+                .where(
+                    DeliveryJob.account_id == job.account_id,
+                    DeliveryJob.route_id == job.route_id,
+                    DeliveryJob.source_scope == job.source_scope,
+                    DeliveryJob.source_chat_id == job.source_chat_id,
+                    DeliveryJob.grouped_id == job.grouped_id,
+                    DeliveryJob.kind == "send",
+                    DeliveryJob.status == "ready",
+                    DeliveryJob.requires_approval == False,  # noqa: E712
+                    DeliveryJob.id != job.id,
+                )
+                .order_by(DeliveryJob.source_message_id)
+            )
+        ).scalars().all()
+        claimed: list[DeliveryJob] = []
+        for sib in rows:
+            due = _aware(sib.next_attempt_at)
+            flood = _aware(sib.flood_wait_until)
+            if due is not None and due > now and sib.attempt_count > 0:
+                continue
+            if flood is not None and flood > now:
+                continue
+            next_attempt = sib.attempt_count + 1
+            res = await self.s.execute(
+                update(DeliveryJob)
+                .where(DeliveryJob.id == sib.id, DeliveryJob.status == "ready")
+                .values(status="leased", attempt_count=next_attempt)
+            )
+            if res.rowcount == 0:
+                continue
+            self.s.add(DeliveryAttempt(job_id=sib.id,
+                                       attempt_no=next_attempt,
+                                       worker_generation=worker_generation,
+                                       started_at=now))
+            await self.s.commit()
+            await self.s.refresh(sib)
+            claimed.append(sib)
+        return claimed
+
     async def _reclaim_stale_sending(self, account_id: str) -> None:
-        """同账号的 job 只会被本 runner 执行:runner 活着而 job 停在
-        'sending' 超过阈值,说明上一次执行崩了/被取消了——放回 ready 重排,
-        孤儿 attempt 标 abandoned。"""
+        """同账号的 job 只会被本 runner 执行:超时的 SEND 结果不确定,
+        不自动重发;其他幂等操作放回 ready,孤儿 attempt 标 abandoned。"""
         cutoff = _utcnow() - timedelta(seconds=_SENDING_STALE_S)
         res = await self.s.execute(
             update(DeliveryJob)
             .where(DeliveryJob.account_id == account_id,
                    DeliveryJob.status == "sending",
                    DeliveryJob.updated_at < cutoff)
-            .values(status="ready")
-            .returning(DeliveryJob.id))
-        stale_ids = list(res.scalars().all())
+            .values(
+                status=case(
+                    (DeliveryJob.kind == "send", "uncertain"),
+                    else_="ready",
+                ),
+                last_error_class=case(
+                    (DeliveryJob.kind == "send", "result_unknown"),
+                    else_=DeliveryJob.last_error_class,
+                ),
+            )
+            .returning(DeliveryJob.id, DeliveryJob.kind))
+        stale_jobs = list(res.all())
+        stale_ids = [row.id for row in stale_jobs]
         if not stale_ids:
             return
+        send_ids = [row.id for row in stale_jobs if row.kind == "send"]
+        attempt_values = {
+            "result_status": "abandoned",
+            "finished_at": _utcnow(),
+        }
+        if send_ids:
+            attempt_values["error_class"] = case(
+                (DeliveryAttempt.job_id.in_(send_ids), "result_unknown"),
+                else_=DeliveryAttempt.error_class,
+            )
         await self.s.execute(
             update(DeliveryAttempt)
             .where(DeliveryAttempt.job_id.in_(stale_ids),
                    DeliveryAttempt.finished_at.is_(None))
-            .values(result_status="abandoned", finished_at=_utcnow()))
+            .values(**attempt_values))
         await self.s.commit()
 
     async def _promote_due_retries(self, account_id: str) -> None:

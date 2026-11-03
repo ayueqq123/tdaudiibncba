@@ -60,6 +60,18 @@ async def _check_one(client, chat_id: int) -> dict:
         if getattr(rights, 'send_messages', False):
             return {'status': 'muted', 'can_post': False}
         return {'status': 'banned', 'can_post': False}
+    broadcast = bool(getattr(entity, 'broadcast', False))
+    # 频道管理员/创建者:发帖看 admin_rights.post_messages,不看 default_banned_rights
+    if isinstance(part, types.ChannelParticipantCreator):
+        return {'status': 'member', 'can_post': True}
+    if isinstance(part, types.ChannelParticipantAdmin):
+        rights = getattr(part, 'admin_rights', None)
+        if broadcast and rights is not None and not getattr(rights, 'post_messages', False):
+            return {'status': 'member', 'can_post': False, 'detail': 'admin_no_post_right'}
+        return {'status': 'member', 'can_post': True}
+    # 广播频道:普通订阅者没有发帖权限,必须是管理员
+    if broadcast:
+        return {'status': 'member', 'can_post': False, 'detail': 'not_channel_admin'}
     default_rights = getattr(entity, 'default_banned_rights', None)
     if getattr(default_rights, 'send_messages', False):
         return {'status': 'muted', 'can_post': False, 'detail': 'group_muted'}

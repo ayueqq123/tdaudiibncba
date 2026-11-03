@@ -1,9 +1,13 @@
 """A3 end-to-end: inbox event -> plan -> job -> claim -> policy -> transport ->
 record. sqlite + FakeTransport, no real network."""
 
+import io
+
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, update
+from telethon import utils
+from telethon.tl import types
 
 from runtime.delivery.executor import (
     DeliveryExecutor,
@@ -30,19 +34,39 @@ from runtime.storage.models import (
 )
 from runtime.storage.repos import EventInboxRepository
 from runtime.worker.runner import AccountRunner, RunnerDeps, WorkerHost
+from runtime.worker.live import _sniff_media_bytes
 
 
 class FakeTransport:
-    def __init__(self, result=9000, error: TransportError | None = None):
+    def __init__(self, result=9000, error: TransportError | None = None,
+                 album_ids: list[int] | None = None,
+                 resolve_error: TransportError | None = None):
         self.result = result
         self.error = error
+        self.album_ids = album_ids
+        self.resolve_error = resolve_error
         self.sent: list[DeliveryPlan] = []
+        self.resolved: list[DeliveryPlan] = []
+        self.albums: list[list[DeliveryPlan]] = []
 
     async def send(self, plan):
         if self.error:
             raise self.error
         self.sent.append(plan)
         return [self.result]
+
+    async def resolve_album(self, plan):
+        self.resolved.append(plan)
+        if self.resolve_error:
+            raise self.resolve_error
+        return (self.album_ids if self.album_ids is not None
+                else [plan.source_message_id])
+
+    async def send_album(self, plans):
+        if self.error:
+            raise self.error
+        self.albums.append(list(plans))
+        return [self.result + index for index, _ in enumerate(plans)]
 
     async def edit(self, plan, target_message_id):
         return None
@@ -84,13 +108,24 @@ def _deps(factory, transport=None, **over):
     return d
 
 
-async def _ingest(factory, msg=1, kind=EventKind.CREATE):
+async def _ingest(factory, msg=1, kind=EventKind.CREATE, grouped_id=None):
     raw = RawUpdate(kind=kind, chat_id=100, message_id=msg,
-                    chat_class=ChatClass.BROADCAST, grouped_id=None)
+                    chat_class=ChatClass.BROADCAST, grouped_id=grouped_id)
     ev = EventNormalizer().normalize(raw, "a1")
     async with factory() as s:
         assert await EventInboxRepository(s).ingest(ev, tenant_id="t",
                                                   project_id="p")
+
+
+async def _album_runner(factory, transport, message_ids):
+    for message_id in message_ids:
+        await _ingest(factory, msg=message_id, grouped_id=77)
+    runner = AccountRunner("a1", 1, _deps(factory, transport))
+    await runner.drain_inbox()
+    async with factory() as s:
+        await s.execute(update(DeliveryJob).values(next_attempt_at=None))
+        await s.commit()
+    return runner
 
 
 async def _job(factory):
@@ -112,6 +147,106 @@ async def test_e2e_send_success_writes_mapping(factory):
         assert att.result_status == "succeeded" and att.finished_at
         inbox = (await s.execute(select(EventInbox))).scalar_one()
         assert inbox.processed is True
+
+
+async def test_album_resolution_sends_missing_members_and_records_mappings(factory):
+    transport = FakeTransport(album_ids=[1, 2, 3])
+    runner = await _album_runner(factory, transport, [1, 3])
+
+    assert await runner.send_next() is not None
+
+    assert len(transport.albums) == 1
+    assert [p.source_message_id for p in transport.albums[0]] == [1, 2, 3]
+    async with factory() as s:
+        mappings = (await s.execute(
+            select(MessageMap).order_by(MessageMap.source_message_id)
+        )).scalars().all()
+        assert [m.source_message_id for m in mappings] == [1, 2, 3]
+        jobs = (await s.execute(
+            select(DeliveryJob).order_by(DeliveryJob.source_message_id)
+        )).scalars().all()
+        assert [j.status for j in jobs] == ["succeeded", "succeeded"]
+
+
+async def test_claimed_album_sibling_missing_from_resolution_is_sent_and_recorded(
+    factory,
+):
+    class MissingSiblingTransport(FakeTransport):
+        async def resolve_album(self, plan):
+            self.resolved.append(plan)
+            return sorted({plan.source_message_id, 2})
+
+    transport = MissingSiblingTransport()
+    runner = await _album_runner(factory, transport, [1, 3])
+
+    assert await runner.send_next() is not None
+
+    assert len(transport.albums) == 1
+    assert [p.source_message_id for p in transport.albums[0]] == [1, 2, 3]
+    async with factory() as s:
+        mappings = (await s.execute(
+            select(MessageMap).order_by(MessageMap.source_message_id)
+        )).scalars().all()
+        assert [m.source_message_id for m in mappings] == [1, 2, 3]
+        jobs = (await s.execute(
+            select(DeliveryJob).order_by(DeliveryJob.source_message_id)
+        )).scalars().all()
+        assert [j.status for j in jobs] == ["succeeded", "succeeded"]
+
+
+async def test_late_album_sibling_uses_existing_mapping_without_transport(factory):
+    transport = FakeTransport(album_ids=[1, 2, 3])
+    runner = await _album_runner(factory, transport, [1])
+    await runner.send_next()
+    assert len(transport.albums) == 1
+
+    await _ingest(factory, msg=2, grouped_id=77)
+    await runner.drain_inbox()
+    async with factory() as s:
+        await s.execute(
+            update(DeliveryJob)
+            .where(DeliveryJob.source_message_id == 2)
+            .values(next_attempt_at=None)
+        )
+        await s.commit()
+
+    await runner.send_next()
+
+    assert len(transport.resolved) == 1
+    assert len(transport.albums) == 1
+    assert transport.sent == []
+    async with factory() as s:
+        late_job = (await s.execute(
+            select(DeliveryJob).where(DeliveryJob.source_message_id == 2)
+        )).scalar_one()
+        assert late_job.status == "succeeded"
+
+
+async def test_album_resolution_transient_error_retries_without_sending(factory):
+    err = TransportError(TransportErrorKind.TRANSIENT, "album fetch failed")
+    transport = FakeTransport(album_ids=[1, 2, 3], resolve_error=err)
+    runner = await _album_runner(factory, transport, [1])
+
+    await runner.send_next()
+
+    job = await _job(factory)
+    assert job.status == "retry_wait"
+    assert job.last_error_class == ErrorClass.TRANSIENT.value
+    assert len(transport.resolved) == 1
+    assert transport.albums == []
+    assert transport.sent == []
+
+
+def test_mp4_sniffing_preserves_video_media_type():
+    extension, mime_type = _sniff_media_bytes(b"\x00\x00\x00\x18ftypisom")
+    assert (extension, mime_type) == (".mp4", "video/mp4")
+
+    file = io.BytesIO(b"\x00\x00\x00\x18ftypisom")
+    file.name = f"media{extension}"
+    attributes, detected_mime = utils.get_attributes(file)
+    assert detected_mime == "video/mp4"
+    assert any(isinstance(attr, types.DocumentAttributeVideo)
+               for attr in attributes)
 
 
 async def test_drain_is_idempotent_on_replay(factory):

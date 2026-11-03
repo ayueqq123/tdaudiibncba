@@ -176,6 +176,8 @@ class ClonePlanner:
                     delay_s=delay_s,
                     fetch_account_id=rule.account_id,
                     transform=rule.transform and kind is not PlanKind.DELETE,
+                    watermark_mode=rule.watermark_mode,
+                    watermark_mask=rule.watermark_mask,
                 )
             )
         return plans
@@ -187,6 +189,10 @@ class ClonePlanner:
         里的原发送号;单号规则恒为监听号。"""
         pool = rule.sender_account_ids or (rule.account_id,)
         if kind is PlanKind.SEND:
+            # album 成员固定同一个发送号:runner 按 grouped_id 合并成一条
+            # 相册消息发送,成员分散到不同号就没法合并了
+            if event.grouped_id is not None:
+                return pool[event.grouped_id % len(pool)]
             return random.choice(pool)
         original = self._mapping.find_sender_account_id(
             route_id, event.source_scope, event.source_chat_id, event.source_message_id)

@@ -38,3 +38,7 @@ async def create_schema(engine: AsyncEngine) -> None:
                 await conn.execute(text(
                     f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}"
                 ))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_event_inbox_event_id "
+                "ON event_inbox (event_id)"
+            ))

@@ -14,12 +14,19 @@ import hashlib
 import io
 import logging
 import os
+import re
 import tempfile
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
+from sqlalchemy.exc import (
+    DBAPIError,
+    OperationalError,
+    TimeoutError as SQLAlchemyTimeoutError,
+)
 from telethon import TelegramClient, events, functions, utils
 from telethon.errors import (
     AuthKeyUnregisteredError,
@@ -39,6 +46,7 @@ from telethon.errors import (
 from telethon.sessions import SQLiteSession
 from telethon.tl import types as tl
 
+from runtime.delivery import watermark
 from runtime.delivery.executor import SendTransport, TransportError, TransportErrorKind
 from runtime.delivery.policy import LiveAccount, SendState
 from runtime.ingest.normalizer import ChatClass, EventNormalizer, RawUpdate
@@ -49,11 +57,10 @@ from runtime.worker.control_client import ControlClient, SessionBundle
 log = logging.getLogger(__name__)
 
 _RPC_TIMEOUT_S = 120.0
+_EDIT_AS_CREATE_WINDOW_S = 900
 _SENDER_BOT_CACHE_MAX = 50_000
 _SENDER_BOT: OrderedDict[int, bool] = OrderedDict()
 
-_AI_EVENT_CLAIMED_MAX = 20_000
-_AI_EVENT_CLAIMED: OrderedDict[tuple[str, str, int, int], None] = OrderedDict()
 
 def _record_sender_bot(sender_id: int | None, sender) -> bool:
     is_bot = bool(getattr(sender, "bot", False)) or (
@@ -196,12 +203,14 @@ class TelethonTransport(SendTransport):
 
     def __init__(self, client: TelegramClient, account_id: str,
                  registry: LiveRegistry, resolver: PayloadResolver,
-                 status_cb: Callable[[str, str], Awaitable[None]] | None = None):
+                 status_cb: Callable[[str, str], Awaitable[None]] | None = None,
+                 session_factory=None):
         self.client = client
         self.account_id = account_id
         self.registry = registry
         self.resolver = resolver
         self.status_cb = status_cb
+        self.session_factory = session_factory
         self._self_id: int | None = None
         self._reported: set[str] = set()
 
@@ -268,9 +277,35 @@ class TelethonTransport(SendTransport):
                                  "source message missing")
         return src
 
-    async def _media_file(self, src, fetcher: TelethonTransport):
+    async def resolve_album(
+        self, plan: DeliveryPlan, *,
+        fetcher: TelethonTransport | None = None,
+    ) -> list[int]:
+        fetcher = fetcher or self
+        if plan.grouped_id is None:
+            return []
+        mid = plan.source_message_id
+        try:
+            messages = await fetcher._call(lambda: fetcher.client.get_messages(
+                plan.source_chat_id, ids=list(range(mid - 9, mid + 10))))
+        except Exception as exc:
+            raise TransportError(TransportErrorKind.TRANSIENT,
+                                 str(exc)[:300]) from exc
+        if messages is None:
+            return []
+        if not isinstance(messages, (list, tuple)):
+            messages = [messages]
+        return sorted({
+            message.id for message in messages
+            if message is not None
+            and getattr(message, "grouped_id", None) == plan.grouped_id
+        })
+
+    async def _media_file(self, src, fetcher: TelethonTransport,
+                          wm_mode: str = "off", wm_mask: str | None = None):
         """同号直传 TL media(快路径);跨账号下载 bytes 由发送号重传
         (file_reference 与账号绑定,不能直接把别的号抓到的 media 发出去)。
+        wm_mode != off 时强制下载重传——去水印必须拿到原始字节做处理。
         返回 (file, attributes, mime_type):裸 bytes 会被当无名文件发,故带上
         原名/扩展名 + 原文档 mime_type + 原文档属性(视频时长宽高、语音时长等),
         否则源端是 octet-stream 的视频会落地成文件。"""
@@ -286,7 +321,7 @@ class TelethonTransport(SendTransport):
                 last_name=media.last_name,
                 vcard=media.vcard,
             ), None, None
-        if fetcher is self:
+        if fetcher is self and wm_mode == "off":
             return media, None, None
         data = await fetcher._call(lambda: src.download_media(file=bytes))
         if data is None:
@@ -307,18 +342,115 @@ class TelethonTransport(SendTransport):
                 if sniff_mime is not None and mime in (None, 'application/octet-stream'):
                     mime = sniff_mime
             name = f'media{ext}' if ext else 'media.bin'
+        if wm_mode != "off":
+            # 去水印:图片 inpaint / 视频 delogo;失败回退原 bytes
+            data = await asyncio.to_thread(
+                watermark.clean_bytes, data, name, wm_mode, wm_mask)
         buf = io.BytesIO(data)
         buf.name = name
         return buf, attrs, mime
 
+    # clone_transform 前置闸:规则配置 60s 本地缓存 + 便宜判定本地完成,
+    # 命中就不必走 control-api HTTP。正则与 backend ai_service._AD_SIGNALS 保持一致。
+    _RULE_CFG_TTL_S = 60.0
+    _RESULT_CACHE_TTL_S = 86400.0
+    _RESULT_CACHE_MAX = 20000
+    _RULE_CFG_STORE: dict[str, tuple[float, dict | None]] = {}
+    _result_cache: dict[str, tuple[float, str]] = {}
+    _AD_SIGNALS_LOCAL = tuple(re.compile(rx, re.I) for rx in (
+        r't\.me/|telegram\.(me|dog)/',
+        r'@[A-Za-z][A-Za-z0-9_]{3,}',
+        r'https?://|bit\.ly|cutt\.ly|t\.co/|goo\.gl|is\.gd|tinyurl\.com',
+        r'微信|wechat|qq号|qq[:：＝=]?\d{5,}|vx[:：＝=]|whatsapp|whats\s*app|飞机号|纸飞机|TG号|tg号|tele号|line[:：＝=]|蝙蝠|potato|土豆聊天|泡泡聊天',
+        r'加我|私聊|私我|pm我|联系客服|接单|直推|扶持|团队收人|副业|兼职|日结|底薪|躺赚|免费领|进群|加群|进频道|点链接|扫码|福利|优惠|代理|招商|高返|返佣|首充|包赚|稳赚',
+        r'盘口|菠菜|棋牌|百家乐|上分|下分|赔率|六合彩|亚博|开元|开云|ag真人|电子游艺|老虎机|彩票|投注|下注|押注|洗码|返水|打鱼',
+        r'usdt|泰达币|u币|换汇|跑分|套现|代付|代充|承兑|搬砖|灰产|洗钱|代收',
+        r'上门服务|约炮|黄播|裸聊|援交|办证|办签证|假证|护照办理|驾照包过',
+        r'币安|binance|欧易|okx|火币|imtoken|bitget|gate\.io|抹茶',
+    ))
+
+    @staticmethod
+    def _has_ad_signal(text: str) -> bool:
+        return any(rx.search(text) for rx in TelethonTransport._AD_SIGNALS_LOCAL)
+
+    async def _rule_cfg(self, rule_id: str) -> dict | None:
+        now = time.monotonic()
+        ent = TelethonTransport._RULE_CFG_STORE.get(rule_id)
+        if ent and now - ent[0] < TelethonTransport._RULE_CFG_TTL_S:
+            return ent[1]
+        cfg = None
+        if self.session_factory is not None:
+            try:
+                from sqlalchemy import text as _sql  # noqa: PLC0415
+                async with self.session_factory() as s:
+                    row = (await s.execute(_sql(
+                        'select ad_keywords, ad_block, ai_rewrite, ai_prompt'
+                        ' from tg_clone_rule where id = :rid and deleted = 0'),
+                        {'rid': int(rule_id)})).mappings().first()
+                if row is not None:
+                    cfg = dict(row)
+            except Exception as exc:  # noqa: BLE001 — 读不到就回落远端判定
+                log.warning("rule cfg fetch failed rule=%s: %r", rule_id, exc)
+        TelethonTransport._RULE_CFG_STORE[rule_id] = (now, cfg)
+        return cfg
+
+    async def _pre_gate(self, plan: DeliveryPlan, text: str) -> str | None:
+        '''返回 None = 需要远端 AI 判定;否则本地结果(原文/缓存文案)。'''
+        cfg = await self._rule_cfg(plan.rule_id)
+        if cfg is None:
+            return None
+        low = text.lower()
+        kws = [str(k).strip() for k in (cfg.get('ad_keywords') or []) if str(k).strip()]
+        if any(k.lower() in low for k in kws):
+            raise TransportError(TransportErrorKind.FILTERED, 'dropped:keyword')
+        need_ai = (cfg.get('ad_block') or 'off') == 'ai' \
+            or (cfg.get('ai_rewrite') or 'off') not in ('', 'off')
+        if not need_ai:
+            return text
+        ad_only = (cfg.get('ad_block') or 'off') == 'ai' \
+            and (cfg.get('ai_rewrite') or 'off') in ('', 'off')
+        if ad_only and len(text.strip()) <= 10 and not self._has_ad_signal(text):
+            return text
+        ck = hashlib.sha256(
+            f"{plan.rule_id}|{cfg.get('ai_rewrite')}|{cfg.get('ad_block')}|"
+            f"{cfg.get('ai_prompt') or ''}|{text}".encode()).hexdigest()[:32]
+        ent = TelethonTransport._result_cache.get(ck)
+        if ent and time.monotonic() - ent[0] < TelethonTransport._RESULT_CACHE_TTL_S:
+            return ent[1]
+        return None
+
+    def _cache_result(self, plan: DeliveryPlan, text: str, out: str) -> None:
+        cfg = TelethonTransport._RULE_CFG_STORE.get(plan.rule_id)
+        fields = cfg[1] if cfg else {}
+        ck = hashlib.sha256(
+            f"{plan.rule_id}|{fields.get('ai_rewrite')}|{fields.get('ad_block')}|"
+            f"{fields.get('ai_prompt') or ''}|{text}".encode()).hexdigest()[:32]
+        cache = TelethonTransport._result_cache
+        if len(cache) >= TelethonTransport._RESULT_CACHE_MAX:
+            cache.clear()  # 简单重建:TTL 内重填,省逐条过期维护
+        cache[ck] = (time.monotonic(), out)
+
     async def _transform(self, plan: DeliveryPlan, text: str) -> str:
         if not plan.transform or not text.strip():
             return text
+        pre = await self._pre_gate(plan, text)
+        if pre is not None:
+            log.info("clone_transform rule=%s src_msg=%s action=send reason='local' "
+                     "changed=%s len %d->%d", plan.rule_id,
+                     plan.source_message_id, pre != text, len(text), len(pre))
+            return pre
         r = await self.resolver.clone_transform(plan.rule_id, text)
         if r.get("action") == "drop":
             raise TransportError(TransportErrorKind.FILTERED,
                                  f"dropped:{r.get('reason') or 'filtered'}")
-        return str(r.get("text") or text)
+        out = str(r.get("text") or text)
+        log.info("clone_transform rule=%s src_msg=%s action=send reason=%r "
+                 "changed=%s len %d->%d", plan.rule_id,
+                 plan.source_message_id, r.get("reason") or "",
+                 out != text, len(text), len(out))
+        if r.get("reason") in ("", "cache"):
+            self._cache_result(plan, text, out)
+        return out
 
     async def send(self, plan: DeliveryPlan,
                    *, fetcher: TelethonTransport | None = None) -> list[int]:
@@ -338,14 +470,11 @@ class TelethonTransport(SendTransport):
         # copy mode: re-send the source message's own content(经监听号回取)
         src = await self._fetch_source(plan, fetcher)
         entity = await self._entity(plan.target_chat_id)
-        # AI 变形闸只拦纯文字消息;带媒体(图片/文件/名片/贴纸)的消息
-        # 直接透传——caption 不过 AI,避免误判和媒体消息被拖慢
-        raw_text = getattr(src, "text", None) or ""
-        if getattr(src, "media", None) is None:
-            text = await self._transform(plan, raw_text)
-        else:
-            text = raw_text
-        file, attrs, mime = await self._media_file(src, fetcher)
+        # caption 也过 AI 变形闸(广告/链接大多在 caption 里);media 本体透传,
+        # 去水印在 _media_file 内按规则处理
+        text = await self._transform(plan, getattr(src, "text", None) or "")
+        file, attrs, mime = await self._media_file(
+            src, fetcher, plan.watermark_mode, plan.watermark_mask)
         if file is None:
             msg = await self._call(lambda: self.client.send_message(
                 entity, text,
@@ -356,17 +485,79 @@ class TelethonTransport(SendTransport):
                 reply_to=plan.reply_to_target_message_id))
         return [msg.id]
 
+    async def send_album(self, plans: list[DeliveryPlan],
+                         *, fetcher: TelethonTransport | None = None) -> list[int]:
+        """同一 grouped_id 的多个 plan 合并成一条相册消息发送(一次 send_file
+        传文件列表)。caption 取首个非空成员文案,整组只过一次变形闸;无媒体的
+        成员(纯文本/candidate)退回逐条发送。返回按 plans 顺序的目标消息 id
+        (无媒体的成员位置填其单独发送的 id)。"""
+
+        async def send_one(plan: DeliveryPlan) -> int:
+            return (await self.send(plan, fetcher=fetcher))[0]
+
+        fetcher = fetcher or self
+        files: list = []
+        captions: list[str] = []
+        media_plans: list[DeliveryPlan] = []
+        solo_plans: list[DeliveryPlan] = []
+        fwd_plans: list[DeliveryPlan] = []
+        for plan in plans:
+            # candidate 文本(审批/快照存的外部队列)无源媒体,单独走
+            if await self._resolve_text(plan) is not None:
+                solo_plans.append(plan)
+                continue
+            if plan.mode is CloneMode.FORWARD:
+                fwd_plans.append(plan)
+                continue
+            src = await self._fetch_source(plan, fetcher)
+            file, _attrs, _mime = await self._media_file(
+                src, fetcher, plan.watermark_mode, plan.watermark_mask)
+            if file is None:
+                solo_plans.append(plan)
+                continue
+            files.append(file)
+            media_plans.append(plan)
+            captions.append(getattr(src, "text", None) or "")
+
+        out: dict[int, int] = {}
+        if files:
+            entity = await self._entity(media_plans[0].target_chat_id)
+            # 每个成员自己的 caption 逐个过变形闸;任一被判广告 → 整组丢弃
+            captions = [await self._transform(media_plans[i], c)
+                        if c.strip() else c
+                        for i, c in enumerate(captions)]
+            msgs = await self._call(lambda: self.client.send_file(
+                entity, files, caption=captions,
+                reply_to=media_plans[0].reply_to_target_message_id))
+            msg_list = msgs if isinstance(msgs, list) else [msgs]
+            for plan, m in zip(media_plans, msg_list):
+                out[plan.source_message_id] = m.id
+            # 返回少于成员:剩余成员退回逐条发送,不丢内容
+            for plan in media_plans[len(msg_list):]:
+                out[plan.source_message_id] = await send_one(plan)
+        if fwd_plans:
+            # forward 模式:整组转发,TG 还原成相册
+            msgs = await self._call(lambda: self.client.forward_messages(
+                fwd_plans[0].target_chat_id,
+                [p.source_message_id for p in fwd_plans],
+                from_peer=fwd_plans[0].source_chat_id))
+            msg_list = msgs if isinstance(msgs, list) else [msgs]
+            for plan, m in zip(fwd_plans, msg_list):
+                out[plan.source_message_id] = m.id
+            for plan in fwd_plans[len(msg_list):]:
+                out[plan.source_message_id] = await send_one(plan)
+        for plan in solo_plans:
+            out[plan.source_message_id] = await send_one(plan)
+        return [out[p.source_message_id] for p in plans]
+
     async def edit(self, plan: DeliveryPlan, target_message_id: int,
                    *, fetcher: TelethonTransport | None = None) -> None:
         fetcher = fetcher or self
         src = await self._fetch_source(plan, fetcher)
         entity = await self._entity(plan.target_chat_id)
-        raw_text = getattr(src, "text", None) or ""
-        if getattr(src, "media", None) is None:
-            text = await self._transform(plan, raw_text)
-        else:
-            text = raw_text
-        file, attrs, mime = await self._media_file(src, fetcher)
+        text = await self._transform(plan, getattr(src, "text", None) or "")
+        file, attrs, mime = await self._media_file(
+            src, fetcher, plan.watermark_mode, plan.watermark_mask)
         # edit_message 不接 attributes;用原文件名已能保住媒体类型
         await self._call(lambda: self.client.edit_message(
             entity, target_message_id, text, file=file))
@@ -403,6 +594,14 @@ class TransportRouter(SendTransport):
 
     async def send(self, plan: DeliveryPlan) -> list[int]:
         return await self._for(plan).send(plan, fetcher=self._fetcher_for(plan))
+
+    async def resolve_album(self, plan: DeliveryPlan) -> list[int]:
+        return await self._for(plan).resolve_album(
+            plan, fetcher=self._fetcher_for(plan))
+
+    async def send_album(self, plans: list[DeliveryPlan]) -> list[int]:
+        return await self._for(plans[0]).send_album(
+            plans, fetcher=self._fetcher_for(plans[0]))
 
     async def edit(self, plan: DeliveryPlan, target_message_id: int) -> None:
         await self._for(plan).edit(plan, target_message_id,
@@ -492,12 +691,26 @@ def make_ingest_handler(session_factory, account_id: str, tenant_id: str,
                     await _resolve_sender_bot(message)
             for raw in _to_raws(event):
                 src_event = normalizer.normalize(raw, account_id)
-                async with session_factory() as s:
-                    await EventInboxRepository(s).ingest(
-                        src_event, tenant_id=tenant_id, project_id=project_id)
-                if control is not None and api_row_id is not None and raw.kind is EventKind.CREATE:
-                    await _report_ai_event(event, raw, control, api_row_id,
-                                           tenant_id, project_id)
+                for attempt in range(3):
+                    try:
+                        async with session_factory() as s:
+                            await EventInboxRepository(s).ingest(
+                                src_event, tenant_id=tenant_id,
+                                project_id=project_id)
+                        break
+                    except (
+                        SQLAlchemyTimeoutError, OperationalError, DBAPIError,
+                    ):
+                        if attempt == 2:
+                            raise
+                        await asyncio.sleep(0.5 if attempt == 0 else 1.5)
+                if (
+                    control is not None
+                    and api_row_id is not None
+                    and isinstance(event, events.NewMessage.Event)
+                    and raw.kind is EventKind.CREATE
+                ):
+                    _schedule_ai_notify(event, raw, control, api_row_id)
         except Exception:
             log.exception("ingest failed account=%s", account_id)
 
@@ -514,21 +727,44 @@ def _display_name(sender) -> str | None:
     return nick or getattr(sender, "username", None)
 
 
-async def _report_ai_event(event, raw, control, api_row_id: int,
-                           tenant_id: str, project_id: str) -> None:
+
+
+_AI_NOTIFY_MAX_INFLIGHT = 64
+_ai_notify_inflight: set[asyncio.Task] = set()
+_ai_notify_stats = {"dropped": 0, "failed": 0}
+_ai_notify_last_warn = 0.0
+
+
+def _ai_notify_warn(msg: str) -> None:
+    """60s 节流:控制面故障时失败/丢弃风暴不刷屏。"""
+    global _ai_notify_last_warn
+    now = time.monotonic()
+    if now - _ai_notify_last_warn >= 60:
+        _ai_notify_last_warn = now
+        log.warning("ai event notify degraded: %s", msg)
+
+
+def _schedule_ai_notify(event, raw, control, api_row_id: int) -> None:
+    """AI 事件上报改后台任务 + 有界在飞:控制面慢/挂不再阻塞 ingest;
+    在飞数满直接丢弃(best-effort),失败计数周期性进日志。"""
+    if len(_ai_notify_inflight) >= _AI_NOTIFY_MAX_INFLIGHT:
+        _ai_notify_stats["dropped"] += 1
+        _ai_notify_warn(
+            f"inflight full dropped={_ai_notify_stats['dropped']}")
+        return
+    task = asyncio.ensure_future(
+        _report_ai_event(event, raw, control, api_row_id))
+    _ai_notify_inflight.add(task)
+    task.add_done_callback(_ai_notify_inflight.discard)
+
+
+async def _report_ai_event(event, raw, control, api_row_id: int) -> None:
     """Best-effort group-message report for AI 炒群 (worker -> control plane)."""
     msg = getattr(event, "message", None)
     text = ((getattr(msg, "message", None) or "")).strip()
     if not text:
         return
     sender = getattr(msg, "sender", None)
-    key = (tenant_id, project_id, raw.chat_id, raw.message_id)
-    if key in _AI_EVENT_CLAIMED:
-        return
-    _AI_EVENT_CLAIMED[key] = None
-    _AI_EVENT_CLAIMED.move_to_end(key)
-    if len(_AI_EVENT_CLAIMED) > _AI_EVENT_CLAIMED_MAX:
-        _AI_EVENT_CLAIMED.popitem(last=False)
     name = _display_name(sender) or str(raw.sender_id or "User")
     try:
         await control.notify_ai_event({
@@ -540,9 +776,11 @@ async def _report_ai_event(event, raw, control, api_row_id: int,
             "chat_class": raw.chat_class.value,
             "sender_is_bot": bool(raw.sender_is_bot),
         })
-    except Exception:
-        log.warning("ai event notify failed", exc_info=True)
-        _AI_EVENT_CLAIMED.pop(key, None)
+    except Exception as exc:
+        _ai_notify_stats["failed"] += 1
+        _ai_notify_warn(
+            f"{exc!r} failed={_ai_notify_stats['failed']} "
+            f"dropped={_ai_notify_stats['dropped']}")
 
 
 def _sender_id(msg) -> int | None:
@@ -629,14 +867,12 @@ def _to_raws(event) -> list[RawUpdate]:
         chat_class = _chat_class(chat) if chat is not None else ChatClass.PRIVATE
         chat_id = utils.get_peer_id(msg.peer_id) if msg.peer_id else event.chat_id
         reply_to = getattr(msg, "reply_to", None)
-        kind = (EventKind.EDIT
-                if isinstance(event, events.MessageEdited.Event)
-                else EventKind.CREATE)
-        return [RawUpdate(
-            kind=kind, chat_id=chat_id, message_id=msg.id,
-            chat_class=chat_class,
-            edit_date_ts=int(msg.edit_date.timestamp())
-            if getattr(msg, "edit_date", None) else None,
+        edit_date_ts = (
+            int(msg.edit_date.timestamp())
+            if getattr(msg, "edit_date", None) else None
+        )
+        common = dict(
+            chat_id=chat_id, message_id=msg.id, chat_class=chat_class,
             content_hash=_content_hash(msg),
             grouped_id=getattr(msg, "grouped_id", None),
             reply_to_message_id=getattr(reply_to, "reply_to_msg_id", None),
@@ -645,6 +881,23 @@ def _to_raws(event) -> list[RawUpdate]:
             sender_id=_sender_id(msg),
             media_kind=_media_kind(msg),
             sender_is_bot=_sender_is_bot(msg),
+        )
+        if isinstance(event, events.MessageEdited.Event):
+            message_date = getattr(msg, "date", None)
+            if (
+                message_date is not None
+                and abs((datetime.now(UTC) - message_date).total_seconds())
+                <= _EDIT_AS_CREATE_WINDOW_S
+            ):
+                return [
+                    RawUpdate(kind=EventKind.CREATE, edit_date_ts=None, **common),
+                    RawUpdate(kind=EventKind.EDIT, edit_date_ts=edit_date_ts, **common),
+                ]
+            return [RawUpdate(
+                kind=EventKind.EDIT, edit_date_ts=edit_date_ts, **common,
+            )]
+        return [RawUpdate(
+            kind=EventKind.CREATE, edit_date_ts=edit_date_ts, **common,
         )]
     if isinstance(event, events.MessageDeleted.Event):
         chat_id = event.chat_id or 0

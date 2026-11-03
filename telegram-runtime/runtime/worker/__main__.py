@@ -39,7 +39,12 @@ async def _main() -> None:
     database_url = _env("DATABASE_URL")
     control = ControlClient(
         _env("RUNTIME_CONTROL_API"), _env("RUNTIME_WORKER_TOKEN"))
-    engine = make_engine(database_url)
+    if database_url.startswith("postgresql"):
+        engine = make_engine(
+            database_url, pool_size=15, max_overflow=15,
+            pool_timeout=30, pool_pre_ping=True)
+    else:
+        engine = make_engine(database_url)
     await create_schema(engine)
     factory = make_session_factory(engine)
 

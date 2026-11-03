@@ -107,8 +107,13 @@ class EventInbox(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
     __table_args__ = (
+        # dedup includes account: multiple listener accounts on one channel
+        # each need their own inbox copy, else first-writer wins and other
+        # accounts' rules never match
         UniqueConstraint("source_scope", "source_chat_id", "source_message_id",
-                         "kind", "revision", name="uq_event_inbox_dedup"),
+                         "kind", "revision", "account_id",
+                         name="uq_event_inbox_dedup"),
+        Index("ix_event_inbox_event_id", "event_id"),
         Index("ix_event_inbox_unprocessed", "processed", "ingest_seq"),
     )
 

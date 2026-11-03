@@ -2,6 +2,9 @@ FROM python:3.13-slim-bookworm AS build
 
 ENV PIP_NO_CACHE_DIR=1
 
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY ./requirements.txt ./requirements-runtime.txt /app/
 RUN pip install --target=/app/dependencies -r requirements.txt -r requirements-runtime.txt

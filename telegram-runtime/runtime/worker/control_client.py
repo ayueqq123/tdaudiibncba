@@ -102,9 +102,14 @@ class ControlClient:
         return self._unwrap(r)
 
     async def _post(self, path: str, body: dict[str, Any], *,
-                    http: httpx.AsyncClient | None = None) -> Any:
+                    http: httpx.AsyncClient | None = None,
+                    timeout: httpx.Timeout | None = None) -> Any:
         try:
-            r = await (http or self._http).post(path, json=body)
+            client = http or self._http
+            if timeout is None:
+                r = await client.post(path, json=body)
+            else:
+                r = await client.post(path, json=body, timeout=timeout)
         except httpx.HTTPError as exc:
             raise ControlApiError(f"transport: {exc!r}") from exc
         return self._unwrap(r)
@@ -183,7 +188,9 @@ class ControlClient:
     async def clone_transform(self, rule_id: str, text: str) -> dict[str, Any]:
         """copy 克隆发送前过变形闸:控制面按 rule_id 读实时配置做
         广告拦截+AI 改写,返回 {action: send|drop, text, reason}。"""
-        return await self._post("/ai/clone_transform", {"rule_id": rule_id, "text": text})
+        return await self._post(
+            "/ai/clone_transform", {"rule_id": rule_id, "text": text},
+            timeout=httpx.Timeout(60.0, pool=3.0, connect=5.0))
 
     async def get_candidate(self, candidate_uuid: str) -> CandidatePayload:
         d = await self._get(f"/candidates/{candidate_uuid}")

@@ -24,6 +24,7 @@ from runtime.delivery.executor import (
     DeliveryExecutor,
     DeliveryResult,
     ResultStatus,
+    TransportError,
 )
 from runtime.delivery.model import (
     ErrorClass,
@@ -64,7 +65,6 @@ _JOB_KIND_ALIAS = {
     "tombstone": PlanKind.TOMBSTONE,
 }
 
-
 def plan_from_job(job: DeliveryJob) -> DeliveryPlan:
     kind = _JOB_KIND_ALIAS.get(job.kind)
     if kind is None:
@@ -101,7 +101,7 @@ RulesProvider = Callable[[str], list[RuleSnapshot]]
 LiveProvider = Callable[[str], LiveAccount]
 PolicyProvider = Callable[[], PolicySnapshot]
 ApprovalProvider = Callable[[DeliveryJob], ApprovalRecord | None]
-PlanHintsProvider = Callable[[str, int], tuple[str | None, bool] | None]
+PlanHintsProvider = Callable[[str, int], tuple[str | None, bool, str, str | None] | None]
 
 
 class _DictMappingView(MappingView):
@@ -134,8 +134,9 @@ class RunnerDeps:
     live: LiveProvider
     policy: PolicyProvider
     approvals: ApprovalProvider = lambda _job: None
-    # (rule_id, rule_version) -> (fetch_account_id, transform):池模式下投递 job
-    # 不存这两个字段,发送时从监听号的规则缓存找回;查不到=None(单号旧行为)
+    # (rule_id, rule_version) -> (fetch_account_id, transform, watermark_mode,
+    # watermark_mask):池模式下投递 job 不存这些字段,发送时从监听号的规则缓存
+    # 找回;查不到=None(单号旧行为)
     plan_hints: PlanHintsProvider = lambda _rid, _ver: None
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     clock: Callable[[], float] = time.time
@@ -191,14 +192,41 @@ class AccountRunner:
             if job is None:
                 return None
             attempt_no = job.attempt_count
-            plan = plan_from_job(job)
-            hints = d.plan_hints(plan.rule_id, plan.rule_version)
-            if hints is not None:
-                plan = dc_replace(
-                    plan,
-                    fetch_account_id=hints[0] or plan.account_id,
+            raw_plan = plan_from_job(job)
+            is_grouped_send = (
+                raw_plan.kind is PlanKind.SEND
+                and raw_plan.grouped_id is not None
+            )
+            if is_grouped_send:
+                mapped_ids = await MappingRepository(
+                    s).find_target_message_ids(
+                        job.route_id, job.source_scope,
+                        job.source_chat_id, job.source_message_id)
+                if mapped_ids:
+                    if await jobs.transition(job.id, "leased", "sending"):
+                        await self._record(
+                            jobs, job, attempt_no,
+                            DeliveryResult(
+                                plan=raw_plan,
+                                status=ResultStatus.SUCCEEDED,
+                            ))
+                    return job.id
+
+            hints = d.plan_hints(raw_plan.rule_id, raw_plan.rule_version)
+            plan = raw_plan
+
+            def with_hints(p: DeliveryPlan) -> DeliveryPlan:
+                if hints is None:
+                    return p
+                return dc_replace(
+                    p,
+                    fetch_account_id=hints[0] or p.account_id,
                     transform=hints[1],
+                    watermark_mode=hints[2],
+                    watermark_mask=hints[3],
                 )
+
+            plan = with_hints(plan)
 
             live = d.live(self.account_id)
             decision = check(
@@ -226,6 +254,84 @@ class AccountRunner:
                 return job.id
 
             await jobs.transition(job.id, "leased", "sending")
+
+            if is_grouped_send and not plan.requires_approval:
+                try:
+                    member_ids = sorted(set(
+                        await d.executor.resolve_album(plan)))
+                except TransportError as exc:
+                    await self._record(
+                        jobs, job, attempt_no,
+                        DeliveryResult(
+                            plan=plan, status=ResultStatus.RETRYABLE,
+                            error_class=ErrorClass.TRANSIENT,
+                            error_detail=exc.detail))
+                    return job.id
+
+                if (len(member_ids) > 1
+                        and plan.source_message_id in member_ids):
+                    album_jobs: list[DeliveryJob] = []
+                    for sib in await jobs.claim_album_siblings(
+                            job, worker_generation=self.generation):
+                        if await jobs.transition(sib.id, "leased", "sending"):
+                            album_jobs.append(sib)
+
+                    jobs_by_source_id = {
+                        j.source_message_id: j for j in [job, *album_jobs]
+                    }
+                    member_ids = sorted(set(member_ids) | set(jobs_by_source_id))
+                    album_plans: list[DeliveryPlan] = []
+                    for member_id in member_ids:
+                        member_job = jobs_by_source_id.get(member_id)
+                        if member_job is None:
+                            member_plan = dc_replace(
+                                plan, source_message_id=member_id,
+                                payload_ref=None)
+                        else:
+                            member_plan = with_hints(
+                                plan_from_job(member_job))
+                        album_plans.append(member_plan)
+
+                    try:
+                        result = await d.executor.execute_album(
+                            album_plans, live=live, policy=d.policy(),
+                            approval=d.approvals(job),
+                            expected_generation=self.generation,
+                            tenant_id=job.tenant_id, project_id=job.project_id,
+                            now=d.clock())
+                    except Exception as exc:  # noqa: BLE001 — 执行层异常必须落库,否则 job 永远卡 sending
+                        result = DeliveryResult(
+                            plan=plan, status=ResultStatus.UNCERTAIN,
+                            error_class=ErrorClass.RESULT_UNKNOWN,
+                            error_detail=f"executor error: {exc}"[:300])
+
+                    for member_job in [job, *album_jobs]:
+                        member_index = member_ids.index(
+                            member_job.source_message_id)
+                        per = dc_replace(
+                            result,
+                            target_message_ids=(
+                                result.target_message_ids[
+                                    member_index:member_index + 1]
+                                if member_index < len(result.target_message_ids)
+                                else ()))
+                        await self._record(
+                            jobs, member_job, member_job.attempt_count, per)
+
+                    if result.status is ResultStatus.SUCCEEDED:
+                        mapping_repo = MappingRepository(s)
+                        for member_index, member_plan in enumerate(album_plans):
+                            if member_plan.source_message_id in jobs_by_source_id:
+                                continue
+                            if member_index >= len(result.target_message_ids):
+                                continue
+                            await mapping_repo.record(
+                                member_plan,
+                                result.target_message_ids[member_index],
+                                tenant_id=job.tenant_id,
+                                project_id=job.project_id,
+                                job_id=None)
+                    return job.id
 
             target_ids: list[int] | None = None
             if plan.kind in (PlanKind.EDIT, PlanKind.DELETE,

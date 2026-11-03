@@ -88,6 +88,8 @@ def rules_from_snapshot(
     sender_uuids = tuple(u for u in (row.get("sender_account_uuids") or []) if u and u not in dead)
     route_sender_uuids = row.get("route_sender_account_uuids") or {}
     transform = bool(rule.get("transform"))
+    watermark_mode = str(rule.get("watermark_mode") or "off")
+    watermark_mask = rule.get("watermark_mask")
     out: list[RuleSnapshot] = []
     for t in snap.get("targets") or []:
         route_id = str(t["route_id"])
@@ -117,6 +119,8 @@ def rules_from_snapshot(
                 filters=(t.get("filters") or {},),
                 sender_account_ids=route_sender_ids,
                 transform=transform,
+                watermark_mode=watermark_mode,
+                watermark_mask=watermark_mask,
             ))
     return out
 
@@ -235,7 +239,8 @@ class WorkerHostMain:
                 TelethonTransport(
                     session.client, a.account_id,
                     self.registry, self.resolver,
-                    status_cb=lambda st, er, _a=a: self._on_status(_a, st, er)))
+                    status_cb=lambda st, er, _a=a: self._on_status(_a, st, er),
+                    session_factory=self._session_factory))
             await self._refresh_rules(a)
             register_membership_watch(
                 session,
@@ -349,8 +354,8 @@ class WorkerHostMain:
 
     # ---------- rules / commands ----------
 
-    def _plan_hints(self, rule_id: str, rule_version: int) -> tuple[str | None, bool] | None:
-        """发送时找回投递 job 未持久化的 fetch_account_id/transform:扫所有账号的
+    def _plan_hints(self, rule_id: str, rule_version: int) -> tuple[str | None, bool, str, str | None] | None:
+        """发送时找回投递 job 未持久化的 fetch_account_id/transform/watermark:扫所有账号的
         规则缓存命中该 rule_id(版本漂移时取最新)。规则只缓存在监听号名下。"""
         best: RuleSnapshot | None = None
         for snaps in self._rules_cache.values():
@@ -361,7 +366,7 @@ class WorkerHostMain:
                     best = s
         if best is None:
             return None
-        return best.account_id, best.transform
+        return best.account_id, best.transform, best.watermark_mode, best.watermark_mask
 
     async def _refresh_rules(self, a: Assignment) -> None:
         try:

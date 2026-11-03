@@ -47,6 +47,8 @@ class SendTransport(Protocol):
     """The seam to Telethon/telemirror send paths — and to FakeTransport in tests."""
 
     async def send(self, plan: DeliveryPlan) -> list[int]: ...
+    async def resolve_album(self, plan: DeliveryPlan) -> list[int]: ...
+    async def send_album(self, plans: list[DeliveryPlan]) -> list[int]: ...
     async def edit(self, plan: DeliveryPlan, target_message_id: int) -> None: ...
     async def delete(self, plan: DeliveryPlan, target_message_ids: list[int]) -> None: ...
 
@@ -88,6 +90,9 @@ _ERROR_CLASS_MAP = {
 class DeliveryExecutor:
     def __init__(self, transport: SendTransport):
         self._transport = transport
+
+    async def resolve_album(self, plan: DeliveryPlan) -> list[int]:
+        return await self._transport.resolve_album(plan)
 
     async def execute(
         self,
@@ -136,6 +141,52 @@ class DeliveryExecutor:
                                       target_message_ids=tuple(target_message_ids or ()),
                                       decision=decision)
             raise ValueError(f"unknown plan kind: {plan.kind}")
+        except TransportError as exc:
+            err_class = _ERROR_CLASS_MAP[exc.kind]
+            status = {
+                ErrorClass.FLOOD_WAIT: ResultStatus.RETRYABLE,
+                ErrorClass.TRANSIENT: ResultStatus.RETRYABLE,
+                ErrorClass.PERMISSION_BLOCKED: ResultStatus.BLOCKED,
+                ErrorClass.FILTERED: ResultStatus.FAILED,
+                ErrorClass.CONTENT_INVALID: ResultStatus.FAILED,
+                ErrorClass.RESULT_UNKNOWN: ResultStatus.UNCERTAIN,
+                ErrorClass.AUTH_DEAD: ResultStatus.FAILED,
+            }[err_class]
+            return DeliveryResult(plan=plan, status=status, error_class=err_class,
+                                  error_detail=exc.detail,
+                                  flood_wait_until=exc.flood_wait_until,
+                                  decision=decision)
+
+    async def execute_album(
+        self,
+        plans: list[DeliveryPlan],
+        *,
+        live: LiveAccount,
+        policy: PolicySnapshot,
+        approval: ApprovalRecord | None,
+        expected_generation: int,
+        tenant_id: str,
+        project_id: str,
+        now: float,
+    ) -> DeliveryResult:
+        """同 grouped_id 的一组 SEND plan 合并成一条相册消息一次发出。
+        结果按 plans[0] 出一份;target_message_ids 与 plans 同序对应。"""
+        plan = plans[0]
+        decision = check(
+            PolicyCheckable(
+                account_id=plan.account_id, rule_id=plan.rule_id, route_id=plan.route_id,
+                tenant_id=tenant_id, project_id=project_id,
+                expected_generation=expected_generation,
+                requires_approval=plan.requires_approval, content_hash=plan.payload_hash,
+            ),
+            live, policy, approval, now=now,
+        )
+        if decision is not Decision.ALLOW:
+            return DeliveryResult(plan=plan, status=ResultStatus.POLICY_DENIED, decision=decision)
+        try:
+            ids = await self._transport.send_album(plans)
+            return DeliveryResult(plan=plan, status=ResultStatus.SUCCEEDED,
+                                  target_message_ids=tuple(ids), decision=decision)
         except TransportError as exc:
             err_class = _ERROR_CLASS_MAP[exc.kind]
             status = {
