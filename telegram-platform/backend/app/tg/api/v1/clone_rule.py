@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, Request
 
 from backend.app.tg.schema.clone_rule import (
+    CloneTargetBatchParam,
     CloneTargetParam,
     CreateCloneRuleParam,
     GetCloneRuleDetail,
@@ -38,8 +39,12 @@ async def get_rules(
     request: Request,
     tenant_id: Annotated[int | None, Query(description='租户 ID')] = None,
     project_id: Annotated[int | None, Query(description='项目 ID')] = None,
+    with_targets: Annotated[bool, Query(description='是否附带目标路线')] = False,
+    kind: Annotated[str | None, Query(description='规则类型(group/channel)')] = None,
 ) -> ResponseSchemaModel[list[GetCloneRuleDetail]]:
-    data = await clone_rule_service.get_all(db=db, request=request, tenant_id=tenant_id, project_id=project_id)
+    data = await clone_rule_service.get_all(
+        db=db, request=request, tenant_id=tenant_id, project_id=project_id, with_targets=with_targets, kind=kind
+    )
     return response_base.success(data=data)
 
 
@@ -83,6 +88,21 @@ async def add_target(
 ) -> ResponseModel:
     await clone_rule_service.add_target(db=db, request=request, rule_id=pk, obj=obj)
     return response_base.success()
+
+
+@router.post(
+    '/{pk}/targets/batch',
+    summary='批量添加规则目标(一次进群,逐条返回结果)',
+    dependencies=[Depends(RequestPermission('tg:rule:edit')), DependsRBAC],
+)
+async def add_targets_batch(
+    db: CurrentSessionTransaction,
+    request: Request,
+    pk: Annotated[int, Path(description='规则 ID')],
+    obj: CloneTargetBatchParam,
+) -> ResponseModel:
+    data = await clone_rule_service.add_targets_batch(db=db, request=request, rule_id=pk, routes=obj.routes)
+    return response_base.success(data=data)
 
 
 @router.post(

@@ -49,7 +49,11 @@ class OperaLogMiddleware(BaseHTTPMiddleware):
         except AttributeError:
             username = None
 
-        should_log_opera = path.startswith(settings.FASTAPI_API_V1_PATH) and path not in settings.OPERA_LOG_PATH_EXCLUDE
+        should_log_opera = (
+            path.startswith(settings.FASTAPI_API_V1_PATH)
+            and path not in settings.OPERA_LOG_PATH_EXCLUDE
+            and not any(path.startswith(p) for p in settings.OPERA_LOG_PATH_PREFIX_EXCLUDE)
+        )
 
         try:
             response = await call_next(request)

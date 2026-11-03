@@ -2,6 +2,7 @@ from datetime import datetime
 
 import sqlalchemy as sa
 
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.common.model import Base, TimeZone, id_key
@@ -213,6 +214,9 @@ class TgAiGroup(Base):
     last_real_message_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近真实消息时间(克隆件不计)')
     last_warmup_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近暖场时间')
     remark: Mapped[str | None] = mapped_column(sa.String(255), default=None)
+    ai_provider_id: Mapped[int | None] = mapped_column(
+        sa.BigInteger, default=None, comment='AI 模型配置池ID(空=用群内旧配置)'
+    )
 
     __table_args__ = (
         sa.UniqueConstraint('tenant_id', 'project_id', 'chat_id', 'topic_id', name='uq_tg_ai_group_scope'),
@@ -275,3 +279,59 @@ class TgAiPrivateReply(Base):
     forward_chat_id: Mapped[int | None] = mapped_column(sa.BigInteger, default=None, comment='转发到的 chat_id')
 
     __table_args__ = ({'comment': 'TG AI 私信自动回复表'},)
+
+
+class TgAiProvider(Base):
+    """统一 AI 模型配置池:base_url/model/key 加密落库,炒群绑定与克隆/搬运规则共用引用。"""
+
+    __tablename__ = 'tg_ai_provider'
+
+    id: Mapped[id_key] = mapped_column(init=False)
+    uuid: Mapped[str] = mapped_column(init=False, default_factory=uuid4_str, unique=True)
+    tenant_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='租户ID')
+    project_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='项目ID')
+    name: Mapped[str] = mapped_column(sa.String(64), comment='配置名')
+    base_url: Mapped[str] = mapped_column(sa.String(255), comment='OpenAI 兼容 base_url')
+    provider_model: Mapped[str | None] = mapped_column(sa.String(128), default=None, comment='模型名')
+    provider_key_enc: Mapped[str | None] = mapped_column(sa.String(1024), default=None, comment='API key(加密)')
+    extra_body: Mapped[dict | None] = mapped_column(
+        JSONB, default=None, nullable=True, comment='附加请求参数'
+    )
+    status: Mapped[str] = mapped_column(sa.String(20), default='active', index=True)
+    remark: Mapped[str | None] = mapped_column(sa.String(255), default=None)
+
+    __table_args__ = (
+        sa.UniqueConstraint('tenant_id', 'project_id', 'name', name='uq_tg_ai_provider_name'),
+        {'comment': 'TG AI 模型配置池表'},
+    )
+
+    @property
+    def has_provider_key(self) -> bool:
+        return bool(self.provider_key_enc)
+
+
+class TgAiGatewayToken(Base):
+    """外部项目调用 AI 网关的凭证。"""
+
+    __tablename__ = 'tg_ai_gateway_token'
+
+    id: Mapped[id_key] = mapped_column(init=False)
+    tenant_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='租户ID')
+    project_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='项目ID')
+    name: Mapped[str] = mapped_column(sa.String(64), comment='令牌名')
+    token_hash: Mapped[str] = mapped_column(sa.CHAR(64), comment='令牌 SHA-256')
+    token_prefix: Mapped[str] = mapped_column(sa.String(16), comment='令牌前缀')
+    ai_provider_id: Mapped[int] = mapped_column(
+        sa.BigInteger, sa.ForeignKey('tg_ai_provider.id'), index=True, comment='绑定 AI 配置ID'
+    )
+    status: Mapped[str] = mapped_column(
+        sa.String(20), default='active', server_default='active', index=True, comment='active/disabled'
+    )
+    call_count: Mapped[int] = mapped_column(sa.Integer, default=0, server_default='0', comment='调用次数')
+    last_used_time: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最后调用时间')
+    remark: Mapped[str | None] = mapped_column(sa.String(255), default=None, comment='备注')
+
+    __table_args__ = (
+        sa.UniqueConstraint('token_hash', name='uq_tg_ai_gateway_token_hash'),
+        {'comment': 'TG AI 网关令牌表'},
+    )

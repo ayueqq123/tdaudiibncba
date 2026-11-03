@@ -36,7 +36,10 @@ class TgTelegramAccount(Base):
         comment='观测状态(imported_quarantine/verified/active/reauth_required/revoked/disabled)',
     )
     usage: Mapped[str | None] = mapped_column(
-        sa.String(16), default=None, index=True, comment='用途(ai/clone;NULL=未分组)'
+        sa.String(16), default=None, index=True, comment='首个分组(兼容旧列,与 usages[0] 同步)'
+    )
+    usages: Mapped[list | None] = mapped_column(
+        sa.JSON, default=None, comment='账号分组列表(ai/clone,可多选);NULL/[]=未分组'
     )
     last_seen_at: Mapped[datetime | None] = mapped_column(TimeZone, default=None, comment='最近一次在线探测时间')
     last_error: Mapped[str | None] = mapped_column(sa.String(512), default=None, comment='最近错误摘要')

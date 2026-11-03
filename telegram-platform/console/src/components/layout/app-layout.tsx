@@ -9,6 +9,7 @@ import {
   Radio,
   Layers,
   GitBranch,
+  Repeat,
   Truck,
   ShieldCheck,
   Bot,
@@ -18,6 +19,7 @@ import {
   X,
   BookOpen,
   Siren,
+  Cpu,
 } from 'lucide-react'
 import { useUnhandledAlertCount } from '@/lib/alerts'
 import { fetchLogout, sysApi } from '@/lib/api'
@@ -44,6 +46,7 @@ const GROUPS: { label: string; items: NavItem[] }[] = [
       { to: '/accounts', icon: Radio, label: 'TG 账号' },
       { to: '/imports', icon: Layers, label: 'Session 导入' },
       { to: '/rules', icon: GitBranch, label: 'Clone 规则' },
+      { to: '/channel-clone', icon: Repeat, label: '频道搬运' },
       { to: '/deliveries', icon: Truck, label: '投递任务' },
       { to: '/alerts', icon: Siren, label: '异常告警' },
     ],
@@ -58,6 +61,7 @@ const GROUPS: { label: string; items: NavItem[] }[] = [
   {
     label: '设置',
     items: [
+      { to: '/ai-providers', icon: Cpu, label: 'AI 设置' },
       { to: '/users', icon: Users, label: '用户', admin: true },
       { to: '/guide', icon: BookOpen, label: '新手教程' },
       { to: '/commands', icon: Terminal, label: '命令记录' },

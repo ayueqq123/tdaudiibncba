@@ -24,6 +24,7 @@ class TgCloneRule(Base):
     account_id: Mapped[int] = mapped_column(sa.BigInteger, index=True, comment='监听账号ID(进源群收消息)')
     name: Mapped[str] = mapped_column(sa.String(128), comment='规则名称')
     mode: Mapped[str] = mapped_column(sa.String(16), default='copy', comment='模式(copy/forward)')
+    kind: Mapped[str] = mapped_column(sa.String(16), default='group', index=True, comment='规则类型(group 群搬运/channel 频道搬运)')
     sync_edit: Mapped[bool] = mapped_column(default=True, comment='是否同步编辑')
     sync_delete: Mapped[bool] = mapped_column(default=True, comment='是否同步删除')
     enabled: Mapped[bool] = mapped_column(default=True, comment='是否启用')
@@ -34,8 +35,20 @@ class TgCloneRule(Base):
     ai_rewrite: Mapped[str] = mapped_column(sa.String(16), default='off', comment='克隆文本改写(off/light/strong)')
     ad_block: Mapped[str] = mapped_column(sa.String(16), default='off', comment='广告拦截(off/keyword/ai)')
     ad_keywords: Mapped[list] = mapped_column(sa.JSON, default_factory=list, comment='广告关键词列表')
+    watermark_mode: Mapped[str] = mapped_column(
+        sa.String(16), default='off', comment='媒体去水印(off/auto/mask)'
+    )
+    watermark_mask: Mapped[str | None] = mapped_column(
+        sa.String(64), default=None, comment='固定水印区域 x,y,w,h(0-1 比例坐标)'
+    )
     ai_group_id: Mapped[int | None] = mapped_column(
         sa.BigInteger, default=None, comment='复用的 AI 群配置(模型 key 来源;空=按目标群自动匹配)'
+    )
+    ai_provider_id: Mapped[int | None] = mapped_column(
+        sa.BigInteger, default=None, comment='AI 模型配置池ID(优先于 ai_group_id;空=回落群匹配)'
+    )
+    ai_prompt: Mapped[str | None] = mapped_column(
+        sa.String(2000), default=None, comment='自定义 AI 改写提示词;空=默认提示词'
     )
     remark: Mapped[str | None] = mapped_column(sa.String(512), default=None, comment='备注')
     sender_account_ids: Mapped[list] = mapped_column(

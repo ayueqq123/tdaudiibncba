@@ -3,6 +3,7 @@ import { ArrowLeft, Pause, Pencil, Play, Plus, RefreshCw, Save, Sparkles, Square
 import { toast } from 'sonner'
 import {
   ApiError,
+  hasGroup,
   tgApi,
   type AiGroup,
   type AiGroupMessage,
@@ -11,6 +12,7 @@ import {
   type AiPersona,
   type AiPrivateReply,
   type AiScript,
+  type AiProvider,
   type TgAccount,
 } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -75,6 +77,7 @@ interface GroupForm {
   join_account_id: string
   topic_id: string
   theme: string
+  ai_provider_id: string
   base_url: string
   provider_model: string
   provider_key: string
@@ -103,6 +106,7 @@ const GROUP_DEFAULT: GroupForm = {
   join_account_id: '',
   topic_id: '',
   theme: '',
+  ai_provider_id: 'legacy',
   base_url: 'https://api.deepseek.com/v1',
   provider_model: 'deepseek-chat',
   provider_key: '',
@@ -131,6 +135,7 @@ const toForm = (g: AiGroup): GroupForm => ({
   join_account_id: '',
   topic_id: g.topic_id ? String(g.topic_id) : '',
   theme: g.theme || '',
+  ai_provider_id: g.ai_provider_id ? String(g.ai_provider_id) : 'legacy',
   base_url: g.base_url,
   provider_model: g.provider_model || '',
   provider_key: '',
@@ -158,6 +163,7 @@ const num = (s: string, d = 0) => (s.trim() === '' || Number.isNaN(Number(s)) ? 
 const formPayload = (f: GroupForm) => ({
   name: f.name.trim(),
   theme: f.theme.trim() || null,
+  ai_provider_id: f.ai_provider_id && f.ai_provider_id !== 'legacy' ? +f.ai_provider_id : null,
   base_url: f.base_url.trim(),
   provider_model: f.provider_model.trim() || null,
   provider_key: f.provider_key.trim() || null,
@@ -207,6 +213,7 @@ function GroupSettings({
   setForm,
   creating,
   accounts,
+  providers,
   hasKey,
   scope,
 }: {
@@ -214,6 +221,7 @@ function GroupSettings({
   setForm: (f: GroupForm) => void
   creating: boolean
   accounts: TgAccount[]
+  providers: AiProvider[]
   hasKey: boolean
   scope?: { tenant_id: number; project_id: number } | null
 }) {
@@ -236,7 +244,7 @@ function GroupSettings({
               </SelectTrigger>
               <SelectContent>
                 {accounts
-                  .filter((a) => (!scope || (a.tenant_id === scope.tenant_id && a.project_id === scope.project_id)) && (a.usage !== 'clone' || String(a.id) === form.join_account_id))
+                  .filter((a) => (!scope || (a.tenant_id === scope.tenant_id && a.project_id === scope.project_id)) && (hasGroup(a, 'ai') || String(a.id) === form.join_account_id))
                   .map((a) => (
                     <SelectItem key={a.id} value={String(a.id)}>
                       {accLabel(a)}
@@ -259,17 +267,38 @@ function GroupSettings({
       </Section>
 
       <Section title="模型">
-        <Field label="接口地址(OpenAI 兼容)">
-          <Input value={form.base_url} onChange={set('base_url')} />
-        </Field>
-        <Field label="模型名">
-          <Input value={form.provider_model} onChange={set('provider_model')} />
-        </Field>
         <div className="sm:col-span-2">
-          <Field label="API Key" hint={hasKey ? '已保存,留空不更换' : '加密保存,不会回显'}>
-            <Input type="password" value={form.provider_key} onChange={set('provider_key')} placeholder={hasKey ? '••••••(已保存)' : 'sk-...'} />
+          <Field label="AI 模型(在「AI 设置」页管理)" hint={!providers.length ? '先到 设置 → AI 设置 添加模型配置' : undefined}>
+            <Select value={form.ai_provider_id} onValueChange={(v) => setForm({ ...form, ai_provider_id: v })}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {hasKey && <SelectItem value="legacy">使用本群旧配置</SelectItem>}
+                {providers.map((p) => (
+                  <SelectItem key={p.id} value={String(p.id)}>
+                    {p.name} · {p.provider_model}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </Field>
         </div>
+        {form.ai_provider_id === 'legacy' && (
+          <>
+            <Field label="接口地址(OpenAI 兼容)">
+              <Input value={form.base_url} onChange={set('base_url')} />
+            </Field>
+            <Field label="模型名">
+              <Input value={form.provider_model} onChange={set('provider_model')} />
+            </Field>
+            <div className="sm:col-span-2">
+              <Field label="API Key" hint={hasKey ? '已保存,留空不更换' : '加密保存,不会回显'}>
+                <Input type="password" value={form.provider_key} onChange={set('provider_key')} placeholder={hasKey ? '••••••(已保存)' : 'sk-...'} />
+              </Field>
+            </div>
+          </>
+        )}
       </Section>
 
       <Section title="发言节奏">
@@ -376,6 +405,7 @@ const TABS: { key: Tab; label: string }[] = [
 export default function AiBindingsPage() {
   const [groups, setGroups] = useState<AiGroup[]>([])
   const [accounts, setAccounts] = useState<TgAccount[]>([])
+  const [providers, setProviders] = useState<AiProvider[]>([])
   const [loading, setLoading] = useState(false)
   const [current, setCurrent] = useState<AiGroup | null>(null)
   const [creating, setCreating] = useState(false)
@@ -389,11 +419,17 @@ export default function AiBindingsPage() {
     const seq = ++loadSeq.current
     setLoading(true)
     try {
-      const [g, a, w] = await Promise.all([tgApi.aiGroups(), tgApi.accounts(), tgApi.ensureWorkspace()])
+      const [g, a, w, p] = await Promise.all([
+        tgApi.aiGroups(),
+        tgApi.accounts(),
+        tgApi.ensureWorkspace(),
+        tgApi.aiProviders().catch(() => []),
+      ])
       if (seq !== loadSeq.current) return
       setGroups(g)
       setAccounts(a)
       setWs(w)
+      setProviders(p)
       setCurrent((c) => (c ? (g.find((x) => x.id === c.id) ?? null) : c))
     } catch (e) {
       if (seq === loadSeq.current) toast.error(errMsg(e, '加载失败'))
@@ -470,6 +506,7 @@ export default function AiBindingsPage() {
         key={current.id}
         group={current}
         accounts={accounts}
+        providers={providers}
         onBack={() => setCurrent(null)}
         onToggle={() => void toggle(current)}
         onDelete={() => void remove(current)}
@@ -496,7 +533,10 @@ export default function AiBindingsPage() {
           <Button
             size="sm"
             onClick={() => {
-              setForm(GROUP_DEFAULT)
+              setForm({
+                ...GROUP_DEFAULT,
+                ai_provider_id: providers[0] ? String(providers[0].id) : 'legacy',
+              })
               setCreating(true)
             }}
           >
@@ -547,7 +587,12 @@ export default function AiBindingsPage() {
                   并发 {g.reply_min}-{g.reply_max}
                 </Badge>
                 {g.auto_approve && <Badge variant="outline">自动审批</Badge>}
-                {!g.has_provider_key && <Badge variant="destructive">未填 Key</Badge>}
+                {!g.has_provider_key && !g.ai_provider_id && <Badge variant="destructive">未填 Key</Badge>}
+                {g.ai_provider_id && (
+                  <Badge variant="outline">
+                    {providers.find((p) => p.id === g.ai_provider_id)?.name || `模型 #${g.ai_provider_id}`}
+                  </Badge>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -559,7 +604,7 @@ export default function AiBindingsPage() {
           <DialogHeader>
             <DialogTitle>新建炒群任务</DialogTitle>
           </DialogHeader>
-          <GroupSettings form={form} setForm={setForm} creating accounts={accounts} hasKey={false} scope={ws} />
+          <GroupSettings form={form} setForm={setForm} creating accounts={accounts} providers={providers} hasKey={false} scope={ws} />
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => setCreating(false)}>
               取消
@@ -583,6 +628,7 @@ export default function AiBindingsPage() {
 function GroupDetail({
   group,
   accounts,
+  providers,
   onBack,
   onToggle,
   onDelete,
@@ -590,6 +636,7 @@ function GroupDetail({
 }: {
   group: AiGroup
   accounts: TgAccount[]
+  providers: AiProvider[]
   onBack: () => void
   onToggle: () => void
   onDelete: () => void
@@ -670,7 +717,7 @@ function GroupDetail({
           onChanged()
         }} />
       )}
-      {tab === 'settings' && <SettingsTab group={group} accounts={accounts} onSaved={onChanged} />}
+      {tab === 'settings' && <SettingsTab group={group} accounts={accounts} providers={providers} onSaved={onChanged} />}
       {tab === 'chat' && <ChatTab group={group} members={members} />}
       {tab === 'runs' && <RunsTab group={group} />}
       {tab === 'scripts' && <ScriptsTab group={group} members={members} />}
@@ -678,7 +725,7 @@ function GroupDetail({
   )
 }
 
-function SettingsTab({ group, accounts, onSaved }: { group: AiGroup; accounts: TgAccount[]; onSaved: () => void }) {
+function SettingsTab({ group, accounts, providers, onSaved }: { group: AiGroup; accounts: TgAccount[]; providers: AiProvider[]; onSaved: () => void }) {
   const [form, setForm] = useState<GroupForm>(toForm(group))
   const [saving, setSaving] = useState(false)
   const save = async () => {
@@ -700,7 +747,7 @@ function SettingsTab({ group, accounts, onSaved }: { group: AiGroup; accounts: T
   }
   return (
     <div className="space-y-3">
-      <GroupSettings form={form} setForm={setForm} creating={false} accounts={accounts} hasKey={group.has_provider_key} scope={{ tenant_id: group.tenant_id, project_id: group.project_id }} />
+      <GroupSettings form={form} setForm={setForm} creating={false} accounts={accounts} providers={providers} hasKey={group.has_provider_key} scope={{ tenant_id: group.tenant_id, project_id: group.project_id }} />
       <div className="flex justify-end">
         <Button onClick={() => void save()} disabled={saving}>
           <Save className="mr-1 h-4 w-4" />
@@ -985,7 +1032,7 @@ function MembersTab({
               <div className="sm:col-span-2">
                 <Field label="账号(可多选,共用下方人设)" hint={group.chat_ref ? '添加时会自动用链接进群' : undefined}>
                   <div className="max-h-44 overflow-y-auto rounded-md border p-1">
-                    {free.filter((a) => a.usage !== 'clone' || form.account_ids.includes(String(a.id))).map((a) => {
+                    {free.filter((a) => hasGroup(a, 'ai') || form.account_ids.includes(String(a.id))).map((a) => {
                       const id = String(a.id)
                       const checked = form.account_ids.includes(id)
                       return (
@@ -1432,7 +1479,7 @@ function PrivateReplyDialog({
                 <SelectValue placeholder="选择账号" />
               </SelectTrigger>
               <SelectContent>
-                {accounts.filter((a) => a.usage !== 'clone' || String(a.id) === accountId).map((a) => (
+                {accounts.filter((a) => hasGroup(a, 'ai') || String(a.id) === accountId).map((a) => (
                   <SelectItem key={a.id} value={String(a.id)}>
                     {accLabel(a)}
                     {rows.some((r) => r.account_id === a.id && r.enabled) ? '(已开启)' : ''}

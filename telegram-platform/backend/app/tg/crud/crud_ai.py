@@ -8,9 +8,11 @@ from backend.app.tg.model.ai import (
     TgAiBinding,
     TgAiCallback,
     TgAiConversation,
+    TgAiGatewayToken,
     TgAiGroup,
     TgAiPersona,
     TgAiPrivateReply,
+    TgAiProvider,
     TgAiRun,
     TgAiScript,
 )
@@ -164,7 +166,23 @@ class _ScopedCRUD(CRUDPlus[T], Generic[T]):
         return await self.select_models(db, deleted=0, **filters, **extra)
 
 
+class CRUDAiGatewayToken(CRUDPlus[TgAiGatewayToken]):
+    async def get(self, db: AsyncSession, pk: int) -> TgAiGatewayToken | None:
+        return await self.select_model_by_column(db, id=pk, deleted=0)
+
+    async def get_by_hash(self, db: AsyncSession, token_hash: str) -> TgAiGatewayToken | None:
+        return await self.select_model_by_column(db, token_hash=token_hash, deleted=0)
+
+    async def get_all(
+        self, db: AsyncSession, tenant_id: int | None = None, project_id: int | None = None
+    ) -> Sequence[TgAiGatewayToken]:
+        filters = {k: v for k, v in {'tenant_id': tenant_id, 'project_id': project_id}.items() if v is not None}
+        return await self.select_models(db, deleted=0, **filters)
+
+
 ai_group_dao: _ScopedCRUD[TgAiGroup] = _ScopedCRUD(TgAiGroup)
 ai_persona_dao: _ScopedCRUD[TgAiPersona] = _ScopedCRUD(TgAiPersona)
 ai_script_dao: _ScopedCRUD[TgAiScript] = _ScopedCRUD(TgAiScript)
 ai_private_reply_dao: _ScopedCRUD[TgAiPrivateReply] = _ScopedCRUD(TgAiPrivateReply)
+ai_provider_dao: _ScopedCRUD[TgAiProvider] = _ScopedCRUD(TgAiProvider)
+ai_gateway_token_dao: CRUDAiGatewayToken = CRUDAiGatewayToken(TgAiGatewayToken)

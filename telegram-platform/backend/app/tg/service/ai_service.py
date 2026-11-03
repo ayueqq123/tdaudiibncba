@@ -3,11 +3,14 @@ import hashlib
 import json
 import random
 import re
+import secrets
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import sqlalchemy as sa
+
+from fastapi import Request
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,24 +20,43 @@ from backend.app.tg.crud.crud_ai import (
     ai_binding_dao,
     ai_callback_dao,
     ai_conversation_dao,
+    ai_gateway_token_dao,
     ai_group_dao,
     ai_private_reply_dao,
+    ai_provider_dao,
     ai_run_dao,
 )
 from backend.app.tg.crud.crud_approval import approval_dao, reply_candidate_dao
 from backend.app.tg.crud.crud_clone_rule import clone_rule_dao, clone_target_dao
+from backend.app.tg.crud.crud_membership import membership_dao
 from backend.app.tg.crud.crud_telegram_account import telegram_account_dao
 from backend.app.tg.metrics import tg_ai_callback_total, tg_ai_run_active, tg_ai_run_total
 from backend.app.tg.model import TgCloneRule, TgCloneTarget, TgReplyCandidate, TgTelegramAccount
-from backend.app.tg.model.ai import TgAiBinding, TgAiCallback, TgAiConversation, TgAiGroup, TgAiRun, TgAiScript
+from backend.app.tg.model.ai import (
+    TgAiBinding,
+    TgAiCallback,
+    TgAiConversation,
+    TgAiGatewayToken,
+    TgAiGroup,
+    TgAiProvider,
+    TgAiRun,
+    TgAiScript,
+)
 from backend.app.tg.schema.ai import (
     AiGroupEventParam,
     AiTriggerParam,
     CreateAiBindingParam,
     CreateAiCallbackParam,
     CreateAiConversationParam,
+    CreateAiGatewayTokenParam,
+    CreateAiGatewayTokenResult,
+    CreateAiProviderParam,
     CreateAiRunParam,
+    GetAiGatewayTokenDetail,
+    GetAiProviderDetail,
     UpdateAiBindingParam,
+    UpdateAiGatewayTokenParam,
+    UpdateAiProviderParam,
 )
 from backend.app.tg.schema.approval import CreateApprovalParam, CreateReplyCandidateParam
 from backend.app.tg.service.account_service import JOIN_ERR, check_chat_membership, join_chat_refs
@@ -47,7 +69,7 @@ from backend.app.tg.service.ai_engine import (
 from backend.app.tg.service.approval_service import ApprovalService
 from backend.common.exception import errors
 from backend.core.conf import settings
-from backend.database.db import uuid4_str
+from backend.database.db import async_db_session, uuid4_str
 from backend.database.redis import redis_client
 from backend.utils.encrypt import ItsDCipher
 from backend.utils.timezone import timezone
@@ -365,12 +387,25 @@ class AiService:
         return run.status
 
     @staticmethod
-    def _provider(binding: TgAiBinding, group: TgAiGroup | None) -> tuple[str, str | None, str | None]:
-        """成员单独配了 key+模型就用成员的,否则用群任务的。"""
-        if (binding.provider_key_enc and binding.provider_model) or group is None:
+    async def _provider(
+        db: AsyncSession, binding: TgAiBinding, group: TgAiGroup | None
+    ) -> tuple[str, str | None, str | None, dict | None]:
+        """成员单独配了 key+模型优先,否则用群关联的配置池或旧配置。"""
+        if binding.provider_key_enc and binding.provider_model:
             base = binding.base_url or (group.base_url if group else '')
-            return base, AiService._decrypt(binding.provider_key_enc), binding.provider_model
-        return group.base_url, AiService._decrypt(group.provider_key_enc), group.provider_model
+            return base, AiService._decrypt(binding.provider_key_enc), binding.provider_model, None
+        if group is not None and group.ai_provider_id:
+            prov = await ai_provider_dao.get(db, int(group.ai_provider_id))
+            if prov is not None and prov.status == 'active':
+                return (
+                    prov.base_url,
+                    AiService._decrypt(prov.provider_key_enc),
+                    prov.provider_model,
+                    prov.extra_body,
+                )
+        if group is None:
+            return binding.base_url, AiService._decrypt(binding.provider_key_enc), binding.provider_model, None
+        return group.base_url, AiService._decrypt(group.provider_key_enc), group.provider_model, None
 
     @staticmethod
     async def _member_nicks(db: AsyncSession, group: TgAiGroup | None) -> dict[int, str]:
@@ -538,14 +573,20 @@ class AiService:
     ) -> TgAiRun:
         src = run.trigger_source or {}
         mode = src.get('mode', 'reply')
-        base_url, api_key, model = AiService._provider(binding, group)
+        base_url, api_key, model, extra_body = await AiService._provider(db, binding, group)
         if mode == 'script' and not src.get('rewrite'):
             ok, out, err = True, str(src.get('script_line') or ''), None
         else:
             if not api_key or not base_url or not model:
                 return await AiService._fail_run(db, run, conv, 'provider_not_configured')
             messages = await AiService._build_messages(db, binding, group, run, sender_name, text, context, after or [])
-            ok, out, err = await openai_complete(base_url=base_url, api_key=api_key, model=model, messages=messages)
+            ok, out, err = await openai_complete(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                messages=messages,
+                extra_body=extra_body,
+            )
         await db.refresh(run, attribute_names=['status'])
         if run.status != 'pending':
             return run
@@ -747,13 +788,26 @@ class AiService:
                 return None
         return obj if isinstance(obj, dict) else None
 
+    # clone_transform 高频入口(每消息一次):规则行 60s 进程缓存,省每次查库。
+    _CLONE_RULE_CACHE: dict[int, tuple[float, Any]] = {}
+
+    @classmethod
+    async def _cached_clone_rule(cls, db: AsyncSession, rule_id: int) -> Any:
+        import time as _t
+        ent = cls._CLONE_RULE_CACHE.get(rule_id)
+        if ent and _t.monotonic() - ent[0] < 60:
+            return ent[1]
+        rule = await clone_rule_dao.get(db, rule_id)
+        cls._CLONE_RULE_CACHE[rule_id] = (_t.monotonic(), rule)
+        return rule
+
     @staticmethod
     async def clone_transform(db: AsyncSession, *, rule_id: int, text: str) -> dict:
         """克隆发送前变形闸:关键词粗拦 → AI 判广告 → AI 改写,一次模型调用完成。
 
         模型调用失败抛错,worker 侧按 TRANSIENT 重试;模型返回不可解析时放行原文
         (宁退化不误丢用户消息);广告判定为 drop。"""
-        rule = await clone_rule_dao.get(db, rule_id)
+        rule = await AiService._cached_clone_rule(db, rule_id)
         if rule is None:
             return {'action': 'send', 'text': text, 'reason': 'rule_not_found'}
         low = text.lower()
@@ -763,40 +817,118 @@ class AiService:
         need_ai = (rule.ad_block or 'off') == 'ai' or (rule.ai_rewrite or 'off') not in ('', 'off')
         if not need_ai:
             return {'action': 'send', 'text': text, 'reason': ''}
-        group = await AiService._clone_ai_group(db, rule)
-        api_key = AiService._decrypt(group.provider_key_enc) if group is not None else None
-        if group is None or not api_key or not group.provider_model:
+        # 省钱:只判广告不改写时,短文本且无广告信号的直接放行(几字表情/短句
+        # 不可能是引流广告,不必花一次模型调用)
+        if ((rule.ad_block or 'off') == 'ai'
+                and (rule.ai_rewrite or 'off') in ('', 'off')
+                and len(text.strip()) <= 10
+                and not AiService._ad_signals(text)):
+            return {'action': 'send', 'text': text, 'reason': 'short_clean'}
+        # 同规则同原文 24h 内直接复用上次结果(上百个频道常转同一条新闻)
+        ck = 'tg:clt:' + hashlib.sha256(
+            f'{rule.id}|{rule.ai_rewrite}|{rule.ad_block}|{getattr(rule, "ai_prompt", None) or ""}|{text}'
+            .encode()).hexdigest()[:32]
+        try:
+            cached = await redis_client.get(ck)
+            if cached:
+                obj = json.loads(cached)
+                if isinstance(obj, dict) and obj.get('action') == 'send':
+                    obj['reason'] = 'cache'
+                    return obj
+        except Exception:  # noqa: BLE001 — 缓存坏了不影响主链路
+            pass
+        conf = await AiService._clone_provider_conf(db, rule)
+        base_url, api_key, model, extra_body = conf if conf is not None else ('', None, None, None)
+        if not api_key or not model:
             return {'action': 'send', 'text': text, 'reason': 'no_provider'}
+        # 频道转发熔断:同一规则 AI 连续失败 >=5 次,冷却期内跳过改写/判广告直接放行
+        is_channel = (getattr(rule, 'kind', None) or '') == 'channel'
+        bypass_key = f'tg:clt:aibypass:{rule.id}'
+        fail_key = f'tg:clt:aifail:{rule.id}'
+        if is_channel:
+            try:
+                if await redis_client.get(bypass_key):
+                    if AiService._bypass_ad_hit(text):
+                        return {'action': 'drop', 'text': '', 'reason': 'bypass_ad'}
+                    return {'action': 'send', 'text': text, 'reason': 'ai_bypass'}
+            except Exception:  # noqa: BLE001 — redis 挂了不拦主链路
+                pass
         sys_prompt = AiService._transform_sys_prompt(rule)
         ok, out, err = await openai_complete(
-            base_url=group.base_url or '',
+            base_url=base_url or '',
             api_key=api_key,
-            model=group.provider_model,
+            model=model,
             messages=[{'role': 'system', 'content': sys_prompt},
                       {'role': 'user', 'content': AiService._transform_user_msg(rule, text)}],
+            extra_body=extra_body,
         )
         if not ok:
+            if is_channel:
+                try:
+                    n = await redis_client.incr(fail_key)
+                    await redis_client.expire(fail_key, 3600)
+                    if n >= 5:
+                        await redis_client.set(bypass_key, '1', ex=600)
+                        await redis_client.delete(fail_key)
+                        if AiService._bypass_ad_hit(text):
+                            return {'action': 'drop', 'text': '', 'reason': 'bypass_ad'}
+                        return {'action': 'send', 'text': text, 'reason': 'ai_bypass'}
+                except Exception:  # noqa: BLE001
+                    pass
             raise errors.ServerError(msg=f'clone_transform 模型调用失败:{err}')
+        if is_channel:
+            try:
+                await redis_client.delete(fail_key)
+            except Exception:  # noqa: BLE001
+                pass
         payload = AiService._parse_transform(out or '')
         if payload is None:
             return {'action': 'send', 'text': text, 'reason': 'unparseable'}
         if payload.get('drop'):
             return {'action': 'drop', 'text': '', 'reason': f"ai_ad:{payload.get('reason') or 'ad'}"[:60]}
         new_text = str(payload.get('text') or '').strip() or text
-        return {'action': 'send', 'text': new_text, 'reason': ''}
+        result = {'action': 'send', 'text': new_text, 'reason': ''}
+        rewrite_on = (rule.ai_rewrite or 'off') not in ('', 'off')
+        if rewrite_on and new_text == text.strip():
+            # 要求改写却原样返回:别缓存,下次还有机会改
+            return result
+        try:
+            await redis_client.set(ck, json.dumps(result, ensure_ascii=False),
+                                   ex=86400)
+        except Exception:  # noqa: BLE001
+            pass
+        return result
 
     # 发给模型的启发式信号(命中项列出,供模型参考而非硬判)
     _AD_SIGNALS = (
         ('t.me/群链接', re.compile(r't\.me/|telegram\.(me|dog)/', re.I)),
         ('@用户名', re.compile(r'@[A-Za-z][A-Za-z0-9_]{3,}')),
-        ('http链接', re.compile(r'https?://', re.I)),
-        ('站外联系方式', re.compile(r'微信|wechat|qq号|vx[:：＝=]|whatsapp|飞机号|纸飞机|TG号|tg号|tele号', re.I)),
-        ('拉人/推广话术', re.compile(r'加我|私聊|私我|pm我|联系客服|接单|直推|扶持|团队收人|副业|兼职|日结|底薪|躺赚|免费领|进群|加群|进频道|点链接|扫码', re.I)),
+        ('http链接', re.compile(r'https?://|bit\.ly|cutt\.ly|t\.co/|goo\.gl|is\.gd|tinyurl\.com', re.I)),
+        ('站外联系方式', re.compile(r'微信|wechat|qq号|qq[:：＝=]?\d{5,}|vx[:：＝=]|whatsapp|whats\s*app|飞机号|纸飞机|TG号|tg号|tele号|line[:：＝=]|蝙蝠|potato|土豆聊天|泡泡聊天', re.I)),
+        ('拉人/推广话术', re.compile(r'加我|私聊|私我|pm我|联系客服|接单|直推|扶持|团队收人|副业|兼职|日结|底薪|躺赚|免费领|进群|加群|进频道|点链接|扫码|福利|优惠|代理|招商|高返|返佣|首充|包赚|稳赚', re.I)),
+        ('博彩/盘口', re.compile(r'盘口|菠菜|棋牌|百家乐|上分|下分|赔率|六合彩|亚博|开元|开云|ag真人|电子游艺|老虎机|彩票|投注|下注|押注|洗码|返水|打鱼', re.I)),
+        ('换汇/跑分', re.compile(r'usdt|泰达币|u币|换汇|跑分|套现|代付|代充|承兑|搬砖|灰产|洗钱|代收', re.I)),
+        ('色情/办证', re.compile(r'上门服务|约炮|黄播|裸聊|援交|办证|办签证|假证|护照办理|驾照包过', re.I)),
+        ('交易所/钱包', re.compile(r'币安|binance|欧易|okx|火币|imtoken|bitget|gate\.io|抹茶', re.I)),
+        ('互推/引流话术', re.compile(r'互推|相似推荐|邀请奖励|专属邀请|邀请链接|获得曝光|赚邀请|精准找到|搜索引擎|找群|搜群|帮你找到|搜索入口', re.I)),
     )
 
     @staticmethod
     def _ad_signals(text: str) -> list[str]:
         return [name for name, rx in AiService._AD_SIGNALS if rx.search(text)]
+
+    # 熔断放行期间的硬拦信号:联系方式/拉人话术命中即判广告丢弃;
+    # 纯链接新闻(t.me/http/@)不算,避免 AI 抖动期误丢正常转发
+    _BYPASS_HARD_SIGNALS = ('站外联系方式', '拉人/推广话术', '互推/引流话术')
+
+    @staticmethod
+    def _bypass_ad_hit(text: str) -> bool:
+        if any(rx.search(text) for name, rx in AiService._AD_SIGNALS
+               if name in AiService._BYPASS_HARD_SIGNALS):
+            return True
+        # 密集 t.me 互推:一条消息 >=3 个频道链接基本是互推/引流广告
+        tme = dict(AiService._AD_SIGNALS)['t.me/群链接']
+        return len(tme.findall(text)) >= 3
 
     @staticmethod
     def _transform_user_msg(rule: TgCloneRule, text: str) -> str:
@@ -817,15 +949,27 @@ class AiService:
                 '推广机器人/频道/平台的卡片话术、刷屏式营销文案。'
                 '不是广告别误判:行情报价、砍价、担保流程问答、吐槽闲聊、表情梗、正常交易沟通'
             )
-        if rule.ai_rewrite == 'light':
+        rewrite = rule.ai_rewrite or 'off'
+        if rewrite == 'light':
             tasks.append('在保持原意和口语语气的前提下轻微改写:替换个别同义词、微调语序,长度不要变长')
-        elif rule.ai_rewrite == 'strong':
-            tasks.append('在保持原意的前提下换一种说法改写')
+        elif rewrite not in ('', 'off'):
+            tasks.append(
+                '在保持原意的前提下用不同的措辞和句式重写:替换词语、调整语序和句子结构,'
+                '保留全部事实(人名、地名、数字、时间),不添加原文没有的信息,不要照抄原句'
+            )
+        custom_prompt = (getattr(rule, 'ai_prompt', None) or '').strip()
+        if custom_prompt and rewrite not in ('', 'off'):
+            # 规则自定义要求追加在内置改写指令之后,不替换它
+            tasks.append(f'改写时额外遵守用户要求:{custom_prompt[:800]}')
+        if rewrite not in ('', 'off'):
+            tail = '否则 text 为改写后的文本,必须与原文措辞明显不同,禁止原样返回。'
+        else:
+            tail = '否则 text 原样返回。'
         return (
-            '你是群消息广告过滤与处理助手。给你一条来自被克隆电报群的消息(消息前可能带【检测信号:…】是规则引擎扫出的特征,供你参考):'
+            '你是消息广告过滤与文案改写助手。给你一条来自被搬运的电报群/频道的消息(消息前可能带【检测信号:…】是规则引擎扫出的特征,供你参考,不要输出它):'
             + ';'.join(tasks)
             + '。只输出 JSON {"drop": true|false, "reason": "drop理由(可空)", "text": "处理后文本"};'
-            '判定广告时 drop=true、text 为空串,否则 text 为处理后的文本(无需改写时原样返回)。'
+            '判定广告时 drop=true、text 为空串,' + tail
         )
 
     @staticmethod
@@ -841,6 +985,267 @@ class AiService:
             (g for g in groups if any(AiService._chat_match(g.chat_id, c) for c in target_chats)),
             None,
         )
+
+    @staticmethod
+    async def _clone_provider_conf(
+        db: AsyncSession, rule: TgCloneRule
+    ) -> tuple[str, str | None, str | None, dict | None] | None:
+        """搬运/克隆模型来源:规则绑定配置池优先,否则回落到目标群匹配的 AI 群。"""
+        if rule.ai_provider_id:
+            prov = await ai_provider_dao.get(db, int(rule.ai_provider_id))
+            if prov is not None and (prov.status or 'active') == 'active':
+                return (
+                    prov.base_url,
+                    AiService._decrypt(prov.provider_key_enc),
+                    prov.provider_model,
+                    prov.extra_body,
+                )
+        group = await AiService._clone_ai_group(db, rule)
+        if group is None:
+            return None
+        return group.base_url, AiService._decrypt(group.provider_key_enc), group.provider_model, None
+
+    # ---------- AI 模型配置池(设置页统一管理) ----------
+
+    @staticmethod
+    async def _check_provider_scope(db: AsyncSession, request: Request, tenant_id: int, project_id: int) -> None:
+        if request.user.is_superuser:
+            return
+        if not await membership_dao.get_by_scope(db, tenant_id, project_id, request.user.id):
+            raise errors.ForbiddenError(msg='无该项目权限')
+
+    @staticmethod
+    def _provider_detail(p: TgAiProvider) -> GetAiProviderDetail:
+        return GetAiProviderDetail(
+            id=p.id, tenant_id=p.tenant_id, project_id=p.project_id, name=p.name,
+            base_url=p.base_url, provider_model=p.provider_model,
+            has_provider_key=bool(p.provider_key_enc), extra_body=p.extra_body,
+            status=p.status, remark=p.remark,
+        )
+
+    @staticmethod
+    def _normalize_provider_extra_body(value: dict | None) -> dict | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise errors.RequestError(msg='附加请求参数必须是 JSON 对象')
+        forbidden = {'model', 'messages', 'stream'} & set(value)
+        if forbidden:
+            names = '、'.join(sorted(forbidden))
+            raise errors.RequestError(msg=f'附加请求参数不允许包含: {names}')
+        return value or None
+
+    @staticmethod
+    async def list_providers(
+        db: AsyncSession, request: Request, tenant_id: int | None, project_id: int | None
+    ) -> list[GetAiProviderDetail]:
+        if not request.user.is_superuser:
+            member = await membership_dao.get_all(db, user_id=request.user.id)
+            scopes = {(m.tenant_id, m.project_id) for m in member}
+            rows = [
+                p for p in await ai_provider_dao.get_all(db, tenant_id=tenant_id, project_id=project_id)
+                if (p.tenant_id, p.project_id) in scopes
+            ]
+        else:
+            rows = await ai_provider_dao.get_all(db, tenant_id=tenant_id, project_id=project_id)
+        return [AiService._provider_detail(p) for p in rows]
+
+    @staticmethod
+    async def create_provider(db: AsyncSession, request: Request, obj: CreateAiProviderParam) -> GetAiProviderDetail:
+        await AiService._check_provider_scope(db, request, obj.tenant_id, obj.project_id)
+        p = TgAiProvider(
+            tenant_id=obj.tenant_id, project_id=obj.project_id, name=obj.name,
+            base_url=obj.base_url, provider_model=obj.provider_model, remark=obj.remark,
+            provider_key_enc=_provider_cipher().encrypt(obj.provider_key) if obj.provider_key else None,
+            extra_body=AiService._normalize_provider_extra_body(obj.extra_body),
+        )
+        db.add(p)
+        await db.flush()
+        return AiService._provider_detail(p)
+
+    @staticmethod
+    async def update_provider(db: AsyncSession, request: Request, pk: int, obj: UpdateAiProviderParam) -> GetAiProviderDetail:
+        p = await ai_provider_dao.get(db, pk)
+        if p is None:
+            raise errors.NotFoundError(msg='AI 配置不存在')
+        await AiService._check_provider_scope(db, request, p.tenant_id, p.project_id)
+        updates = obj.model_dump(exclude_unset=True)
+        if obj.name is not None:
+            p.name = obj.name
+        if obj.base_url is not None:
+            p.base_url = obj.base_url
+        if obj.provider_model is not None:
+            p.provider_model = obj.provider_model
+        if obj.provider_key:
+            p.provider_key_enc = _provider_cipher().encrypt(obj.provider_key)
+        if obj.status is not None:
+            p.status = obj.status
+        if obj.remark is not None:
+            p.remark = obj.remark
+        if 'extra_body' in updates:
+            p.extra_body = AiService._normalize_provider_extra_body(updates['extra_body'])
+        await db.flush()
+        return AiService._provider_detail(p)
+
+    @staticmethod
+    async def delete_provider(db: AsyncSession, request: Request, pk: int) -> None:
+        p = await ai_provider_dao.get(db, pk)
+        if p is None:
+            return
+        await AiService._check_provider_scope(db, request, p.tenant_id, p.project_id)
+        p.deleted = 1
+        await db.flush()
+
+    @staticmethod
+    async def test_provider(db: AsyncSession, request: Request, pk: int) -> dict:
+        p = await ai_provider_dao.get(db, pk)
+        if p is None:
+            raise errors.NotFoundError(msg='AI 配置不存在')
+        await AiService._check_provider_scope(db, request, p.tenant_id, p.project_id)
+        ok, out, err = await openai_complete(
+            base_url=p.base_url or '',
+            api_key=AiService._decrypt(p.provider_key_enc),
+            model=p.provider_model,
+            messages=[{'role': 'user', 'content': 'ping,回复 ok'}],
+            extra_body=p.extra_body,
+        )
+        return {'ok': ok, 'output': (out or '')[:200], 'error': err or ''}
+
+    @staticmethod
+    async def _gateway_token_detail(
+        db: AsyncSession, token: TgAiGatewayToken
+    ) -> GetAiGatewayTokenDetail:
+        provider = await ai_provider_dao.get(db, token.ai_provider_id)
+        return GetAiGatewayTokenDetail(
+            id=token.id,
+            tenant_id=token.tenant_id,
+            project_id=token.project_id,
+            name=token.name,
+            token_prefix=token.token_prefix,
+            ai_provider_id=token.ai_provider_id,
+            provider_name=provider.name if provider else None,
+            status=token.status,
+            call_count=token.call_count,
+            last_used_time=token.last_used_time,
+            remark=token.remark,
+            created_time=token.created_time,
+        )
+
+    @staticmethod
+    async def list_gateway_tokens(
+        db: AsyncSession, request: Request, tenant_id: int | None, project_id: int | None
+    ) -> list[GetAiGatewayTokenDetail]:
+        rows = await ai_gateway_token_dao.get_all(db, tenant_id=tenant_id, project_id=project_id)
+        if not request.user.is_superuser:
+            memberships = await membership_dao.get_all(db, user_id=request.user.id)
+            scopes = {(m.tenant_id, m.project_id) for m in memberships}
+            rows = [row for row in rows if (row.tenant_id, row.project_id) in scopes]
+        return [await AiService._gateway_token_detail(db, row) for row in rows]
+
+    @staticmethod
+    async def _gateway_provider_for_scope(
+        db: AsyncSession, request: Request, tenant_id: int, project_id: int, provider_id: int
+    ) -> TgAiProvider:
+        await AiService._check_provider_scope(db, request, tenant_id, project_id)
+        provider = await ai_provider_dao.get(db, provider_id)
+        if (
+            provider is None
+            or provider.tenant_id != tenant_id
+            or provider.project_id != project_id
+        ):
+            raise errors.NotFoundError(msg='绑定的 AI 配置不存在')
+        return provider
+
+    @staticmethod
+    async def create_gateway_token(
+        db: AsyncSession, request: Request, obj: CreateAiGatewayTokenParam
+    ) -> CreateAiGatewayTokenResult:
+        await AiService._gateway_provider_for_scope(
+            db, request, obj.tenant_id, obj.project_id, obj.ai_provider_id
+        )
+        plaintext = f'tgw-{secrets.token_urlsafe(32)}'
+        token = TgAiGatewayToken(
+            tenant_id=obj.tenant_id,
+            project_id=obj.project_id,
+            name=obj.name,
+            token_hash=hashlib.sha256(plaintext.encode()).hexdigest(),
+            token_prefix=plaintext[:16],
+            ai_provider_id=obj.ai_provider_id,
+            remark=obj.remark,
+        )
+        db.add(token)
+        await db.flush()
+        detail = await AiService._gateway_token_detail(db, token)
+        return CreateAiGatewayTokenResult(**detail.model_dump(), token=plaintext)
+
+    @staticmethod
+    async def update_gateway_token(
+        db: AsyncSession, request: Request, pk: int, obj: UpdateAiGatewayTokenParam
+    ) -> GetAiGatewayTokenDetail:
+        token = await ai_gateway_token_dao.get(db, pk)
+        if token is None:
+            raise errors.NotFoundError(msg='网关令牌不存在')
+        await AiService._check_provider_scope(db, request, token.tenant_id, token.project_id)
+        changes = obj.model_dump(exclude_unset=True)
+        provider_id = changes.get('ai_provider_id', token.ai_provider_id)
+        if 'ai_provider_id' in changes:
+            if provider_id is None:
+                raise errors.NotFoundError(msg='绑定的 AI 配置不存在')
+            await AiService._gateway_provider_for_scope(
+                db, request, token.tenant_id, token.project_id, provider_id
+            )
+            token.ai_provider_id = provider_id
+        if changes.get('name') is not None:
+            token.name = changes['name']
+        if changes.get('status') is not None:
+            token.status = changes['status']
+        if 'remark' in changes:
+            token.remark = changes['remark']
+        await db.flush()
+        return await AiService._gateway_token_detail(db, token)
+
+    @staticmethod
+    async def delete_gateway_token(db: AsyncSession, request: Request, pk: int) -> None:
+        token = await ai_gateway_token_dao.get(db, pk)
+        if token is None:
+            raise errors.NotFoundError(msg='网关令牌不存在')
+        await AiService._check_provider_scope(db, request, token.tenant_id, token.project_id)
+        token.deleted = 1
+        token.deleted_time = timezone.now()
+        await db.flush()
+
+    @staticmethod
+    async def authenticate_gateway_token(
+        db: AsyncSession, plaintext: str
+    ) -> tuple[TgAiGatewayToken, TgAiProvider] | None:
+        token_hash = hashlib.sha256(plaintext.encode()).hexdigest()
+        token = await ai_gateway_token_dao.get_by_hash(db, token_hash)
+        if token is None or token.status != 'active':
+            return None
+        provider = await ai_provider_dao.get(db, token.ai_provider_id)
+        if (
+            provider is None
+            or provider.tenant_id != token.tenant_id
+            or provider.project_id != token.project_id
+        ):
+            return None
+        return token, provider
+
+    @staticmethod
+    async def record_gateway_call(token_id: int) -> None:
+        try:
+            async with async_db_session() as db:
+                await db.execute(
+                    sa.update(TgAiGatewayToken)
+                    .where(TgAiGatewayToken.id == token_id, TgAiGatewayToken.deleted == 0)
+                    .values(
+                        call_count=TgAiGatewayToken.call_count + 1,
+                        last_used_time=timezone.now(),
+                    )
+                )
+                await db.commit()
+        except Exception:
+            return
 
     @staticmethod
     async def _group_members(db: AsyncSession, group: TgAiGroup) -> list[TgAiBinding]:

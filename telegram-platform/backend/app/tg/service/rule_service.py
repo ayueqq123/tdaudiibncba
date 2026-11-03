@@ -35,7 +35,7 @@ from backend.app.tg.service.account_service import (
 )
 from backend.app.tg.service.command_service import runtime_command_service
 from backend.common.exception import errors
-from backend.database.db import uuid4_str
+from backend.database.db import async_db_session, uuid4_str
 from backend.utils.timezone import timezone
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,8 @@ def _snapshot(rule: TgCloneRule, targets: list) -> dict:
             'sender_account_ids': CloneRuleService._sender_pool(rule),
             # 变形闸开关只告诉 worker "要不要调 clone_transform";具体配置由控制面按 rule_id 实时读取
             'transform': (rule.ai_rewrite or 'off') != 'off' or (rule.ad_block or 'off') != 'off',
+            'watermark_mode': rule.watermark_mode or 'off',
+            'watermark_mask': rule.watermark_mask,
             'mode': rule.mode,
             'sync_edit': rule.sync_edit,
             'sync_delete': rule.sync_delete,
@@ -126,13 +128,19 @@ class CloneRuleService:
         return list(dict.fromkeys(pool)) or [rule.account_id]
 
     @staticmethod
-    async def _validate_pool(db: AsyncSession, tenant_id: int, project_id: int, pool: list[int], mode: str) -> None:
-        """池内账号必须属于该项目;多号池只支持 copy(forward 需要发送号在源群)。"""
-        if pool and mode != 'copy':
-            raise errors.RequestError(msg='多号搬运只支持 copy 模式')
+    async def _validate_pool(db: AsyncSession, tenant_id: int, project_id: int, pool: list[int], mode: str) -> list[int]:
+        """池内账号必须属于该项目;多号池只支持 copy(forward 需要发送号在源群)。
+        已删除/死态账号自动剔除并返回清理后的池。"""
+        dead = CloneRuleService._LISTENER_DEAD
+        clean: list[int] = []
         for acc_id in dict.fromkeys(pool):
-            if not await telegram_account_dao.get_by_scope(db, tenant_id, project_id, acc_id):
-                raise errors.NotFoundError(msg=f'发送账号 {acc_id} 不存在于该项目')
+            a = await telegram_account_dao.get_by_scope(db, tenant_id, project_id, acc_id)
+            if not a or (a.observed_status or '') in dead:
+                continue
+            clean.append(acc_id)
+        if clean and mode != 'copy':
+            raise errors.RequestError(msg='多号搬运只支持 copy 模式')
+        return clean
 
     @staticmethod
     async def _check_scope(db: AsyncSession, request: Request, tenant_id: int, project_id: int) -> None:
@@ -161,14 +169,24 @@ class CloneRuleService:
 
     @staticmethod
     async def get_all(
-        *, db: AsyncSession, request: Request, tenant_id: int | None = None, project_id: int | None = None
+        *, db: AsyncSession, request: Request, tenant_id: int | None = None, project_id: int | None = None,
+        with_targets: bool = False, kind: str | None = None,
     ) -> list[TgCloneRule]:
-        rules = list(await clone_rule_dao.get_all(db, tenant_id, project_id))
-        if request.user.is_superuser:
-            return rules
-        memberships = await membership_dao.get_all(db, user_id=request.user.id)
-        scopes = {(m.tenant_id, m.project_id) for m in memberships}
-        return [r for r in rules if (r.tenant_id, r.project_id) in scopes]
+        rules = list(await clone_rule_dao.get_all(db, tenant_id, project_id, kind))
+        if not request.user.is_superuser:
+            memberships = await membership_dao.get_all(db, user_id=request.user.id)
+            scopes = {(m.tenant_id, m.project_id) for m in memberships}
+            rules = [r for r in rules if (r.tenant_id, r.project_id) in scopes]
+        if with_targets and rules:
+            all_targets = list(await clone_target_dao.get_all_by_rules(db, [r.id for r in rules]))
+            health = await route_health(db, [t for t in all_targets if t.status == 'active'])
+            by_rule: dict[int, list] = {}
+            for t in all_targets:
+                t.health = health.get(t.id)
+                by_rule.setdefault(t.rule_id, []).append(t)
+            for r in rules:
+                r.targets = by_rule.get(r.id, [])
+        return rules
 
     @staticmethod
     async def create(*, db: AsyncSession, request: Request, obj: CreateCloneRuleParam) -> None:
@@ -179,7 +197,16 @@ class CloneRuleService:
         account = await telegram_account_dao.get_by_scope(db, obj.tenant_id, obj.project_id, obj.account_id)
         if not account:
             raise errors.NotFoundError(msg='账号不存在于该项目')
-        await CloneRuleService._validate_pool(db, obj.tenant_id, obj.project_id, obj.sender_account_ids, obj.mode)
+        obj.sender_account_ids = await CloneRuleService._validate_pool(db, obj.tenant_id, obj.project_id, obj.sender_account_ids, obj.mode)
+        dup = (await db.execute(
+            sa.select(TgCloneRule.id).where(
+                TgCloneRule.project_id == obj.project_id,
+                TgCloneRule.name == obj.name,
+                TgCloneRule.deleted == 0,
+            )
+        )).first()
+        if dup:
+            raise errors.RequestError(msg=f'规则名「{obj.name}」已存在,换个名字或先删除旧规则')
         await clone_rule_dao.create(db, obj)
 
     @staticmethod
@@ -252,14 +279,33 @@ class CloneRuleService:
     @staticmethod
     async def update(*, db: AsyncSession, request: Request, pk: int, obj: UpdateCloneRuleParam) -> int:
         rule = await CloneRuleService.get(db=db, request=request, pk=pk)
-        data = {k: v for k, v in obj.model_dump().items() if v is not None}
-        if 'sender_account_ids' in data or 'mode' in data:
+        data = {
+            k: v for k, v in obj.model_dump(exclude_unset=True).items()
+            if v is not None or k in {'ai_group_id', 'ai_provider_id'}
+        }
+        if 'name' in data and data['name'] != rule.name:
+            dup = (await db.execute(
+                sa.select(TgCloneRule.id).where(
+                    TgCloneRule.project_id == rule.project_id,
+                    TgCloneRule.name == data['name'],
+                    TgCloneRule.deleted == 0,
+                    TgCloneRule.id != rule.id,
+                )
+            )).first()
+            if dup:
+                raise errors.RequestError(msg=f'规则名「{data["name"]}」已存在,换个名字')
+        if 'sender_account_ids' in data or 'mode' in data or rule.sender_account_ids:
             pool = data.get('sender_account_ids', rule.sender_account_ids or [])
             mode = data.get('mode', rule.mode)
-            await CloneRuleService._validate_pool(db, rule.tenant_id, rule.project_id, pool, mode)
+            clean = await CloneRuleService._validate_pool(db, rule.tenant_id, rule.project_id, pool, mode)
+            if clean != [int(a) for a in pool if a]:
+                data['sender_account_ids'] = clean
         # 停用优先于快照:enabled=False 立即生效,不依赖下次发布
         updated = await clone_rule_dao.update(db, pk, data)
-        await CloneRuleService._notify_reload(db, request, rule)
+        try:
+            await CloneRuleService._notify_reload(db, request, rule)
+        except errors.NotFoundError:
+            pass  # 账号已删时跳过通知,不阻塞规则更新
         return updated
 
     @staticmethod
@@ -360,6 +406,71 @@ class CloneRuleService:
         )
 
     @staticmethod
+    async def add_targets_batch(
+        *, db: AsyncSession, request: Request, rule_id: int, routes: list[CloneTargetParam]
+    ) -> dict:
+        """批量添加路线:全部引用一次解析/进群(监听号一次进群),逐条返回成败原因。"""
+        rule = await CloneRuleService.get(db=db, request=request, pk=rule_id)
+        if rule.status == 'disabled':
+            raise errors.RequestError(msg='规则已停用')
+        pairs = [
+            (CloneRuleService._chat_ref(obj.source_chat_id), CloneRuleService._chat_ref(obj.target_chat_id), obj)
+            for obj in routes
+        ]
+        uniq_refs = list(dict.fromkeys(r for s, d, _ in pairs for r in (s, d) if r))
+        results = await CloneRuleService._resolve_refs(db, rule, uniq_refs) if uniq_refs else {}
+        existing = {_route_key(t) for t in await clone_target_dao.get_active_by_rule(db, rule.id)}
+
+        def fail_reason(res: dict | None) -> str:
+            status = ((res or {}).get('error') or {}).get('status', 'resolve_failed')
+            return JOIN_ERR.get(status, '进群/解析失败')
+
+        report: list[dict] = []
+        created = 0
+        for idx, (src_ref, dst_ref, obj) in enumerate(pairs):
+            line: dict = {'index': idx, 'source': src_ref, 'target': dst_ref, 'ok': False, 'reason': None}
+            src_res, dst_res = results.get(src_ref), results.get(dst_ref)
+            if not src_ref or not dst_ref:
+                line['reason'] = '源/目标为空'
+            elif not (src_res or {}).get('ok'):
+                line['reason'] = f'源频道: {fail_reason(src_res)}'
+            elif not (dst_res or {}).get('ok'):
+                line['reason'] = f'目标频道: {fail_reason(dst_res)}'
+            else:
+                src_id, dst_id = int(src_res['chat_id']), int(dst_res['chat_id'])
+                if src_id == dst_id and obj.source_topic_id == obj.target_topic_id:
+                    line['reason'] = '源=目标自环'
+                else:
+                    route = (src_id, obj.source_topic_id, dst_id, obj.target_topic_id)
+                    if route in existing:
+                        line['reason'] = '路线已存在'
+                    else:
+                        filters = await CloneRuleService._normalize_filters(db, rule, obj.filters)
+                        await clone_target_dao.create(
+                            db,
+                            CreateCloneTargetParam(
+                                rule_id=rule.id,
+                                tenant_id=rule.tenant_id,
+                                project_id=rule.project_id,
+                                source_chat_id=src_id,
+                                source_chat_ref=src_ref,
+                                source_topic_id=obj.source_topic_id,
+                                target_chat_id=dst_id,
+                                target_chat_ref=dst_ref,
+                                target_topic_id=obj.target_topic_id,
+                                joined_account_id=rule.account_id,
+                                filters=filters,
+                                remark=obj.remark,
+                            ),
+                        )
+                        existing.add(route)
+                        created += 1
+                        line['ok'] = True
+            report.append(line)
+        await db.flush()
+        return {'created': created, 'failed': len(report) - created, 'results': report}
+
+    @staticmethod
     async def _auto_join(db: AsyncSession, rule: TgCloneRule, targets: list[TgCloneTarget]) -> None:
         """运行前让规则账号自动加入/验证尚未由该账号进过的群(链接可进群,纯 ID 仅验证)。"""
         health = await route_health(db, targets)
@@ -415,10 +526,16 @@ class CloneRuleService:
                 CloneRuleService._mark_pool_join_failure(db, need, acc_id, detail, timezone.now().isoformat())
                 logger.warning('Sender account %s could not start auto-join: %s', acc_id, detail)
                 continue
+            # 进群成功的群再查一次发帖权限(频道里只有管理员能发)
+            ok_ids = [int(r['chat_id']) for r in results.values() if r.get('ok')]
+            try:
+                posts = await check_chat_membership(account, ok_ids) if ok_ids else {}
+            except Exception:
+                posts = {}
             checked_at = timezone.now().isoformat()
             for t in need:
                 ref = t.target_chat_ref or str(t.target_chat_id)
-                CloneRuleService._record_pool_join_result(db, t, acc_id, ref, results.get(ref), checked_at)
+                CloneRuleService._record_pool_join_result(db, t, acc_id, ref, results.get(ref), checked_at, posts)
 
     @staticmethod
     def _mark_pool_join_failure(
@@ -441,14 +558,35 @@ class CloneRuleService:
 
     @staticmethod
     def _record_pool_join_result(
-        db: AsyncSession, target: TgCloneTarget, acc_id: int, ref: str, result: dict | None, checked_at: str
+        db: AsyncSession,
+        target: TgCloneTarget,
+        acc_id: int,
+        ref: str,
+        result: dict | None,
+        checked_at: str,
+        posts: dict | None = None,
     ) -> None:
         if result and result.get('ok'):
             chat_id = int(result['chat_id'])
             if target.target_chat_id != chat_id:
                 target.target_chat_id = chat_id
+            post = (posts or {}).get(str(chat_id)) or {}
+            if post.get('status') == 'unauthorized':
+                CloneRuleService._store_pool_join_status(
+                    db, target, acc_id, status='join_failed', can_post=False,
+                    checked_at=checked_at, detail='账号会话已失效,请重新登录',
+                )
+                return
+            can_post = post.get('can_post')
+            detail = None
+            if can_post is False:
+                detail = (
+                    '不是目标频道管理员,没有发帖权限'
+                    if post.get('detail') in ('not_channel_admin', 'admin_no_post_right')
+                    else post.get('detail')
+                )
             CloneRuleService._store_pool_join_status(
-                db, target, acc_id, status='member', can_post=None, checked_at=checked_at
+                db, target, acc_id, status='member', can_post=can_post, checked_at=checked_at, detail=detail
             )
             return
 
@@ -547,6 +685,17 @@ class CloneRuleService:
         ids = list(dict.fromkeys(str(x) for t in targets for x in (t.source_chat_id, t.target_chat_id)))
         results = await CloneRuleService._resolve_refs(db, rule, ids)
         sender_accounts, sender_results = await CloneRuleService._check_pool_membership(db, rule, targets)
+        # 频道规则:监听号也要在目标频道有发帖权限(号池留空时它就是发送号)
+        listener_posts: dict = {}
+        if getattr(rule, 'kind', 'group') == 'channel':
+            listener = await telegram_account_dao.get(db, rule.account_id)
+            if listener:
+                try:
+                    listener_posts = await check_chat_membership(
+                        listener, list(dict.fromkeys(t.target_chat_id for t in targets))
+                    )
+                except Exception:
+                    listener_posts = {}
         checked_at = timezone.now().isoformat()
         out = []
         for t in targets:
@@ -558,7 +707,12 @@ class CloneRuleService:
                 t.joined_account_id = None
             senders = CloneRuleService._update_pool_status(t, sender_accounts, sender_results, checked_at)
             db.add(t)
-            out.append({'target_id': t.id, 'ok': reason is None, 'reason': reason, 'senders': senders})
+            entry: dict = {'target_id': t.id, 'ok': reason is None, 'reason': reason, 'senders': senders}
+            if listener_posts:
+                linfo = listener_posts.get('__account__') or listener_posts.get(str(t.target_chat_id)) or {}
+                entry['listener_status'] = linfo.get('status')
+                entry['listener_can_post'] = linfo.get('can_post')
+            out.append(entry)
         await db.flush()
         return out
 
@@ -675,6 +829,13 @@ class CloneRuleService:
     async def publish(*, db: AsyncSession, request: Request, pk: int, expected_version: int) -> TgCloneRuleVersion:
         """发布:生成不可变快照,乐观锁校验 expected_version==current_version"""
         rule = await CloneRuleService.get(db=db, request=request, pk=pk)
+        # 行锁串行化并发发布:后到者读到已更新的 current_version,
+        # 按版本冲突报错而不是撞唯一键 500
+        rule = (await db.execute(
+            sa.select(TgCloneRule)
+            .where(TgCloneRule.id == rule.id)
+            .with_for_update()
+        )).scalar_one()
         if rule.status == 'disabled':
             raise errors.RequestError(msg='规则已停用,不能发布')
         if rule.current_version != expected_version:
@@ -686,9 +847,11 @@ class CloneRuleService:
         if len(set(routes)) != len(routes):
             raise errors.RequestError(msg='规则里有重复的源群→目标群路线,请先删除重复的再运行')
         # 运行时自动进群:按目标留存的原始标识(链接/ID)加入或验证成员关系,
-        # 解析出的 chat_id 若变化(群迁移等)同步更新目标行
+        # 解析出的 chat_id 若变化(群迁移等)同步更新目标行。
+        # 进群校验走网络 IO,发送号多时要几分钟 —— 挪到后台异步跑,
+        # 发布请求只负责生成版本快照,不再阻塞等待进群完成。
         if rule.enabled:
-            await CloneRuleService._auto_join(db, rule, targets)
+            CloneRuleService._schedule_auto_join(rule.id)
             # 进群发生在控制面子进程(独立连接):worker 的活客户端还不认识
             # 新加入的群,收不到它的频道更新 —— SyncChats 让监听号 warm 会话缓存
             await runtime_command_service.issue(
@@ -722,6 +885,30 @@ class CloneRuleService:
         await CloneRuleService._notify_reload(db, request, rule)
         return ver
 
+    _BG_JOIN_TASKS: set = set()
+
+    @staticmethod
+    def _schedule_auto_join(rule_id: int) -> None:
+        task = asyncio.create_task(CloneRuleService._bg_auto_join(rule_id))
+        CloneRuleService._BG_JOIN_TASKS.add(task)
+        task.add_done_callback(CloneRuleService._BG_JOIN_TASKS.discard)
+
+    @staticmethod
+    async def _bg_auto_join(rule_id: int) -> None:
+        try:
+            async with async_db_session() as db:
+                rule = (await db.execute(
+                    sa.select(TgCloneRule).where(TgCloneRule.id == rule_id, TgCloneRule.deleted == 0)
+                )).scalar_one_or_none()
+                if not rule:
+                    return
+                targets = list(await clone_target_dao.get_active_by_rule(db, rule.id))
+                if targets:
+                    await CloneRuleService._auto_join(db, rule, targets)
+                await db.commit()
+        except Exception:
+            logger.exception('auto-join for rule %s failed', rule_id)
+
     @staticmethod
     async def get_versions(*, db: AsyncSession, request: Request, pk: int) -> list[TgCloneRuleVersion]:
         rule = await CloneRuleService.get(db=db, request=request, pk=pk)
@@ -731,7 +918,10 @@ class CloneRuleService:
     async def delete(*, db: AsyncSession, request: Request, pk: int) -> int:
         rule = await CloneRuleService.get(db=db, request=request, pk=pk)
         deleted = await clone_rule_dao.delete(db, pk)
-        await CloneRuleService._notify_reload(db, request, rule)
+        try:
+            await CloneRuleService._notify_reload(db, request, rule)
+        except errors.NotFoundError:
+            pass  # 账号已删时跳过通知,不阻塞删除
         return deleted
 
 

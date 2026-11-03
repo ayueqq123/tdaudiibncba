@@ -65,13 +65,13 @@ async def delete_banned_accounts(db: CurrentSessionTransaction, request: Request
 
 @router.post(
     '/usage',
-    summary='批量设置账号用途',
+    summary='批量设置账号分组(可多选)',
     dependencies=[Depends(RequestPermission('tg:account:edit')), DependsRBAC],
 )
 async def set_account_usage(
     db: CurrentSessionTransaction, request: Request, obj: SetAccountUsageParam
 ) -> ResponseSchemaModel[dict]:
-    data = await account_service.set_usage(db=db, request=request, account_ids=obj.account_ids, usage=obj.usage)
+    data = await account_service.set_usages(db=db, request=request, account_ids=obj.account_ids, usages=obj.usages)
     return response_base.success(data=data)
 
 
@@ -150,9 +150,11 @@ async def import_accounts(
     tenant_id: Annotated[int, Form(description='租户 ID')],
     project_id: Annotated[int, Form(description='项目 ID')],
     file: Annotated[UploadFile, File(description='session 包 zip')],
-    usage: Annotated[Literal['ai', 'clone'] | None, Form(description='账号用途')] = None,
+    usage: Annotated[Literal['ai', 'clone', 'channel'] | None, Form(description='账号分组(兼容旧参数)')] = None,
+    usages: Annotated[list[Literal['ai', 'clone', 'channel']] | None, Form(description='账号分组(可多选)')] = None,
 ) -> ResponseSchemaModel[GetImportBatchDetail]:
     data = await account_service.import_zip(
-        db=db, request=request, tenant_id=tenant_id, project_id=project_id, file=file, usage=usage
+        db=db, request=request, tenant_id=tenant_id, project_id=project_id, file=file,
+        usage=usage, usages=usages,
     )
     return response_base.success(data=data)

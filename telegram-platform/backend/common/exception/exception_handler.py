@@ -224,10 +224,13 @@ def register_exception(app: FastAPI) -> None:  # ruff:ignore[complex-structure]
                 else:
                     res = response_base.fail(res=CustomResponseCode.HTTP_500)
                     content = res.model_dump()
-            if isinstance(exc, BaseExceptionError):
-                ctx.__request_custom_exception__ = content
-            else:
-                ctx.__request_unknown_exception__ = content
+            try:
+                if isinstance(exc, BaseExceptionError):
+                    ctx.__request_custom_exception__ = content
+                else:
+                    ctx.__request_unknown_exception__ = content
+            except Exception:
+                pass
             content.update(trace_id=get_request_trace_id())
             response = MsgSpecJSONResponse(
                 status_code=exc.code if isinstance(exc, BaseExceptionError) else StandardResponseCode.HTTP_500,

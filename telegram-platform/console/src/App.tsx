@@ -7,9 +7,11 @@ import HomePage from '@/pages/home'
 import AccountsPage from '@/pages/accounts'
 import ImportsPage from '@/pages/imports'
 import RulesPage from '@/pages/rules'
+import ChannelClonePage from '@/pages/channel-clone'
 import DeliveriesPage from '@/pages/deliveries'
 import ApprovalsPage from '@/pages/approvals'
 import AiBindingsPage from '@/pages/ai-bindings'
+import AiProvidersPage from '@/pages/ai-providers'
 import GuidePage from '@/pages/guide'
 import LoginUsersPage from '@/pages/login-users'
 import CommandsPage from '@/pages/commands'
@@ -33,9 +35,11 @@ export default function App() {
             <Route path="/accounts" element={<AccountsPage />} />
             <Route path="/imports" element={<ImportsPage />} />
             <Route path="/rules" element={<RulesPage />} />
+            <Route path="/channel-clone" element={<ChannelClonePage />} />
             <Route path="/deliveries" element={<DeliveriesPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
             <Route path="/ai-bindings" element={<AiBindingsPage />} />
+            <Route path="/ai-providers" element={<AiProvidersPage />} />
             <Route path="/approvals" element={<ApprovalsPage />} />
             <Route path="/users" element={<LoginUsersPage />} />
             <Route path="/commands" element={<CommandsPage />} />

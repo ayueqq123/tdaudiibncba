@@ -140,16 +140,26 @@ OPENAI_TIMEOUT_SECONDS = 45.0
 
 
 async def openai_complete(
-    *, base_url: str, api_key: str, model: str, messages: list[dict]
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    messages: list[dict],
+    extra_body: dict | None = None,
 ) -> tuple[bool, str, str | None]:
     """OpenAI 兼容 /chat/completions 同步生成(炒群引擎,§9)。
 
     返回 (ok, text, error)。结果不明不盲重试:HTTPError/超时按失败处理,
     失败的 run 进 failed 态由人决定补发。
     """
-    url = f'{base_url.rstrip("/")}/chat/completions'
+    url = base_url.rstrip('/')
+    # base_url 可能直接贴了完整接口地址(.../v2/chat/completions),别再拼一遍
+    if not url.endswith('/chat/completions'):
+        url += '/chat/completions'
     headers = {'Authorization': f'Bearer {api_key}'}
-    body = {'model': model, 'messages': messages, 'temperature': 0.8}
+    body = {'model': model, 'messages': messages, 'temperature': 0.8, **(extra_body or {})}
+    body['model'] = model
+    body['messages'] = messages
     try:
         async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT_SECONDS) as client:
             resp = await client.post(url, json=body, headers=headers)

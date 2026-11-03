@@ -19,9 +19,14 @@ class CloneRuleSchemaBase(SchemaBase):
     sync_delete: bool = Field(True, description='是否同步源消息删除')
     enabled: bool = Field(True, description='是否启用')
     ai_rewrite: Literal['off', 'light', 'strong'] = Field('off', description='克隆文本改写')
+    kind: Literal['group', 'channel'] = Field('group', description='规则类型(group 群搬运/channel 频道搬运)')
     ad_block: Literal['off', 'keyword', 'ai'] = Field('off', description='广告拦截方式')
     ad_keywords: list[str] = Field(default_factory=list, description='广告关键词')
+    watermark_mode: Literal['off', 'auto', 'mask'] = Field('off', description='媒体去水印方式')
+    watermark_mask: str | None = Field(None, description='固定水印区域 x,y,w,h(0-1 比例坐标)')
     ai_group_id: int | None = Field(None, description='复用的 AI 群(模型 key 来源;空=按目标群匹配)')
+    ai_provider_id: int | None = Field(None, description='AI 模型配置池 ID(优先于 AI 群)')
+    ai_prompt: str | None = Field(None, max_length=2000, description='自定义 AI 改写提示词;空=默认')
     remark: str | None = Field(None, description='备注')
 
     @model_validator(mode='after')
@@ -50,9 +55,14 @@ class UpdateCloneRuleParam(SchemaBase):
     delay_min_s: int | None = Field(None, ge=0, le=3600, description='搬运延时下限(秒);None=不变')
     delay_max_s: int | None = Field(None, ge=0, le=3600, description='搬运延时上限(秒);None=不变')
     ai_rewrite: Literal['off', 'light', 'strong'] | None = Field(None, description='克隆文本改写')
+    kind: Literal['group', 'channel'] | None = Field(None, description='规则类型')
     ad_block: Literal['off', 'keyword', 'ai'] | None = Field(None, description='广告拦截方式')
     ad_keywords: list[str] | None = Field(None, description='广告关键词')
+    watermark_mode: Literal['off', 'auto', 'mask'] | None = Field(None, description='媒体去水印方式')
+    watermark_mask: str | None = Field(None, description='固定水印区域 x,y,w,h(0-1 比例坐标)')
     ai_group_id: int | None = Field(None, description='复用的 AI 群 ID')
+    ai_provider_id: int | None = Field(None, description='AI 模型配置池 ID')
+    ai_prompt: str | None = Field(None, max_length=2000, description='自定义 AI 改写提示词')
     remark: str | None = Field(None, description='备注')
 
     @model_validator(mode='after')
@@ -78,6 +88,12 @@ class CloneTargetParam(SchemaBase):
         None, description="过滤条件,如 {'sender_user_ids': [123]} 只克隆指定发言人的消息"
     )
     remark: str | None = Field(None, description='备注')
+
+
+class CloneTargetBatchParam(SchemaBase):
+    """批量添加目标路线:一次解析全部引用(监听号一次进群),逐条返回结果"""
+
+    routes: list[CloneTargetParam] = Field(min_length=1, max_length=500, description='源→目标路线列表')
 
 
 class CreateCloneTargetParam(SchemaBase):

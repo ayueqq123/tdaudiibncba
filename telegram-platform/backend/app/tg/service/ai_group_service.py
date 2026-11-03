@@ -149,7 +149,10 @@ class AiGroupService:
             fields['provider_key_enc'] = _provider_cipher().encrypt(obj.provider_key)
         if 'blocked_words' in fields and fields['blocked_words'] is not None:
             fields['blocked_words'] = [w.strip() for w in fields['blocked_words'] if w and w.strip()]
-        return {k: v for k, v in fields.items() if v is not None or k in {'theme', 'remark', 'provider_model'}}
+        return {
+            k: v for k, v in fields.items()
+            if v is not None or k in {'theme', 'remark', 'provider_model', 'ai_provider_id'}
+        }
 
     @staticmethod
     async def _resolve_chat(

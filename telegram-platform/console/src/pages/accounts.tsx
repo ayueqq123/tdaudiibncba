@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Play, RefreshCw, Smartphone, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
-import { tgApi, type ApiCredential, type CloneRule, type TgAccount } from '@/lib/api'
+import { accountGroups, hasGroup, tgApi, type ApiCredential, type CloneRule, type TgAccount } from '@/lib/api'
 import { buildCloneUsage, usageDetail, usageShort } from '@/lib/clone-usage'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -39,7 +39,28 @@ const statusLabel: Record<string, string> = {
   banned: '已禁言',
   frozen: '已冻结',
 }
-const usageLabel = (usage?: string | null) => usage === 'ai' ? 'AI 用' : usage === 'clone' ? '克隆用' : '未分组'
+const GROUPS: [string, string][] = [['ai', 'AI 炒群'], ['clone', 'Clone'], ['channel', '频道搬运']]
+const groupLabel = (g: string) => g === 'ai' ? 'AI 炒群' : g === 'clone' ? 'Clone' : g === 'channel' ? '频道搬运' : g
+
+function GroupChecks({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+  return (
+    <div className="flex gap-4">
+      {GROUPS.map(([v, label]) => (
+        <label key={v} className="flex cursor-pointer items-center gap-1.5 text-sm">
+          <input
+            type="checkbox"
+            checked={value.includes(v)}
+            onChange={(e) => onChange(e.target.checked ? [...value, v] : value.filter((x) => x !== v))}
+          />
+          {label}
+        </label>
+      ))}
+      <span className="text-xs text-muted-foreground">不勾=未分组(各页都选不了)</span>
+    </div>
+  )
+}
+
+const PAGE_SIZE = 50
 
 export default function AccountsPage() {
   const [rows, setRows] = useState<TgAccount[]>([])
@@ -56,12 +77,13 @@ export default function AccountsPage() {
   const [lf, setLf] = useState({ phone: '', api_id: '', api_hash: '', code: '', password: '' })
   const [creds, setCreds] = useState<ApiCredential[]>([])
   const [credIdx, setCredIdx] = useState('')
-  const [loginUsage, setLoginUsage] = useState('none')
-  const [importUsage, setImportUsage] = useState('none')
+  const [loginGroups, setLoginGroups] = useState<string[]>([])
+  const [importGroups, setImportGroups] = useState<string[]>([])
   const [usageFilter, setUsageFilter] = useState('all')
   const [selectedIds, setSelectedIds] = useState<number[]>([])
-  const [bulkUsage, setBulkUsage] = useState('none')
+  const [bulkGroups, setBulkGroups] = useState<string[]>([])
   const [usageBusy, setUsageBusy] = useState(false)
+  const [page, setPage] = useState(1)
   const [cloneRules, setCloneRules] = useState<CloneRule[]>([])
 
   function pickCred(idx: string) {
@@ -214,7 +236,7 @@ export default function AccountsPage() {
         phone: lf.phone.trim(),
         api_id: Number(lf.api_id.trim()),
         api_hash: lf.api_hash.trim(),
-        usage: loginUsage === 'none' ? undefined : loginUsage as 'ai' | 'clone',
+        usages: loginGroups.length ? loginGroups : undefined,
       })
       setLoginId(r.login_id)
       setLoginStep('code')
@@ -264,7 +286,7 @@ export default function AccountsPage() {
     setImporting(true)
     try {
       const ws = await tgApi.ensureWorkspace()
-      await tgApi.importAccounts(ws.tenant_id, ws.project_id, file, importUsage === 'none' ? undefined : importUsage as 'ai' | 'clone')
+      await tgApi.importAccounts(ws.tenant_id, ws.project_id, file, importGroups)
       toast.success('导入完成,去"Session 导入"页看分级结果')
       setOpen(false)
       setFile(null)
@@ -279,8 +301,8 @@ export default function AccountsPage() {
   async function saveUsage() {
     setUsageBusy(true)
     try {
-      const result = await tgApi.setAccountUsage(selectedIds, bulkUsage === 'none' ? null : bulkUsage as 'ai' | 'clone')
-      toast.success(`已设置 ${result.updated} 个账号用途`)
+      const result = await tgApi.setAccountUsage(selectedIds, bulkGroups)
+      toast.success(`已设置 ${result.updated} 个账号分组`)
       setSelectedIds([])
       await load()
     } catch (e: any) {
@@ -293,9 +315,12 @@ export default function AccountsPage() {
   const cloneUsage = buildCloneUsage(cloneRules)
   const visibleRows = rows.filter((r) =>
     usageFilter === 'all' ||
-    (usageFilter === 'clone_free' ? r.usage === 'clone' && !cloneUsage.get(r.id)?.length :
-      usageFilter === 'ungrouped' ? !r.usage : r.usage === usageFilter),
+    (usageFilter === 'clone_free' ? hasGroup(r, 'clone') && !cloneUsage.get(r.id)?.length :
+      usageFilter === 'ungrouped' ? !accountGroups(r).length : hasGroup(r, usageFilter)),
   )
+  const pageCount = Math.max(1, Math.ceil(visibleRows.length / PAGE_SIZE))
+  const curPage = Math.min(page, pageCount)
+  const pageRows = visibleRows.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE)
 
   return (
     <div>
@@ -398,15 +423,8 @@ export default function AccountsPage() {
                   <Input ref={fileRef} type="file" accept=".zip" onChange={(e) => setFile(e.target.files?.[0] || null)} />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <Label>用途</Label>
-                  <Select value={importUsage} onValueChange={setImportUsage}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">未分组</SelectItem>
-                      <SelectItem value="ai">AI 用</SelectItem>
-                      <SelectItem value="clone">克隆用</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <Label>分组(可多选)</Label>
+                  <GroupChecks value={importGroups} onChange={setImportGroups} />
                 </div>
               </div>
               <DialogFooter>
@@ -458,15 +476,8 @@ export default function AccountsPage() {
                     <Input placeholder="+86138xxxxxxxx" value={lf.phone} onChange={(e) => setLf({ ...lf, phone: e.target.value })} />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label>用途</Label>
-                    <Select value={loginUsage} onValueChange={setLoginUsage}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">未分组</SelectItem>
-                        <SelectItem value="ai">AI 用</SelectItem>
-                        <SelectItem value="clone">克隆用</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <Label>分组(可多选)</Label>
+                    <GroupChecks value={loginGroups} onChange={setLoginGroups} />
                   </div>
                   {creds.length > 0 && (
                     <div className="flex flex-col gap-1.5">
@@ -534,28 +545,22 @@ export default function AccountsPage() {
         </div>
       </div>
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <Select value={usageFilter} onValueChange={setUsageFilter}>
+        <Select value={usageFilter} onValueChange={(v) => { setUsageFilter(v); setPage(1) }}>
           <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">全部用途</SelectItem>
-            <SelectItem value="ai">AI 用</SelectItem>
-            <SelectItem value="clone">克隆用</SelectItem>
+            <SelectItem value="all">全部分组</SelectItem>
+            <SelectItem value="ai">AI 炒群</SelectItem>
+            <SelectItem value="clone">Clone</SelectItem>
+            <SelectItem value="channel">频道搬运</SelectItem>
             <SelectItem value="clone_free">未使用的克隆号</SelectItem>
             <SelectItem value="ungrouped">未分组</SelectItem>
           </SelectContent>
         </Select>
         {selectedIds.length > 0 && (
           <>
-            <Select value={bulkUsage} onValueChange={setBulkUsage}>
-              <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">未分组</SelectItem>
-                <SelectItem value="ai">AI 用</SelectItem>
-                <SelectItem value="clone">克隆用</SelectItem>
-              </SelectContent>
-            </Select>
+            <GroupChecks value={bulkGroups} onChange={setBulkGroups} />
             <Button onClick={saveUsage} disabled={usageBusy}>
-              {usageBusy ? '设置中…' : '设置用途'}
+              {usageBusy ? '设置中…' : '设置分组'}
             </Button>
           </>
         )}
@@ -564,12 +569,12 @@ export default function AccountsPage() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead><input type="checkbox" aria-label="全选" checked={visibleRows.length > 0 && visibleRows.every((r) => selectedIds.includes(r.id))} onChange={(e) => setSelectedIds(e.target.checked ? [...new Set([...selectedIds, ...visibleRows.map((r) => r.id)])] : selectedIds.filter((id) => !visibleRows.some((r) => r.id === id)))} /></TableHead>
+              <TableHead><input type="checkbox" aria-label="全选" checked={pageRows.length > 0 && pageRows.every((r) => selectedIds.includes(r.id))} onChange={(e) => setSelectedIds(e.target.checked ? [...new Set([...selectedIds, ...pageRows.map((r) => r.id)])] : selectedIds.filter((id) => !pageRows.some((r) => r.id === id)))} /></TableHead>
               <TableHead>ID</TableHead>
               <TableHead>TG UID</TableHead>
               <TableHead>手机号</TableHead>
               <TableHead>用户名</TableHead>
-              <TableHead>用途</TableHead>
+              <TableHead>分组</TableHead>
               <TableHead>克隆规则/群</TableHead>
               <TableHead>期望</TableHead>
               <TableHead>实际</TableHead>
@@ -578,14 +583,22 @@ export default function AccountsPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {visibleRows.map((r) => (
+            {pageRows.map((r) => (
               <TableRow key={r.id}>
                 <TableCell><input type="checkbox" aria-label={`选择账号 ${r.id}`} checked={selectedIds.includes(r.id)} onChange={(e) => setSelectedIds(e.target.checked ? [...selectedIds, r.id] : selectedIds.filter((id) => id !== r.id))} /></TableCell>
                 <TableCell>{r.id}</TableCell>
                 <TableCell className="font-mono text-xs">{r.telegram_user_id ?? '-'}</TableCell>
                 <TableCell>{r.phone || '-'}</TableCell>
                 <TableCell>{r.username ? `@${r.username}` : '-'}</TableCell>
-                <TableCell><Badge variant="outline">{usageLabel(r.usage)}</Badge></TableCell>
+                <TableCell>
+                  {accountGroups(r).length ? (
+                    <div className="flex flex-wrap gap-1">
+                      {accountGroups(r).map((g) => <Badge key={g} variant="outline">{groupLabel(g)}</Badge>)}
+                    </div>
+                  ) : (
+                    <Badge variant="secondary">未分组</Badge>
+                  )}
+                </TableCell>
                 <TableCell>
                   {(() => {
                     const list = cloneUsage.get(r.id) || []
@@ -630,15 +643,40 @@ export default function AccountsPage() {
                 </TableCell>
               </TableRow>
             ))}
-            {visibleRows.length === 0 && (
+            {pageRows.length === 0 && (
               <TableRow>
                 <TableCell colSpan={11} className="py-8 text-center text-muted-foreground">
-                  {rows.length ? '暂无符合用途的账号' : '暂无账号,点右上"导入 Session 包"开始'}
+                  {rows.length ? '暂无符合分组的账号' : '暂无账号,点右上"导入 Session 包"开始'}
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
+      </div>
+      <div className="mt-2 flex items-center justify-between text-sm">
+        <span className="text-muted-foreground">
+          共 {visibleRows.length} 个账号{visibleRows.length !== rows.length ? `(全部 ${rows.length})` : ''}
+        </span>
+        {pageCount > 1 && (
+          <div className="flex items-center gap-1">
+            <Button size="sm" variant="outline" disabled={curPage <= 1} onClick={() => setPage(curPage - 1)}>
+              上一页
+            </Button>
+            {Array.from({ length: pageCount }, (_, i) => i + 1)
+              .filter((p) => p === 1 || p === pageCount || Math.abs(p - curPage) <= 2)
+              .map((p, i, arr) => (
+                <span key={p} className="flex items-center">
+                  {i > 0 && arr[i - 1] < p - 1 && <span className="px-1 text-muted-foreground">…</span>}
+                  <Button size="sm" variant={p === curPage ? 'default' : 'outline'} onClick={() => setPage(p)}>
+                    {p}
+                  </Button>
+                </span>
+              ))}
+            <Button size="sm" variant="outline" disabled={curPage >= pageCount} onClick={() => setPage(curPage + 1)}>
+              下一页
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   )

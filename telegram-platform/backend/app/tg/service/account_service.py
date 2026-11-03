@@ -316,13 +316,16 @@ class AccountService:
         return await telegram_account_dao.update(db, pk, obj)
 
     @staticmethod
-    async def set_usage(
-        *, db: AsyncSession, request: Request, account_ids: list[int], usage: str | None
+    async def set_usages(
+        *, db: AsyncSession, request: Request, account_ids: list[int], usages: list[str] | None
     ) -> dict[str, int]:
+        groups = [g for g in dict.fromkeys(usages or []) if g in ('ai', 'clone', 'channel')]
+        # usage(单值)与 usages 同步:首元素做兼容旧列
+        payload = {'usages': groups or None, 'usage': groups[0] if groups else None}
         updated = 0
         for account_id in dict.fromkeys(account_ids):
             account = await AccountService.get(db=db, request=request, pk=account_id)
-            updated += await telegram_account_dao.update(db, account.id, {'usage': usage})
+            updated += await telegram_account_dao.update(db, account.id, payload)
         return {'updated': updated}
 
     @staticmethod
@@ -385,7 +388,7 @@ class AccountService:
                 'project_id': obj.project_id,
                 'user_id': request.user.id,
                 'phone': obj.phone,
-                'usage': obj.usage,
+                'usages': obj.usages or ([obj.usage] if obj.usage else None),
                 'api_id': obj.api_id,
                 'api_hash': obj.api_hash,
                 'device': obj.device,
@@ -461,7 +464,8 @@ class AccountService:
                 username=result.get('username'),
                 secret_ref=str(session_dst.relative_to(settings.TG_IMPORT_STORAGE_DIR)),
                 observed_status='imported_quarantine',
-                usage=st.get('usage'),
+                usage=(st.get('usages') or [None])[0],
+                usages=st.get('usages'),
             ),
         )
         await _pending_pop(obj.login_id)
@@ -476,6 +480,7 @@ class AccountService:
         project_id: int,
         file: UploadFile,
         usage: str | None = None,
+        usages: list[str] | None = None,
     ) -> TgImportBatch:
         """上传 zip → 存盘 → runtime CLI 验证 → 落库(账号 + 批次审计)。
 
@@ -525,6 +530,7 @@ class AccountService:
             )
             raise
 
+        groups = [g for g in dict.fromkeys(usages or ([usage] if usage else [])) if g in ('ai', 'clone', 'channel')]
         detail: list[dict[str, Any]] = []
         created = 0
         for r in manifest.get('results', []):
@@ -553,7 +559,8 @@ class AccountService:
                             username=r.get('username'),
                             secret_ref=str(session_dst.relative_to(settings.TG_IMPORT_STORAGE_DIR)),
                             observed_status=item_status,
-                            usage=usage,
+                            usage=groups[0] if groups else None,
+                            usages=groups or None,
                             last_error=r.get('detail'),
                         ),
                     )

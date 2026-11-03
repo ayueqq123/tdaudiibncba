@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy_crud_plus import CRUDPlus
 
@@ -27,12 +28,15 @@ class CRUDCloneRule(CRUDPlus[TgCloneRule]):
         db: AsyncSession,
         tenant_id: int | None = None,
         project_id: int | None = None,
+        kind: str | None = None,
     ) -> Sequence[TgCloneRule]:
         filters: dict = {'deleted': 0}
         if tenant_id is not None:
             filters['tenant_id'] = tenant_id
         if project_id is not None:
             filters['project_id'] = project_id
+        if kind is not None:
+            filters['kind'] = kind
         return await self.select_models(db, **filters)
 
     async def create(self, db: AsyncSession, obj: CreateCloneRuleParam) -> TgCloneRule:
@@ -78,6 +82,10 @@ class CRUDCloneTarget(CRUDPlus[TgCloneTarget]):
 
     async def get_all_by_rule(self, db: AsyncSession, rule_id: int) -> Sequence[TgCloneTarget]:
         return await self.select_models(db, rule_id=rule_id, deleted=0)
+
+    async def get_all_by_rules(self, db: AsyncSession, rule_ids: list[int]) -> Sequence[TgCloneTarget]:
+        stmt = sa.select(self.model).where(self.model.rule_id.in_(rule_ids), self.model.deleted == 0)
+        return (await db.execute(stmt)).scalars().all()
 
     async def get_active_by_rule(self, db: AsyncSession, rule_id: int) -> Sequence[TgCloneTarget]:
         return await self.select_models(db, rule_id=rule_id, status='active', deleted=0)

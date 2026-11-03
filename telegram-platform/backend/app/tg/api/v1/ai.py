@@ -1,6 +1,9 @@
 from typing import Annotated
 
+import httpx
+
 from fastapi import APIRouter, Depends, Path, Query, Request
+from fastapi.responses import JSONResponse
 
 from backend.app.tg.crud.crud_ai import ai_binding_dao, ai_conversation_dao, ai_run_dao
 from backend.app.tg.schema.ai import (
@@ -10,20 +13,27 @@ from backend.app.tg.schema.ai import (
     AiScriptParam,
     AiTriggerParam,
     CreateAiBindingParam,
+    CreateAiGatewayTokenParam,
+    CreateAiGatewayTokenResult,
     CreateAiGroupParam,
+    CreateAiProviderParam,
     GetAiBindingDetail,
     GetAiConversationDetail,
+    GetAiGatewayTokenDetail,
     GetAiGroupDetail,
     GetAiGroupRunDetail,
     GetAiMemberDetail,
     GetAiPersonaDetail,
     GetAiPrivateReplyDetail,
+    GetAiProviderDetail,
     GetAiPurgeResult,
     GetAiRunDetail,
     GetAiScriptDetail,
     SetAutoApproveParam,
     UpdateAiBindingParam,
+    UpdateAiGatewayTokenParam,
     UpdateAiGroupParam,
+    UpdateAiProviderParam,
 )
 from backend.app.tg.service.ai_group_service import ai_group_service
 from backend.app.tg.service.ai_service import AiService, ai_service
@@ -164,6 +174,167 @@ async def langbot_callback(
 
 # ---- 炒群任务(按群):群 → 成员(账号 + 人设)→ 剧本 ----
 EDIT = [Depends(RequestPermission('tg:ai:binding:edit')), DependsRBAC]
+
+
+@router.get('/providers', summary='AI 模型配置池列表', dependencies=[DependsJwtAuth])
+async def get_providers(
+    db: CurrentSession,
+    request: Request,
+    tenant_id: Annotated[int | None, Query(description='租户 ID')] = None,
+    project_id: Annotated[int | None, Query(description='项目 ID')] = None,
+) -> ResponseSchemaModel[list[GetAiProviderDetail]]:
+    data = await AiService.list_providers(db, request, tenant_id, project_id)
+    return response_base.success(data=data)
+
+
+@router.post('/providers', summary='新建 AI 模型配置', dependencies=EDIT)
+async def create_provider(
+    db: CurrentSessionTransaction, request: Request, obj: CreateAiProviderParam
+) -> ResponseSchemaModel[GetAiProviderDetail]:
+    return response_base.success(data=await AiService.create_provider(db, request, obj))
+
+
+@router.put('/providers/{pk}', summary='更新 AI 模型配置', dependencies=EDIT)
+async def update_provider(
+    db: CurrentSessionTransaction, request: Request, pk: Annotated[int, Path(description='配置 ID')], obj: UpdateAiProviderParam
+) -> ResponseSchemaModel[GetAiProviderDetail]:
+    return response_base.success(data=await AiService.update_provider(db, request, pk, obj))
+
+
+@router.delete('/providers/{pk}', summary='删除 AI 模型配置', dependencies=EDIT)
+async def delete_provider(db: CurrentSessionTransaction, request: Request, pk: Annotated[int, Path(description='配置 ID')]) -> ResponseModel:
+    await AiService.delete_provider(db, request, pk)
+    return response_base.success()
+
+
+@router.post('/providers/{pk}/test', summary='测试模型连通性', dependencies=EDIT)
+async def test_provider(db: CurrentSession, request: Request, pk: Annotated[int, Path(description='配置 ID')]) -> ResponseModel:
+    return response_base.success(data=await AiService.test_provider(db, request, pk))
+
+
+@router.get('/gateway-tokens', summary='AI 网关令牌列表', dependencies=[DependsJwtAuth])
+async def get_gateway_tokens(
+    db: CurrentSession,
+    request: Request,
+    tenant_id: Annotated[int | None, Query(description='租户 ID')] = None,
+    project_id: Annotated[int | None, Query(description='项目 ID')] = None,
+) -> ResponseSchemaModel[list[GetAiGatewayTokenDetail]]:
+    data = await AiService.list_gateway_tokens(db, request, tenant_id, project_id)
+    return response_base.success(data=data)
+
+
+@router.post('/gateway-tokens', summary='新建 AI 网关令牌', dependencies=EDIT)
+async def create_gateway_token(
+    db: CurrentSessionTransaction, request: Request, obj: CreateAiGatewayTokenParam
+) -> ResponseSchemaModel[CreateAiGatewayTokenResult]:
+    return response_base.success(data=await AiService.create_gateway_token(db, request, obj))
+
+
+@router.put('/gateway-tokens/{pk}', summary='更新 AI 网关令牌', dependencies=EDIT)
+async def update_gateway_token(
+    db: CurrentSessionTransaction,
+    request: Request,
+    pk: Annotated[int, Path(description='令牌 ID')],
+    obj: UpdateAiGatewayTokenParam,
+) -> ResponseSchemaModel[GetAiGatewayTokenDetail]:
+    return response_base.success(data=await AiService.update_gateway_token(db, request, pk, obj))
+
+
+@router.delete('/gateway-tokens/{pk}', summary='删除 AI 网关令牌', dependencies=EDIT)
+async def delete_gateway_token(
+    db: CurrentSessionTransaction,
+    request: Request,
+    pk: Annotated[int, Path(description='令牌 ID')],
+) -> ResponseModel:
+    await AiService.delete_gateway_token(db, request, pk)
+    return response_base.success()
+
+
+def _gateway_error(status_code: int, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={'error': {'message': message, 'type': 'invalid_request_error'}},
+    )
+
+
+async def _gateway_credentials(
+    db: CurrentSession, request: Request
+) -> tuple[object, object] | JSONResponse:
+    authorization = request.headers.get('authorization', '')
+    scheme, separator, plaintext = authorization.partition(' ')
+    if scheme.lower() != 'bearer' or not separator or not plaintext.strip():
+        return _gateway_error(401, 'Invalid or missing bearer token')
+    credentials = await AiService.authenticate_gateway_token(db, plaintext.strip())
+    if credentials is None:
+        return _gateway_error(401, 'Invalid or inactive bearer token')
+    return credentials
+
+
+@router.post('/gateway/v1/chat/completions', summary='AI 网关 Chat Completions')
+async def gateway_chat_completions(db: CurrentSession, request: Request) -> JSONResponse:
+    credentials = await _gateway_credentials(db, request)
+    if isinstance(credentials, JSONResponse):
+        return credentials
+    token, provider = credentials
+    try:
+        body = await request.json()
+    except ValueError:
+        return _gateway_error(400, 'Request body must be valid JSON')
+    if not isinstance(body, dict):
+        return _gateway_error(400, 'Request body must be a JSON object')
+    if body.get('stream') is True:
+        return _gateway_error(400, 'Streaming responses are not supported')
+    api_key = AiService._decrypt(provider.provider_key_enc)
+    if not provider.base_url or not provider.provider_model or not api_key:
+        return _gateway_error(503, 'Bound AI configuration is incomplete')
+    body.update(provider.extra_body or {})
+    body['model'] = provider.provider_model
+    base_url = provider.base_url.rstrip('/')
+    upstream_url = (
+        base_url if base_url.endswith('/chat/completions') else f'{base_url}/chat/completions'
+    )
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            upstream = await client.post(
+                upstream_url,
+                json=body,
+                headers={'Authorization': f'Bearer {api_key}'},
+            )
+    except httpx.HTTPError:
+        return _gateway_error(502, 'Upstream AI provider request failed')
+    try:
+        response_body = upstream.json()
+    except ValueError:
+        return _gateway_error(
+            upstream.status_code,
+            f'Upstream returned a non-JSON response (status {upstream.status_code})',
+        )
+    if 200 <= upstream.status_code < 300:
+        await AiService.record_gateway_call(token.id)
+    return JSONResponse(status_code=upstream.status_code, content=response_body)
+
+
+@router.get('/gateway/v1/models', summary='AI 网关模型列表')
+async def gateway_models(db: CurrentSession, request: Request) -> JSONResponse:
+    credentials = await _gateway_credentials(db, request)
+    if isinstance(credentials, JSONResponse):
+        return credentials
+    _, provider = credentials
+    if not provider.provider_model:
+        return _gateway_error(503, 'Bound AI configuration has no model')
+    return JSONResponse(
+        content={
+            'object': 'list',
+            'data': [
+                {
+                    'id': provider.provider_model,
+                    'object': 'model',
+                    'owned_by': 'gateway',
+                }
+            ],
+        }
+    )
+
 GroupId = Annotated[int, Path(description='炒群任务 ID')]
 
 

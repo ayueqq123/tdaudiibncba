@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import ConfigDict, Field, model_validator
 
@@ -216,6 +217,7 @@ class _GroupFields(SchemaBase):
     base_url: str | None = None
     provider_model: str | None = None
     provider_key: str | None = Field(default=None, description='API key(加密落库不回显,留空不更换)')
+    ai_provider_id: int | None = None
     reply_min: int | None = Field(default=None, ge=0, le=20)
     reply_max: int | None = Field(default=None, ge=1, le=20)
     account_cooldown_s: int | None = Field(default=None, ge=0, le=86400)
@@ -270,6 +272,7 @@ class GetAiGroupDetail(SchemaBase):
     theme: str | None
     base_url: str
     provider_model: str | None
+    ai_provider_id: int | None = None
     has_provider_key: bool = False
     status: str
     reply_min: int
@@ -417,3 +420,73 @@ class GetAiGroupRunDetail(SchemaBase):
     candidate_status: str | None
     last_error: str | None
     model: str | None
+
+
+class CreateAiProviderParam(SchemaBase):
+    """新建 AI 模型配置(provider_key 加密落库不回显)"""
+
+    tenant_id: int
+    project_id: int
+    name: str = Field(min_length=1, max_length=64)
+    base_url: str = Field(min_length=1, max_length=255)
+    provider_model: str | None = Field(default=None, description='模型名')
+    provider_key: str | None = Field(default=None, description='API key(加密落库)')
+    extra_body: dict | None = Field(default=None, description='附加请求参数(JSON对象)')
+    remark: str | None = None
+
+
+class UpdateAiProviderParam(SchemaBase):
+    name: str | None = Field(default=None, max_length=64)
+    base_url: str | None = Field(default=None, max_length=255)
+    provider_model: str | None = None
+    provider_key: str | None = Field(default=None, description='留空不更换')
+    extra_body: dict | None = Field(default=None, description='附加请求参数(JSON对象)')
+    status: str | None = None
+    remark: str | None = None
+
+
+class GetAiProviderDetail(SchemaBase):
+    id: int
+    tenant_id: int
+    project_id: int
+    name: str
+    base_url: str
+    provider_model: str | None
+    has_provider_key: bool = False
+    extra_body: dict | None = None
+    status: str
+    remark: str | None = None
+
+
+class CreateAiGatewayTokenParam(SchemaBase):
+    tenant_id: int
+    project_id: int
+    name: str = Field(min_length=1, max_length=64)
+    ai_provider_id: int
+    remark: str | None = None
+
+
+class UpdateAiGatewayTokenParam(SchemaBase):
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    ai_provider_id: int | None = None
+    status: Literal['active', 'disabled'] | None = None
+    remark: str | None = None
+
+
+class GetAiGatewayTokenDetail(SchemaBase):
+    id: int
+    tenant_id: int
+    project_id: int
+    name: str
+    token_prefix: str
+    ai_provider_id: int
+    provider_name: str | None
+    status: str
+    call_count: int
+    last_used_time: datetime | None
+    remark: str | None = None
+    created_time: datetime
+
+
+class CreateAiGatewayTokenResult(GetAiGatewayTokenDetail):
+    token: str

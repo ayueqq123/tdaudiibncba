@@ -1,3 +1,4 @@
+import os
 import shutil
 
 from functools import cache
@@ -108,6 +109,8 @@ class Settings(BaseSettings):
     TOKEN_REQUEST_UNDERLYING_SECURITY: bool = True
     TOKEN_REQUEST_PATH_EXCLUDE: list[str] = [  # JWT / RBAC 路由白名单
         f'{FASTAPI_API_V1_PATH}/auth/login',
+        f'{FASTAPI_API_V1_PATH}/tg/ai/gateway/v1/chat/completions',
+        f'{FASTAPI_API_V1_PATH}/tg/ai/gateway/v1/models',
     ]
     TOKEN_REQUEST_PATH_EXCLUDE_PATTERN: list[Pattern[str]] = []  # JWT / RBAC 路由白名单（正则）
 
@@ -239,6 +242,10 @@ class Settings(BaseSettings):
         f'{FASTAPI_API_V1_PATH}/oauth2/github/callback',
         f'{FASTAPI_API_V1_PATH}/oauth2/google/callback',
     ]
+    OPERA_LOG_PATH_PREFIX_EXCLUDE: list[str] = [
+        # worker→control 服务间调用,每消息一次,不该进操作审计
+        f'{FASTAPI_API_V1_PATH}/tg/runtime',
+    ]
     OPERA_LOG_REDACT_KEYS: list[str] = [
         'password',
         'old_password',
@@ -365,7 +372,7 @@ class Settings(BaseSettings):
             values['CELERY_BROKER'] = 'redis'
 
             # Grafana
-            values['GRAFANA_METRICS_ENABLE'] = True
+            values['GRAFANA_METRICS_ENABLE'] = os.environ.get('GRAFANA_METRICS_ENABLE', 'true').lower() not in ('0', 'false', 'no', 'off')
 
         return values
 

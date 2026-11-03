@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, ArrowRight, History, Pencil, Play, Plus, RefreshCw, ShieldCheck, Square, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { tgApi, type AiGroup, type CloneRule, type CloneTarget, type TgAccount } from '@/lib/api'
+import { hasGroup, tgApi, type AiProvider, type CloneRule, type CloneTarget, type TgAccount } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -33,7 +34,8 @@ const DEAD_STATUS = new Set(Object.keys(STATUS_LABEL))
 const EMPTY_FORM = {
   account_id: '', name: '', mode: 'copy',
   sender_account_ids: [] as number[],
-  ai_rewrite: 'off', ad_block: 'off', ad_keywords: '', ai_group_id: 'auto',
+  ai_rewrite: 'off', ad_block: 'off', ad_keywords: '', ai_provider_id: 'auto', ai_prompt: '',
+  watermark_mode: 'off', watermark_mask: '',
   sync_edit: true, sync_delete: true, delay_min_s: '0', delay_max_s: '0',
   source_chats: [''] as string[], target_chats: [''] as string[],
   sender_user_ids: '', blocked_sender_ids: '', exclude_bots: false,
@@ -66,7 +68,7 @@ function filterSummary(t: CloneTarget): string {
 export default function RulesPage() {
   const [rows, setRows] = useState<CloneRule[]>([])
   const [accounts, setAccounts] = useState<TgAccount[]>([])
-  const [aiGroups, setAiGroups] = useState<AiGroup[]>([])
+  const [providers, setProviders] = useState<AiProvider[]>([])
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -86,12 +88,15 @@ export default function RulesPage() {
   async function load() {
     setLoading(true)
     try {
-      const [r, a, g] = await Promise.all([tgApi.rules(), tgApi.accounts(), tgApi.aiGroups().catch(() => [])])
+      const [r, a, g] = await Promise.all([
+        tgApi.rules({ with_targets: true, kind: 'group' }),
+        tgApi.accounts(),
+        tgApi.aiProviders().catch(() => []),
+      ])
       setAccounts(a)
-      setAiGroups(g)
-      const detailed = await Promise.all(r.map((x) => tgApi.rule(x.id).catch(() => x)))
-      detailed.sort((x, y) => x.id - y.id)
-      setRows(detailed)
+      setProviders(g)
+      r.sort((x, y) => x.id - y.id)
+      setRows(r)
     } catch (e: any) {
       toast.error(e?.detail || '加载失败')
     } finally {
@@ -111,7 +116,7 @@ export default function RulesPage() {
 
   const isRunning = (r: CloneRule) => r.enabled && r.current_version > 0
   const selectableAccounts = accounts.filter(
-    (a) => a.usage !== 'ai' || a.id === Number(form.account_id) || form.sender_account_ids.includes(a.id),
+    (a) => hasGroup(a, 'clone') || a.id === Number(form.account_id) || form.sender_account_ids.includes(a.id),
   )
   const otherUsage = buildCloneUsage(rows.filter((r) => r.id !== editRule?.id))
   const isFree = (id: number) => !otherUsage.get(id)?.length
@@ -186,7 +191,10 @@ export default function RulesPage() {
       ai_rewrite: form.ai_rewrite,
       ad_block: form.ad_block,
       ad_keywords: parseSenders(form.ad_keywords),
-      ai_group_id: form.ai_group_id === 'auto' ? null : +form.ai_group_id,
+      watermark_mode: form.watermark_mode,
+      watermark_mask: form.watermark_mask || null,
+      ai_provider_id: form.ai_provider_id === 'auto' ? null : +form.ai_provider_id,
+      ai_prompt: form.ai_prompt.trim() || null,
     }
 
     setBusy(true)
@@ -254,7 +262,10 @@ export default function RulesPage() {
       }
       setOpen(false)
       setEditRule(null)
-      setForm({ ...EMPTY_FORM })
+      setForm({
+        ...EMPTY_FORM,
+        ai_provider_id: providers[0] ? String(providers[0].id) : 'auto',
+      })
       load()
     } catch (e: any) {
       toast.error(e?.detail || '保存失败')
@@ -279,7 +290,10 @@ export default function RulesPage() {
       ai_rewrite: r.ai_rewrite || 'off',
       ad_block: r.ad_block || 'off',
       ad_keywords: (r.ad_keywords || []).join(','),
-      ai_group_id: r.ai_group_id ? String(r.ai_group_id) : 'auto',
+      watermark_mode: r.watermark_mode || 'off',
+      watermark_mask: r.watermark_mask || '',
+      ai_provider_id: r.ai_provider_id ? String(r.ai_provider_id) : 'auto',
+      ai_prompt: r.ai_prompt || '',
       sync_edit: r.sync_edit ?? true,
       sync_delete: r.sync_delete ?? true,
       remark: r.remark || '',
@@ -386,6 +400,12 @@ export default function RulesPage() {
             open={open}
             onOpenChange={(v) => {
               setOpen(v)
+              if (v && !editRule) {
+                setForm({
+                  ...EMPTY_FORM,
+                  ai_provider_id: providers[0] ? String(providers[0].id) : 'auto',
+                })
+              }
               if (!v) {
                 setEditRule(null)
                 setForm({ ...EMPTY_FORM })
@@ -664,22 +684,30 @@ export default function RulesPage() {
                         </SelectContent>
                       </Select>
                     </div>
-                    <div className="flex flex-col gap-1.5">
-                      <Label>改写模型来源</Label>
-                      <Select value={form.ai_group_id} onValueChange={(v) => setForm({ ...form, ai_group_id: v })}>
+                    {(form.ai_rewrite !== 'off' || form.ad_block === 'ai') && <div className="flex flex-col gap-1.5">
+                      <Label>AI 模型(改写 + 广告识别共用)</Label>
+                      <Select value={form.ai_provider_id} onValueChange={(v) => setForm({ ...form, ai_provider_id: v })}>
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="auto">自动匹配目标群的 AI 群</SelectItem>
-                          {aiGroups.map((g) => (
-                            <SelectItem key={g.id} value={String(g.id)}>
-                              {g.name || `AI群 #${g.id}`}
+                          <SelectItem value="auto">自动(按目标群匹配炒群配置)</SelectItem>
+                          {providers.map((p) => (
+                            <SelectItem key={p.id} value={String(p.id)}>
+                              {p.name}{p.provider_model ? ` · ${p.provider_model}` : ''}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                    </div>
+                      {!providers.length && <p className="text-[11px] text-muted-foreground">先到 设置 → AI 设置 添加模型</p>}
+                    </div>}
+                    {form.ai_rewrite !== 'off' && <div className="flex flex-col gap-1.5">
+                      <Label>改写提示词(选填,留空用默认)</Label>
+                      <Textarea value={form.ai_prompt}
+                        onChange={(e) => setForm({ ...form, ai_prompt: e.target.value })}
+                        rows={2}
+                        placeholder='如:改成新闻播报口吻,去掉表情符号;不填则用内置"保持原意换说法"' />
+                    </div>}
                   </div>
                   {form.ad_block === 'keyword' && (
                     <div className="flex flex-col gap-1.5">
@@ -691,6 +719,31 @@ export default function RulesPage() {
                       />
                     </div>
                   )}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="flex flex-col gap-1.5">
+                      <Label>媒体去水印</Label>
+                      <Select value={form.watermark_mode} onValueChange={(v) => setForm({ ...form, watermark_mode: v })}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="off">不去除</SelectItem>
+                          <SelectItem value="auto">自动检测(OCR 边缘水印)</SelectItem>
+                          <SelectItem value="mask">固定区域</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {form.watermark_mode === 'mask' && (
+                      <div className="flex flex-col gap-1.5">
+                        <Label>固定区域 x,y,w,h(0-1 比例)</Label>
+                        <Input
+                          value={form.watermark_mask}
+                          onChange={(e) => setForm({ ...form, watermark_mask: e.target.value })}
+                          placeholder="如 0.7,0.85,0.3,0.15 (右下角);多个区域用 ; 分隔"
+                        />
+                      </div>
+                    )}
+                  </div>
                 </section>
 
                 <section className="flex flex-col gap-3 rounded-md border p-3">
@@ -801,6 +854,11 @@ export default function RulesPage() {
                     {r.ad_block && r.ad_block !== 'off' && (
                       <Badge variant="outline">
                         {r.ad_block === 'ai' ? 'AI拦广告' : '关键词拦广告'}
+                      </Badge>
+                    )}
+                    {r.watermark_mode && r.watermark_mode !== 'off' && (
+                      <Badge variant="outline">
+                        {r.watermark_mode === 'auto' ? '自动去水印' : '固定区去水印'}
                       </Badge>
                     )}
                   </div>

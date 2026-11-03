@@ -136,11 +136,16 @@ export interface TgAccount {
   phone: string | null
   username?: string | null
   usage?: 'ai' | 'clone' | null
+  usages?: string[] | null
   desired_status: string
   observed_status: string
   last_error: string | null
   remark: string | null
 }
+// 账号分组:usages 优先,回落到旧的单值 usage(迁移期兼容)
+export const accountGroups = (a: TgAccount): string[] => a.usages ?? (a.usage ? [a.usage] : [])
+export const hasGroup = (a: TgAccount, g: string) => accountGroups(a).includes(g)
+
 export interface ApiCredential {
   api_id: number
   api_hash: string
@@ -190,13 +195,18 @@ export interface CloneRule {
   tenant_id: number
   project_id: number
   account_id: number
+  kind?: 'group' | 'channel'
   sender_account_ids?: number[]
   delay_min_s?: number
   delay_max_s?: number
   ai_rewrite?: 'off' | 'light' | 'strong'
   ad_block?: 'off' | 'keyword' | 'ai'
   ad_keywords?: string[]
+  watermark_mode?: 'off' | 'auto' | 'mask'
+  watermark_mask?: string | null
   ai_group_id?: number | null
+  ai_provider_id?: number | null
+  ai_prompt?: string | null
   name: string
   mode: 'copy' | 'forward'
   sync_edit?: boolean
@@ -272,30 +282,33 @@ export const tgApi = {
   deleteProject: (id: number) => api.del(`${TG}/projects/${id}`),
   accounts: (params?: any) => api.get<TgAccount[]>(`${TG}/accounts`, params),
   updateAccount: (id: number, b: any) => api.put(`${TG}/accounts/${id}`, b),
-  setAccountUsage: (ids: number[], usage: 'ai' | 'clone' | null) =>
-    api.post<{ updated: number }>(`${TG}/accounts/usage`, { account_ids: ids, usage }),
+  setAccountUsage: (ids: number[], usages: string[]) =>
+    api.post<{ updated: number }>(`${TG}/accounts/usage`, { account_ids: ids, usages }),
   deleteAccount: (id: number) => api.del(`${TG}/accounts/${id}`),
   deleteFrozenAccounts: () => api.post<{ deleted: number }>(`${TG}/accounts/delete-frozen`),
   deleteBannedAccounts: () => api.post<{ deleted: number }>(`${TG}/accounts/delete-banned`),
-  importAccounts: (tenantId: number, projectId: number, file: File, usage?: 'ai' | 'clone') => {
+  importAccounts: (tenantId: number, projectId: number, file: File, usages?: string[]) => {
     const f = new FormData()
     f.append('tenant_id', String(tenantId))
     f.append('project_id', String(projectId))
     f.append('file', file)
-    if (usage) f.append('usage', usage)
+    ;(usages || []).forEach((u) => f.append('usages', u))
     return api.postForm<ImportBatch>(`${TG}/accounts/import`, f)
   },
   imports: () => api.get<ImportBatch[]>(`${TG}/imports`),
   importDetail: (id: number) => api.get<ImportBatch>(`${TG}/imports/${id}`),
-  rules: () => api.get<CloneRule[]>(`${TG}/clone-rules`),
+  rules: (params?: any) => api.get<CloneRule[]>(`${TG}/clone-rules`, params),
   rule: (id: number) => api.get<CloneRule>(`${TG}/clone-rules/${id}`),
   createRule: (b: any) => api.post<CloneRule>(`${TG}/clone-rules`, b),
   updateRule: (id: number, b: any) => api.put(`${TG}/clone-rules/${id}`, b),
   deleteRule: (id: number) => api.del(`${TG}/clone-rules/${id}`),
   addTarget: (id: number, b: any) => api.post(`${TG}/clone-rules/${id}/targets`, b),
+  addTargetsBatch: (id: number, routes: { source_chat_id: string | number; target_chat_id: string | number }[]) =>
+    api.post<{ created: number; failed: number; results: { index: number; source: string; target: string; ok: boolean; reason: string | null }[] }>(
+      `${TG}/clone-rules/${id}/targets/batch`, { routes }),
   updateTarget: (id: number, targetId: number, b: any) => api.put(`${TG}/clone-rules/${id}/targets/${targetId}`, b),
   checkRule: (id: number) =>
-    api.post<{ target_id: number; ok: boolean; reason: string | null; senders?: Record<string, { status: string; can_post?: boolean | null }> }[]>(`${TG}/clone-rules/${id}/check`, {}),
+    api.post<{ target_id: number; ok: boolean; reason: string | null; senders?: Record<string, { status: string; can_post?: boolean | null }>; listener_status?: string | null; listener_can_post?: boolean | null }[]>(`${TG}/clone-rules/${id}/check`, {}),
   retireTarget: (id: number, targetId: number) => api.del(`${TG}/clone-rules/${id}/targets/${targetId}`),
   publishRule: (id: number, expectedVersion: number) =>
     api.post(`${TG}/clone-rules/${id}/publish`, { expected_version: expectedVersion }),
@@ -313,7 +326,7 @@ export const tgApi = {
   commands: () => api.get<RuntimeCommand[]>(`${TG}/runtime/commands`),
   issueCommand: (accountId: number, b: any) => api.post(`${TG}/runtime/accounts/${accountId}/commands`, b),
   apiCredentials: () => api.get<ApiCredential[]>(`${TG}/accounts/api-credentials`),
-  loginStart: (b: { tenant_id: number; project_id: number; phone: string; api_id: number; api_hash: string; usage?: 'ai' | 'clone'; device?: string; app_version?: string }) =>
+  loginStart: (b: { tenant_id: number; project_id: number; phone: string; api_id: number; api_hash: string; usages?: string[]; device?: string; app_version?: string }) =>
     api.post<{ login_id: string; ttl: number }>(`${TG}/accounts/login/start`, b),
   loginComplete: (b: { login_id: string; code: string; password?: string }) =>
     api.post<{ account_id?: number; need_password?: boolean; username?: string }>(`${TG}/accounts/login/complete`, b),
@@ -323,6 +336,23 @@ export const tgApi = {
   createAiBinding: (b: any) => api.post<AiBinding>(`${TG}/ai/bindings`, b),
   updateAiBinding: (id: number, b: any) => api.put<AiBinding>(`${TG}/ai/bindings/${id}`, b),
   deleteAiBinding: (id: number) => api.del(`${TG}/ai/bindings/${id}`),
+  aiProviders: (params?: any) => api.get<AiProvider[]>(`${TG}/ai/providers`, params),
+  createAiProvider: (b: any) => api.post<AiProvider>(`${TG}/ai/providers`, b),
+  updateAiProvider: (id: number, b: any) => api.put<AiProvider>(`${TG}/ai/providers/${id}`, b),
+  deleteAiProvider: (id: number) => api.del(`${TG}/ai/providers/${id}`),
+  testAiProvider: (id: number) => api.post<{ ok: boolean; output: string; error: string }>(`${TG}/ai/providers/${id}/test`, {}),
+  aiGatewayTokens: (params?: { tenant_id?: number; project_id?: number }) =>
+    api.get<AiGatewayToken[]>(`${TG}/ai/gateway-tokens`, params),
+  createAiGatewayToken: (b: {
+    tenant_id: number
+    project_id: number
+    name: string
+    ai_provider_id: number
+    remark?: string | null
+  }) => api.post<AiGatewayToken & { token: string }>(`${TG}/ai/gateway-tokens`, b),
+  updateAiGatewayToken: (id: number, b: Partial<Pick<AiGatewayToken, 'name' | 'ai_provider_id' | 'status' | 'remark'>>) =>
+    api.put<AiGatewayToken>(`${TG}/ai/gateway-tokens/${id}`, b),
+  deleteAiGatewayToken: (id: number) => api.del(`${TG}/ai/gateway-tokens/${id}`),
   aiGroups: () => api.get<AiGroup[]>(`${TG}/ai/groups`),
   createAiGroup: (b: any) => api.post<AiGroup>(`${TG}/ai/groups`, b),
   updateAiGroup: (id: number, b: any) => api.put<AiGroup>(`${TG}/ai/groups/${id}`, b),
@@ -354,6 +384,34 @@ export const tgApi = {
     api.put<{ updated: number; enabled: boolean }>(`${TG}/ai/auto-approve`, { tenant_id, project_id, enabled }),
 }
 
+export interface AiProvider {
+  id: number
+  tenant_id: number
+  project_id: number
+  name: string
+  base_url: string
+  provider_model?: string | null
+  has_provider_key: boolean
+  extra_body: Record<string, unknown> | null
+  status: string
+  remark?: string | null
+}
+
+export interface AiGatewayToken {
+  id: number
+  tenant_id: number
+  project_id: number
+  name: string
+  token_prefix: string
+  ai_provider_id: number
+  provider_name: string | null
+  status: 'active' | 'disabled' | string
+  call_count: number
+  last_used_time: string | null
+  remark: string | null
+  created_time: string
+}
+
 export interface AiGroup {
   id: number
   tenant_id: number
@@ -363,6 +421,7 @@ export interface AiGroup {
   chat_ref: string | null
   topic_id: number | null
   theme: string | null
+  ai_provider_id?: number | null
   base_url: string
   provider_model: string | null
   has_provider_key: boolean
